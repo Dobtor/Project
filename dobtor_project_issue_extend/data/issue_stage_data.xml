@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+
+    <!-- Issue Stages -->
+    <record id="project_issue_analysis" model="project.issue.stage">
+        <field name="sequence">10</field>
+        <field name="name">New</field>
+        <field name="case_default" eval="True"/>
+    </record>
+    <record id="project_issue_specification" model="project.issue.stage">
+        <field name="sequence">20</field>
+        <field name="name">Process</field>
+        <field name="case_default" eval="True"/>
+    </record>
+    <record id="project_issue_deployment" model="project.issue.stage">
+        <field name="sequence">70</field>
+        <field name="name">Done</field>
+        <field name="case_default" eval="True"/>
+        <field name="fold" eval="True"/>
+    </record>
+    <record id="project_issue_cancel" model="project.issue.stage">
+        <field name="sequence">80</field>
+        <field name="name">Cancelled</field>
+        <field name="case_default" eval="True"/>
+        <field name="fold" eval="True"/>
+    </record>
+</odoo>
