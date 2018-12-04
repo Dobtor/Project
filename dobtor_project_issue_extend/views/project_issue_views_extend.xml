@@ -11,6 +11,16 @@
         <button class="oe_stat_button" name="attachment_tree_view" type="object" icon="fa-files-o">
           <field string="Documents" name="issue_attachment" widget="statinfo"/>
         </button>
+        <button name="action_create_subissue" class="oe_stat_button" icon="fa-book" type="object" string="Sub Issue">
+        </button>
+      </xpath>
+      <xpath expr="//group//field[@name='tag_ids']" position="after">
+        <field string="Resource" name="main_id"/>
+      </xpath>
+      <xpath expr="//notebook" position="inside">
+        <page string="Sub Issue">
+          <field name="sub_ids"/>
+        </page>
       </xpath>
     </field>
   </record>

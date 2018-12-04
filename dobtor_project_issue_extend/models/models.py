@@ -7,7 +7,8 @@ class dobtor_project_issue_extend(models.Model):
     _inherit = 'project.issue'
 
     name = fields.Char(string='Issue', required=True, copy=False, readonly=True, index=True, default=lambda self: ('New'))
-
+    sub_ids = fields.One2many('project.issue', 'main_id', string="Sub Issue")
+    main_id = fields.Many2one('project.issue', "Main Issue")
 
     @api.model
     def create(self, vals):
@@ -67,14 +68,25 @@ class dobtor_project_issue_extend(models.Model):
             ('res_id', 'in', obj.ids),
         ]
 
-    # region upload freature (Attchment)
-    # @api.multi
-    # def _get_issue_ids(slef, obj):
-    #     issue_ids = []
-    #     for issue_id in obj.task_ids:
-    #         for todo_id in tsak_id.todolist_ids.ids:
-    #             todolist_ids.append(todo_id)
-    #     return todolist_ids
+    @api.multi
+    def action_create_subissue(self):
+        # name = "{0}-{1}".format(self.name, len(self.sub_ids) + 1)
+        # name = "%s-%s" %(self.name, len(self.sub_ids) +1)
+        res = {
+            'name': "Create Sub RMA",
+            "type": "ir.actions.act_window",
+            'res_model': "project.issue",
+            "view_type": "form",
+            "view_mode": "form",
+            'target': "self",
+            "context": {
+                # 'default_name': name,
+                'default_main_id': self.id,
+                'default_project_id': self.project_id.id,
+            }
+        }
+
+        return res
     
 class issue_attachment_extend(models.Model):
     _inherit = 'ir.attachment'
