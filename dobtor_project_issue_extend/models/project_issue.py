@@ -6,7 +6,8 @@ from odoo import models, fields, api
 class dobtor_project_issue_extend(models.Model):
     _inherit = 'project.issue'
 
-    name = fields.Char(string='Issue', required=True, copy=False, readonly=True, index=True, default=lambda self: ('New'))
+    name = fields.Char(string='Issue', required=True, copy=False,
+                       readonly=True, index=True, default=lambda self: ('New'))
     sub_ids = fields.One2many('project.issue', 'main_id', string="Sub Issue")
     main_id = fields.Many2one('project.issue', "Main Issue")
 
@@ -20,14 +21,13 @@ class dobtor_project_issue_extend(models.Model):
         if 'stage_id' in vals:
             vals.update(self.update_date_closed(vals['stage_id']))
         if vals.get('name', ('New')) == ('New'):
-            vals['name'] = self.env['ir.sequence'].next_by_code('project.issue') or ('New')
+            vals['name'] = self.env['ir.sequence'].next_by_code(
+                'project.issue') or ('New')
 
         # context: no_log, because subtype already handle this
         context['mail_create_nolog'] = True
         return super(dobtor_project_issue_extend, self.with_context(context)).create(vals)
 
-
-    
     description = fields.Html(
         string=u'Private Note',
     )
@@ -36,6 +36,7 @@ class dobtor_project_issue_extend(models.Model):
         comodel_name='ir.attachment',
         inverse_name='issue_attachment_id',
     )
+
     @api.multi
     def attachment_tree_view(self):
         self.ensure_one()
@@ -55,7 +56,7 @@ class dobtor_project_issue_extend(models.Model):
             'limit': 80,
             'context': "{'default_res_model': '%s','default_res_id': %d}" % (self._name, self.id)
         }
-        
+
     @api.multi
     def _get_attachment_domain(self, obj):
         return [
@@ -87,7 +88,8 @@ class dobtor_project_issue_extend(models.Model):
         }
 
         return res
-    
+
+
 class issue_attachment_extend(models.Model):
     _inherit = 'ir.attachment'
 
@@ -95,16 +97,3 @@ class issue_attachment_extend(models.Model):
         string=u'Issue Attachment ID',
         comodel_name='project.issue',
     )
-    
-
-class project(models.Model):
-    _inherit = 'project.project'
-
-    @api.multi
-    def _compute_issue_count(self):
-        for project in self:
-            project.issue_count = self.env['project.issue'].search_count([('project_id', '=', project.id), ('issue_stage_id', 'not in', ['Done','Cancelled'])])
-
-
-
-
