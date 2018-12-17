@@ -5,7 +5,10 @@
         project interface
     """,
     'description': """
-        project interface
+        project interface :
+        ******************************
+
+        _get_attachment_domain() interface
     """,
     'author': "Dobtor SI",
     'website': "http://www.dobtor.com",
@@ -16,7 +19,7 @@
     ],
     'data': [
         # 'security/ir.model.access.csv',
-        'views/views.xml',
+        'views/ir_attachment_view.xml.xml',
         'views/templates.xml',
     ],
 }
