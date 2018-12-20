@@ -17,8 +17,9 @@
     'category': 'dobtor',
     'version': '0.1',
     'depends': [
+        'dobtor_project_core',
         'project_issue',
-        'project_issue_stage'
+        'project_issue_stage',
     ],
     'data': [
         # 'security/ir.model.access.csv',

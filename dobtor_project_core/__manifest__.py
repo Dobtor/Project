@@ -6,7 +6,7 @@
     """,
     'description': """
         project interface :
-        ******************************
+        =====================================
 
         _get_attachment_domain() interface
     """,
@@ -19,7 +19,7 @@
     ],
     'data': [
         # 'security/ir.model.access.csv',
-        'views/ir_attachment_view.xml.xml',
+        'views/ir_attachment_view.xml',
         'views/templates.xml',
     ],
 }

@@ -9,7 +9,7 @@
       </xpath>
       <xpath expr="//div[@class='oe_button_box']" position="inside">
         <button class="oe_stat_button" name="attachment_tree_view" type="object" icon="fa-files-o">
-          <field string="Documents" name="issue_attachment" widget="statinfo"/>
+          <field string="Documents" name="attachment_number" widget="statinfo"/>
         </button>
         <button name="action_create_subissue" class="oe_stat_button" icon="fa-book" type="object" string="Sub Issue">
         </button>

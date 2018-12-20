@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from odoo import models, fields, api
+from odoo.tools.translate import _
 
 
 class dobtor_project_issue_extend(models.Model):
@@ -31,31 +32,59 @@ class dobtor_project_issue_extend(models.Model):
     description = fields.Html(
         string=u'Private Note',
     )
-    issue_attachment = fields.One2many(
-        string=u'Issue Attachment',
-        comodel_name='ir.attachment',
-        inverse_name='issue_attachment_id',
+
+    attachment_number = fields.Integer(
+        compute='_compute_attachment_number',
+        string='Number of Attachments',
     )
 
     @api.multi
-    def attachment_tree_view(self):
+    def _compute_attachment_number(self):
+        attachment_data = self.env['ir.attachment'].read_group(
+            [('res_model', '=', self._name), ('res_id', 'in', self.ids)], ['res_id'], ['res_id'])
+        attachment = dict((res['res_id'], res['res_id_count'])
+                          for res in attachment_data)
+        for record in self:
+            record.attachment_number = attachment.get(record.id, 0)
+
+    # issue_attachment = fields.One2many(
+    #     string=u'Issue Attachment',
+    #     comodel_name='ir.attachment',
+    #     inverse_name='issue_attachment_id',
+    # )
+
+    @api.multi
+    def attachment_form_view(self):
         self.ensure_one()
         return {
-            'name': 'Attachments',
-            'domain': self._get_attachment_domain(self),
+            'name': _('Attachments'),
             'res_model': 'ir.attachment',
             'type': 'ir.actions.act_window',
-            'view_id': False,
-            'view_mode': 'kanban,tree,form',
+            'view_id': self.env.ref('dobtor_project_core.view_project_core_attachment_form').id,
+            'view_mode': 'form',
             'view_type': 'form',
-            'help': ('''<p class="oe_view_nocontent_create">
-                        Documents are attached to the tasks and issues of your project.</p><p>
-                        Send messages or log internal notes with attachments to link
-                        documents to your project.
-                    </p>'''),
-            'limit': 80,
             'context': "{'default_res_model': '%s','default_res_id': %d}" % (self._name, self.id)
         }
+
+    # @api.multi
+    # def attachment_tree_view(self):
+    #     self.ensure_one()
+    #     return {
+    #         'name': 'Attachments',
+    #         'domain': self._get_attachment_domain(self),
+    #         'res_model': 'ir.attachment',
+    #         'type': 'ir.actions.act_window',
+    #         'view_id': False,
+    #         'view_mode': 'kanban,tree,form',
+    #         'view_type': 'form',
+    #         'help': ('''<p class="oe_view_nocontent_create">
+    #                     Documents are attached to the tasks and issues of your project.</p><p>
+    #                     Send messages or log internal notes with attachments to link
+    #                     documents to your project.
+    #                 </p>'''),
+    #         'limit': 80,
+    #         'context': "{'default_res_model': '%s','default_res_id': %d}" % (self._name, self.id)
+    #     }
 
     @api.multi
     def _get_attachment_domain(self, obj):
@@ -90,10 +119,10 @@ class dobtor_project_issue_extend(models.Model):
         return res
 
 
-class issue_attachment_extend(models.Model):
-    _inherit = 'ir.attachment'
+# class issue_attachment_extend(models.Model):
+#     _inherit = 'ir.attachment'
 
-    issue_attachment_id = fields.Many2one(
-        string=u'Issue Attachment ID',
-        comodel_name='project.issue',
-    )
+#     issue_attachment_id = fields.Many2one(
+#         string=u'Issue Attachment ID',
+#         comodel_name='project.issue',
+#     )
