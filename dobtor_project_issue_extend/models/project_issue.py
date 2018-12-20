@@ -47,52 +47,24 @@ class dobtor_project_issue_extend(models.Model):
         for record in self:
             record.attachment_number = attachment.get(record.id, 0)
 
-    # issue_attachment = fields.One2many(
-    #     string=u'Issue Attachment',
-    #     comodel_name='ir.attachment',
-    #     inverse_name='issue_attachment_id',
-    # )
-
     @api.multi
-    def attachment_form_view(self):
+    def attachment_tree_view(self):
         self.ensure_one()
         return {
-            'name': _('Attachments'),
+            'name':  _('Attachments'),
+            'domain': self._get_attachment_domain(self),
             'res_model': 'ir.attachment',
             'type': 'ir.actions.act_window',
-            'view_id': self.env.ref('dobtor_project_core.view_project_core_attachment_form').id,
-            'view_mode': 'form',
+            'view_id': False,
+            'view_mode': 'kanban,tree,form',
             'view_type': 'form',
+            'limit': 80,
             'context': "{'default_res_model': '%s','default_res_id': %d}" % (self._name, self.id)
         }
-
-    # @api.multi
-    # def attachment_tree_view(self):
-    #     self.ensure_one()
-    #     return {
-    #         'name': 'Attachments',
-    #         'domain': self._get_attachment_domain(self),
-    #         'res_model': 'ir.attachment',
-    #         'type': 'ir.actions.act_window',
-    #         'view_id': False,
-    #         'view_mode': 'kanban,tree,form',
-    #         'view_type': 'form',
-    #         'help': ('''<p class="oe_view_nocontent_create">
-    #                     Documents are attached to the tasks and issues of your project.</p><p>
-    #                     Send messages or log internal notes with attachments to link
-    #                     documents to your project.
-    #                 </p>'''),
-    #         'limit': 80,
-    #         'context': "{'default_res_model': '%s','default_res_id': %d}" % (self._name, self.id)
-    #     }
 
     @api.multi
     def _get_attachment_domain(self, obj):
         return [
-            # '|',
-            # '&',
-            # ('res_model', '=', 'project.project'),
-            # ('res_id', 'in', obj.ids),
             '&',
             ('res_model', '=', self._name),
             ('res_id', 'in', obj.ids),
@@ -115,14 +87,4 @@ class dobtor_project_issue_extend(models.Model):
                 'default_project_id': self.project_id.id,
             }
         }
-
         return res
-
-
-# class issue_attachment_extend(models.Model):
-#     _inherit = 'ir.attachment'
-
-#     issue_attachment_id = fields.Many2one(
-#         string=u'Issue Attachment ID',
-#         comodel_name='project.issue',
-#     )
