@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <data>
+        <record id="project_issue_form_view_extend" model="ir.ui.view">
+            <field name="name">project_issue_form_view_extend</field>
+            <field name="model">project.issue</field>
+            <field name="inherit_id" ref="project_issue.project_issue_form_view"/>
+            <field name="arch" type="xml">
+                <xpath expr="//header/field[@name='stage_id']" position="before">
+                    <button name="action_create_subissue" string="Sub Issue" type="object"/>
+                </xpath>
+                <xpath expr="//div[@class='oe_button_box']" position="inside">
+                    <button class="oe_stat_button" name="attachment_tree_view" type="object" icon="fa-files-o">
+                        <field string="Documents" name="attachment_number" widget="statinfo"/>
+                    </button>
+                </xpath>
+                <xpath expr="//field[@name='description']" position="replace">
+                    <field name="description" placeholder="Add an internal note..." type="html" groups="base.group_user"/>
+                </xpath>
+                <!-- Sub Issue -->
+                <xpath expr="//group//field[@name='tag_ids']" position="after">
+                    <field string="Resource" name="main_id"/>
+                </xpath>
+                <xpath expr="//notebook" position="inside">
+                    <page string="Sub Issue">
+                        <field name="sub_ids"/>
+                    </page>
+                </xpath>
+            </field>
+        </record>
+    </data>
+</odoo>

@@ -23,7 +23,7 @@
     ],
     'data': [
         # 'security/ir.model.access.csv',
-        'views/project_issue_views_extend.xml',
+        'views/project_issue_views.xml',
         'data/issue_stage_data.xml',
         'data/issue_ir_sequence_data.xml',
     ],
