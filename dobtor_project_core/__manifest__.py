@@ -6,7 +6,6 @@
     """,
     'description': """
         project interface :
-        =====================================
 
         _get_attachment_domain() interface
     """,
