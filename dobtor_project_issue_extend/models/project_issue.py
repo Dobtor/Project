@@ -137,7 +137,7 @@ class dobtor_project_issue_extend(models.Model):
             'main_id': self.id,
         })
         return {
-            'name': _('Subissue'),
+            'name': _(self._name + 'Subissue'),
             "type": "ir.actions.act_window",
             'res_model': self._name,
             "view_type": "form",
@@ -164,4 +164,5 @@ class dobtor_project_issue_extend(models.Model):
             'view_mode': 'kanban,tree,form',
             'view_type': 'form',
             'limit': 80,
+            'context': "{'kanban_view_ref': 'project_issue_stage.project_issue_kanban_view', }",
         }
