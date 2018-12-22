@@ -9,26 +9,84 @@ class dobtor_project_issue_extend(models.Model):
 
     name = fields.Char(
         string='Issue',
+        stord=True,
+        required=False,
+        copy=False,
+        compute='_compute_name'
+    )
+    is_serial = fields.Boolean(
+        string='is_serial',
+    )
+    serial_number = fields.Char(
+        string='serial_number',
         required=True,
+        readonly=True,
+        copy=False,
+        default='',
+    )
+    topic = fields.Char(
+        string='Issue Topic',
+        required=True,
+        default='New',
+    )
+    sub_ids = fields.One2many(
+        string="Sub Issue",
+        comodel_name='project.issue',
+        inverse_name='main_id',
+        copy=False,
+    )
+    main_id = fields.Many2one(
+        comodel_name='project.issue',
+        string="Resource",
         copy=False,
         readonly=True,
-        index=True,
-        default=lambda self: ('New')
     )
-    sub_ids = fields.One2many('project.issue', 'main_id', string="Sub Issue")
-    main_id = fields.Many2one('project.issue', "Main Issue")
     description = fields.Html(
         string='Private Note',
     )
     attachment_number = fields.Integer(
         compute='_compute_attachment_number',
         string='Number of Attachments',
+        copy=False,
+    )
+    subissue_number = fields.Integer(
+        compute='_compute_subissue_number',
+        string='Number of Subissue',
+        copy=False,
     )
     fold = fields.Boolean(
         string='Folded in Issues Pipeline',
         related='issue_stage_id.fold',
     )
-    
+
+    @api.multi
+    def action_serial(self):
+        for record in self:
+            record.topic = record.name
+            record.serial_number = record.env['ir.sequence'].next_by_code(
+                'project.issue')
+            record.is_serial = True
+
+    @api.model
+    def _query_origin_name(self, record, current_id):
+        record.env.cr.execute(
+            'select name from project_issue where id = %s',
+            (current_id,)
+        )
+        return record.env.cr.fetchall()
+
+    @api.multi
+    @api.depends('serial_number', 'topic', 'is_serial')
+    def _compute_name(self):
+        for record in self:
+            if record.is_serial:
+                record.name = (record.serial_number or '') + ' ' + record.topic
+            else:
+                if record.topic == 'New' and record.id:
+                    res = self._query_origin_name(record, record.id)
+                    if len(res) > 0:
+                        record.topic = res[0][0] or record.topic
+                record.name = record.topic
 
     @api.multi
     def _compute_attachment_number(self):
@@ -64,36 +122,46 @@ class dobtor_project_issue_extend(models.Model):
 
     @api.model
     def create(self, vals):
-        context = dict(self.env.context)
-        if vals.get('project_id') and not self.env.context.get('default_project_id'):
-            context['default_project_id'] = vals.get('project_id')
-        if vals.get('user_id') and not vals.get('date_open'):
-            vals['date_open'] = fields.Datetime.now()
-        if 'stage_id' in vals:
-            vals.update(self.update_date_closed(vals['stage_id']))
-        if vals.get('name', ('New')) == ('New'):
-            vals['name'] = self.env['ir.sequence'].next_by_code(
-                'project.issue') or ('New')
-
-        # context: no_log, because subtype already handle this
-        context['mail_create_nolog'] = True
-        return super(dobtor_project_issue_extend, self.with_context(context)).create(vals)
+        if not vals.get('main_id', False):
+            vals['serial_number'] = self.env['ir.sequence'].next_by_code(
+                'project.issue')
+            vals['is_serial'] = True
+        return super(dobtor_project_issue_extend, self).create(vals)
 
     @api.multi
     def action_create_subissue(self):
-        # name = "{0}-{1}".format(self.name, len(self.sub_ids) + 1)
-        # name = "%s-%s" %(self.name, len(self.sub_ids) +1)
-        res = {
-            'name': "Create Sub RMA",
+        """ Create subissue """
+
+        res = self.copy(default={
+            'serial_number': "%s-%s" % (self.serial_number, len(self.sub_ids) + 1) if self.is_serial else '',
+            'main_id': self.id,
+        })
+        return {
+            'name': _('Subissue'),
             "type": "ir.actions.act_window",
-            'res_model': "project.issue",
+            'res_model': self._name,
             "view_type": "form",
             "view_mode": "form",
+            'res_id': res.id,
             'target': "self",
-            "context": {
-                # 'default_name': name,
-                'default_main_id': self.id,
-                'default_project_id': self.project_id.id,
-            }
+            'target': 'current',
         }
-        return res
+
+    @api.multi
+    def _compute_subissue_number(self):
+        for record in self:
+            record.subissue_number = len(record.sub_ids)
+
+    @api.multi
+    def action_subissue_tree_view(self):
+        self.ensure_one()
+        return {
+            'name':  _('Subissue'),
+            'domain': [('main_id', '=', self.id)],
+            'res_model': 'project.issue',
+            'type': 'ir.actions.act_window',
+            'view_id': False,
+            'view_mode': 'kanban,tree,form',
+            'view_type': 'form',
+            'limit': 80,
+        }

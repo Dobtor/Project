@@ -19,6 +19,5 @@
     'data': [
         # 'security/ir.model.access.csv',
         'views/ir_attachment_view.xml',
-        'views/templates.xml',
     ],
 }
