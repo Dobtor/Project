@@ -37,5 +37,22 @@
                 </xpath>
             </field>
         </record>
+
+        <!-- <record id="subissue_view_search" model="ir.ui.view">
+            <field name="name">subissue.core.filter</field>
+            <field name="model">project.issue</field>
+            <field name="arch" type="xml">
+                <search string="Filter">
+                    <field name="name" string="issue topic"/>
+                    <filter string="TODO" domain="[('state','=','todo')]" name="done_todolist"/>
+                    <group expand="0" string="Group By">
+                        <filter string="Type" domain="[]" context="{'group_by':'parent_model'}" name="ggg"/>
+                        <filter string="Todo" domain="[]" context="{'group_by':'ref_model'}"/>
+                        <filter string="User" domain="[]" context="{'group_by':'user_id'}"/>
+                        <filter string="State" domain="[]" context="{'group_by':'state'}"/>
+                    </group>
+                </search>
+            </field>
+        </record> -->
     </data>
 </odoo>

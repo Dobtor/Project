@@ -164,5 +164,5 @@ class dobtor_project_issue_extend(models.Model):
             'view_mode': 'kanban,tree,form',
             'view_type': 'form',
             'limit': 80,
-            'context': "{'kanban_view_ref': 'project_issue_stage.project_issue_kanban_view', }",
+            'context': "{'kanban_view_ref': 'project_issue_stage.project_issue_kanban_view','search_default_project_id': [%d], 'default_project_id': %d, }" % (self.project_id.id, self.project_id.id),
         }
