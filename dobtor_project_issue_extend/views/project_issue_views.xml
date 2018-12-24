@@ -12,10 +12,10 @@
                     <button name="action_create_subissue" string="Sub Issue" type="object"/>
                 </xpath>
                 <xpath expr="//div[@class='oe_button_box']" position="inside">
-                    <button class="oe_stat_button" name="attachment_tree_view" type="object" icon="fa-files-o">
+                    <button class="oe_stat_button" name="attachment_tree_view" type="object" icon="fa-files-o" attrs="{'invisible': [('id', '=', False)], }">
                         <field string="Documents" name="attachment_number" widget="statinfo"/>
                     </button>
-                    <button class="oe_stat_button" name="action_subissue_tree_view" type="object" icon="fa-bug" attrs="{'invisible': [('subissue_number', '=', 0)]}">
+                    <button class="oe_stat_button" name="action_subissue_tree_view" type="object" icon="fa-bug" attrs="{'invisible': [('id', '=', False), ('subissue_number', '=', 0)]}">
                         <field string="Subissue" name="subissue_number" widget="statinfo"/>
                     </button>
                 </xpath>

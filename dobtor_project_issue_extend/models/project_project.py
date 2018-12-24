@@ -10,9 +10,15 @@ class project(models.Model):
         for project in self:
             project.issue_count = self.env['project.issue'].search_count(
                 [
+                    '|',
+                    '&',
                     ('project_id', '=', project.id),
+                    '&',
                     ('fold', '=', False),
                     ('main_id', '=', False),
+                    '&',
+                    ('project_id', '=', project.id),
+                    ('issue_stage_id', '=', False),
                 ]
             )
 

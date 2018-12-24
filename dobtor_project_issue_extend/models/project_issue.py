@@ -75,6 +75,23 @@ class dobtor_project_issue_extend(models.Model):
         )
         return record.env.cr.fetchall()
 
+    @api.model
+    def _update_topic(self, record, topic):
+        record.env.cr.execute(
+            "update project_issue set topic = %s where id = %s",
+            (topic, record.id)
+        )
+
+    @api.multi
+    def write(self, vals):
+        if self._query_origin_name(self, self.id) != vals.get('topic'):
+            self.env.cr.execute(
+                "update project_issue set name = %s where id = %s",
+                (vals.get('topic'), self.id)
+            )
+        res = super(dobtor_project_issue_extend, self).write(vals)
+        return True
+
     @api.multi
     @api.depends('serial_number', 'topic', 'is_serial')
     def _compute_name(self):
@@ -85,7 +102,10 @@ class dobtor_project_issue_extend(models.Model):
                 if record.topic == 'New' and record.id:
                     res = self._query_origin_name(record, record.id)
                     if len(res) > 0:
-                        record.topic = res[0][0] or record.topic
+                        old_name = res[0][0]
+                        if old_name:
+                            record.topic = old_name or record.topic
+                            record._update_topic(record, old_name)
                 record.name = record.topic
 
     @api.multi
@@ -135,6 +155,7 @@ class dobtor_project_issue_extend(models.Model):
         res = self.copy(default={
             'serial_number': "%s-%s" % (self.serial_number, len(self.sub_ids) + 1) if self.is_serial else '',
             'main_id': self.id,
+            'topic': self.topic if self.is_serial else 'Sub/' + self.topic,
         })
         return {
             'name': _(self._name + 'Subissue'),
