@@ -17,11 +17,12 @@ class project(models.Model):
             )
 
     @api.multi
-    def _get_attachment_domain(self, obj):
-        domain = super(project, self)._get_attachment_domain(self)
-        issue_domain = [
-            '&',
-            ('res_model', '=', 'project.issue'),
-            ('res_id', 'in', obj.issue_ids.ids),
-        ]
-        return ['|'] + domain + issue_domain
+    def _get_attachment_domain(self):
+        for obj in self:
+            domain = super(project, obj)._get_attachment_domain()
+            issue_domain = [
+                '&',
+                ('res_model', '=', 'project.issue'),
+                ('res_id', 'in', obj.issue_ids.ids),
+            ]
+            return ['|'] + domain + issue_domain

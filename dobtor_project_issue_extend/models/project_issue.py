@@ -117,7 +117,7 @@ class dobtor_project_issue_extend(models.Model):
             'view_mode': 'kanban,tree,form',
             'view_type': 'form',
             'limit': 80,
-            'context': "{'default_res_model': '%s','default_res_id': %d}" % (self._name, self.id)
+            'context': "{'form_view_ref': 'dobtor_project_core.view_project_core_attachment_form', 'default_res_model': '%s','default_res_id': %d}" % (self._name, self.id)
         }
 
     @api.model
