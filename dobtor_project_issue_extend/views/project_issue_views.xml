@@ -8,14 +8,15 @@
             <field name="arch" type="xml">
                 <xpath expr="//header/field[@name='stage_id']" position="before">
                     <field name="is_serial" invisible="1" />
-                    <button name="action_serial" string="Get Serial" type="object" attrs="{'invisible': [('is_serial','=',True)]}"/>
-                    <button name="action_create_subissue" string="Sub Issue" type="object"/>
+                    <field name="id" invisible="True"/>
+                    <button name="action_serial" string="Get Serial" type="object" attrs="{'invisible': ['|', ('id', '=', False), ('is_serial','=',True)]}"/>
+                    <button name="action_create_subissue" string="Sub Issue" type="object" attrs="{'invisible': [('id', '=', False)]}"/>
                 </xpath>
                 <xpath expr="//div[@class='oe_button_box']" position="inside">
-                    <button class="oe_stat_button" name="attachment_tree_view" type="object" icon="fa-files-o" attrs="{'invisible': [('id', '=', False)], }">
+                    <button class="oe_stat_button" name="attachment_tree_view" type="object" icon="fa-files-o" attrs="{'invisible': [('id', '=', False)]}">
                         <field string="Documents" name="attachment_number" widget="statinfo"/>
                     </button>
-                    <button class="oe_stat_button" name="action_subissue_tree_view" type="object" icon="fa-bug" attrs="{'invisible': [('id', '=', False), ('subissue_number', '=', 0)]}">
+                    <button class="oe_stat_button" name="action_subissue_tree_view" type="object" icon="fa-bug" attrs="{'invisible': [('subissue_number', '=', 0)]}">
                         <field string="Subissue" name="subissue_number" widget="statinfo"/>
                     </button>
                 </xpath>
@@ -27,6 +28,8 @@
                     <h1>
                         <field name="topic" placeholder="Issue Summary..." class="oe_edit_only"/>
                     </h1>
+                    <field name="open_serial" attrs="{'invisible': [('id', '!=', False)]}"/>
+                    <label for='open_serial'>Using Serial</label>
                 </xpath>
                 <xpath expr="//field[@name='description']" position="replace">
                     <field name="description" placeholder="Add an internal note..." type="html" groups="base.group_user"/>

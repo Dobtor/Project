@@ -17,6 +17,11 @@ class dobtor_project_issue_extend(models.Model):
     is_serial = fields.Boolean(
         string='is_serial',
     )
+    open_serial = fields.Boolean(
+        string='Using Serial',
+        default=True,
+        help="using serial",
+    )
     serial_number = fields.Char(
         string='serial_number',
         required=True,
@@ -62,10 +67,11 @@ class dobtor_project_issue_extend(models.Model):
     @api.multi
     def action_serial(self):
         for record in self:
-            record.topic = record.name
-            record.serial_number = record.env['ir.sequence'].next_by_code(
-                'project.issue')
-            record.is_serial = True
+            record.write({
+                'topic': record.name,
+                'serial_number': record.env['ir.sequence'].next_by_code('project.issue'),
+                'is_serial': True,
+            }) 
 
     @api.model
     def _query_origin_name(self, record, current_id):
@@ -82,13 +88,18 @@ class dobtor_project_issue_extend(models.Model):
             (topic, record.id)
         )
 
+    @api.model
+    def _update_name(self, record, name):
+        record.env.cr.execute(
+            "update project_issue set name = %s where id = %s",
+            (name, record.id)
+        )
+
+
     @api.multi
     def write(self, vals):
         if self._query_origin_name(self, self.id) != vals.get('topic'):
-            self.env.cr.execute(
-                "update project_issue set name = %s where id = %s",
-                (vals.get('topic'), self.id)
-            )
+            self._update_name(self,vals.get('topic'))
         res = super(dobtor_project_issue_extend, self).write(vals)
         return True
 
@@ -142,11 +153,13 @@ class dobtor_project_issue_extend(models.Model):
 
     @api.model
     def create(self, vals):
-        if not vals.get('main_id', False):
+        if not vals.get('main_id', False) and vals.get('open_serial', False):
             vals['serial_number'] = self.env['ir.sequence'].next_by_code(
                 'project.issue')
             vals['is_serial'] = True
-        return super(dobtor_project_issue_extend, self).create(vals)
+        res = super(dobtor_project_issue_extend, self).create(vals)
+        self._update_name(res, res.topic)
+        return res
 
     @api.multi
     def action_create_subissue(self):
