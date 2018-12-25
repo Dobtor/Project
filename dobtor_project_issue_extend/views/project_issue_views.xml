@@ -29,7 +29,7 @@
                         <field name="topic" placeholder="Issue Summary..." class="oe_edit_only"/>
                     </h1>
                     <field name="open_serial" attrs="{'invisible': [('id', '!=', False)]}"/>
-                    <label for='open_serial'>Using Serial</label>
+                    <label for='open_serial' attrs="{'invisible': [('id', '!=', False)]}">Using Serial</label>
                 </xpath>
                 <xpath expr="//field[@name='description']" position="replace">
                     <field name="description" placeholder="Add an internal note..." type="html" groups="base.group_user"/>
