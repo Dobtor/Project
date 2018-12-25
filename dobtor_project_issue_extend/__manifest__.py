@@ -2,17 +2,13 @@
 {
     'name': "dobtor_project_issue_extend",
     'description': """
-        Modify Issue Description field datatype to HTML
-
-        Add attachment association
-
-        Issue Stage當狀態移至 Done 則Project中不顯示Counts
-
-        自動產生編號 
-
-        可建立子Issue ，編號流水號直接自動往下帶
+        Flexible editing of description text.
+        Add attachment association.
+        Setting the number of project issues.
+        Setting the serial of project issues.
+        Create Subissue.
     """,
-    'author': "Dobtor",
+    'author': "Dobtor SI",
     'website': "https://www.dobtor.com/",
     'category': 'dobtor',
     'version': '0.1',
