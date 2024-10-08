@@ -19,15 +19,25 @@ class ProjectTask(models.Model):
             if task.partner_id and task.stage_id and task.stage_id.mitake_sms_template_id:
                 sms_template = task.stage_id.mitake_sms_template_id
                 message = sms_template._render_field("body", self.ids, compute_lang=True)[task.id]
-                sms_values = [{
-                    "body": message, 
-                    "number": task.partner_id.mobile or task.partner_id.phone,
-                    "adapter": "mitake",
-                }]
-                print(f" sms_values: {sms_values}")
-                try:
-                    self.env["sms.sms"].sudo().create(sms_values).send()
-                except Exception as e:
-                    _logger.error("Send Invoice Failed: %s", str(e))
+                
+                self._send_mitake_sms(task.partner_id, message)
+                for user in task.user_ids:
+                    self._send_mitake_sms(user, message)
+                
+                    
+    def _send_mitake_sms(self, partner_id, message):
+        if not partner_id.mobile and not partner_id.phone:
+            return
+        
+        sms_values = [{
+            "body": message, 
+            "number": partner_id.mobile or partner_id.phone,
+            "adapter": "mitake",
+        }]
+        print(f" sms_values: {sms_values}")
+        try:
+            self.env["sms.sms"].sudo().create(sms_values).send()
+        except Exception as e:
+            _logger.error("Send Invoice Failed: %s", str(e))
                 
     
