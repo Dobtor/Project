@@ -1,0 +1,2 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_dobtor_stock_project_dobtor_stock_project,dobtor_stock_project.dobtor_stock_project,model_dobtor_stock_project_dobtor_stock_project,base.group_user,1,1,1,1
