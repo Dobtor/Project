@@ -22,7 +22,6 @@ class StockPicking(models.Model):
                 delivery_stage = order.company_id.stock_delivery_stage
                 
                 if delivery_stage:
-                    
-                    order.tasks_ids.write({
+                    order.tasks_ids.sudo().write({
                         "stage_id": delivery_stage.id
                     })

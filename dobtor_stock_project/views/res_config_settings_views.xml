@@ -6,12 +6,8 @@
     <field name="inherit_id" ref="project.res_config_settings_view_form"/>
     <field name="arch" type="xml">
         <xpath expr="//block[@id='tasks_management']" position="inside">
-            <setting id="stock_delivery_stage" string="stock_delivery_stage">
+            <setting id="stock_delivery_stage" string="Stock Delivery Stage">
                 <field name="stock_delivery_stage"/>
-                <!-- <div class="row">
-                    <label for="stock_delivery_stage" class="col-lg-3 o_light_label"/>
-                    <field name="stock_delivery_stage" options="{'no_create': True}"/>
-                </div> -->
             </setting>
         </xpath>
     </field>
