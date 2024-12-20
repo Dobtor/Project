@@ -8,6 +8,7 @@
         - 訂單安裝、退貨、維修的派工產品相關設定
         - 派工單階段：現場完工、寄回原廠設定
         - 設定order line distributor，創建派工單時代入assignees
+        - 訂單退貨建立退貨派工單，並與repair order關聯
     """,
 
     'author': "My Company",
