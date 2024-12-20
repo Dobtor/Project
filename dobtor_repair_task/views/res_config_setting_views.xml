@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <record id="res_config_settings_view_form_inherit_repair_task" model="ir.ui.view">
+            <field name="name">res.config.settings.view.form.inherit.repair.task</field>
+            <field name="model">res.config.settings</field>
+            <field name="inherit_id" ref="project.res_config_settings_view_form"/>
+            <field name="arch" type="xml">
+                <xpath expr="//block[@id='tasks_management']" position="after">
+                    <block title="Distributor Management" id="distributor_Management">
+                        <setting id="on_site_done_stage">
+                            <field name="on_site_done_stage"/>
+                        </setting>
+                        <setting id="factory_return_stage">
+                            <field name="factory_return_stage"/>
+                        </setting>
+                        <setting id="installation_task_product">
+                            <field name="installation_task_product"/>
+                        </setting>
+                        <setting id="repair_task_product">
+                            <field name="repair_task_product"/>
+                        </setting>
+                        <setting id="return_task_product">
+                            <field name="return_task_product"/>
+                        </setting>
+                    </block>
+                </xpath>
+            </field>
+        </record>
+    </data>
+</odoo>
