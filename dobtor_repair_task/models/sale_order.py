@@ -23,8 +23,8 @@ class SaleOrder(models.Model):
             else:
                 order.amount_project = sum(project_lines.mapped('price_total'))
 
-    def sale_create_repairs(self):
-        super().sale_create_repairs()
+    def sale_create_return(self):
+        super().sale_create_return()
         latest_picking = self.env["stock.picking"].search([
             ("id", "in", self.picking_ids.ids),
             ("state", "not in", ["cancel"])
