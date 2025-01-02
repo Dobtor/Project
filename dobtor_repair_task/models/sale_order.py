@@ -33,8 +33,8 @@ class SaleOrder(models.Model):
         if not (latest_picking and latest_picking.return_id and latest_picking.repair_ids):
             return
         
-        if not self.company_id.factory_return_stage:
-            raise UserError(_('Factory return stage not setting.'))
+        if not self.company_id.rma_done_stage:
+            raise UserError(_('Return to manufacturer done stage not setting.'))
 
         if not self.company_id.return_task_product:
             raise UserError(_('Return task product not setting.'))
@@ -58,7 +58,7 @@ class SaleOrder(models.Model):
         })]
         return_order.action_confirm()
         return_order.tasks_ids.sudo().write({
-            'stage_id': self.company_id.factory_return_stage.id,
+            'stage_id': self.company_id.rma_done_stage.id,
         })
         latest_picking.repair_ids.sudo().write({
             'task_order_id': return_order.id,
