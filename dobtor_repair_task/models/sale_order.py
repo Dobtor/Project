@@ -24,7 +24,7 @@ class SaleOrder(models.Model):
                 order.amount_project = sum(project_lines.mapped('price_total'))
 
     def sale_create_return(self):
-        super().sale_create_return()
+        repair_order = super().sale_create_return()
         latest_picking = self.env["stock.picking"].search([
             ("id", "in", self.picking_ids.ids),
             ("state", "not in", ["cancel"])
@@ -32,34 +32,31 @@ class SaleOrder(models.Model):
 
         if not (latest_picking and latest_picking.return_id and latest_picking.repair_ids):
             return
-        
-        if not self.company_id.rma_done_stage:
-            raise UserError(_('Return to manufacturer done stage not setting.'))
 
-        if not self.company_id.return_task_product:
-            raise UserError(_('Return task product not setting.'))
-        
-        return_task_product = self.company_id.return_task_product
-        taxes = return_task_product.taxes_id._filter_taxes_by_company(self.company_id)
-        taxes_ids = taxes.ids
+        if self.company_id.return_task_product:
+            return_task_product = self.company_id.return_task_product
+            taxes = return_task_product.taxes_id._filter_taxes_by_company(self.company_id)
+            taxes_ids = taxes.ids
 
-        if self.partner_id and self.fiscal_position_id:
-            taxes_ids = self.fiscal_position_id.map_tax(taxes).ids
+            if self.partner_id and self.fiscal_position_id:
+                taxes_ids = self.fiscal_position_id.map_tax(taxes).ids
 
-        distributor = self.partner_id.distributor
-        return_order = self.copy()
-        return_order.order_line = [(5, 0, 0), (0, 0, {
-            'order_id': return_order.id,
-            'product_uom_qty': 1,
-            'product_uom': return_task_product.uom_id.id,
-            'product_id': return_task_product.id,
-            'tax_id': [(6, 0, taxes_ids)],
-            'distributor_ids': [(6, 0, [distributor.user_ids[:1].id] if distributor else [])],
-        })]
-        return_order.action_confirm()
-        return_order.tasks_ids.sudo().write({
-            'stage_id': self.company_id.rma_done_stage.id,
-        })
-        latest_picking.repair_ids.sudo().write({
-            'task_order_id': return_order.id,
-        })
+            distributor = self.partner_id.distributor
+            return_order = self.copy()
+            return_order.order_line = [(5, 0, 0), (0, 0, {
+                'order_id': return_order.id,
+                'product_uom_qty': 1,
+                'product_uom': return_task_product.uom_id.id,
+                'product_id': return_task_product.id,
+                'tax_id': [(6, 0, taxes_ids)],
+                'distributor_ids': [(6, 0, [distributor.user_ids[:1].id] if distributor else [])],
+            })]
+            return_order.action_confirm()
+            return_order.tasks_ids.sudo().write({
+                'stage_id': self.company_id.rma_done_stage.id,
+            })
+            latest_picking.repair_ids.sudo().write({
+                'task_order_id': return_order.id,
+            })
+
+        return repair_order
