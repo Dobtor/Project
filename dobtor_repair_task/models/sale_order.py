@@ -52,11 +52,6 @@ class SaleOrder(models.Model):
                 'distributor_ids': [(6, 0, [distributor.user_ids[:1].id] if distributor else [])],
             })]
             return_order.action_confirm()
-            return_order.tasks_ids.sudo().write({
-                'stage_id': self.company_id.rma_done_stage.id,
-            })
-            latest_picking.repair_ids.sudo().write({
-                'task_order_id': return_order.id,
-            })
+            repair_order.return_task_id = return_order.tasks_ids[:1].id
 
         return repair_order
