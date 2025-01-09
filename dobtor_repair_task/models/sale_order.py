@@ -25,15 +25,8 @@ class SaleOrder(models.Model):
 
     def sale_create_return(self):
         repair_order = super().sale_create_return()
-        latest_picking = self.env["stock.picking"].search([
-            ("id", "in", self.picking_ids.ids),
-            ("state", "not in", ["cancel"])
-        ], order="create_date desc", limit=1)
 
-        if not (latest_picking and latest_picking.return_id and latest_picking.repair_ids):
-            return
-
-        if self.company_id.return_task_product:
+        if repair_order and self.env.context.get('task_create'):
             return_task_product = self.company_id.return_task_product
             taxes = return_task_product.taxes_id._filter_taxes_by_company(self.company_id)
             taxes_ids = taxes.ids
@@ -41,7 +34,7 @@ class SaleOrder(models.Model):
             if self.partner_id and self.fiscal_position_id:
                 taxes_ids = self.fiscal_position_id.map_tax(taxes).ids
 
-            distributor = self.partner_id.distributor
+            distributor = repair_order.partner_id.commercial_partner_id.distributor
             return_order = self.copy()
             return_order.order_line = [(5, 0, 0), (0, 0, {
                 'order_id': return_order.id,
