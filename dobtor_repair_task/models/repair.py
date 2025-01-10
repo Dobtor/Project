@@ -12,12 +12,12 @@ class Repair(models.Model):
         return_picking = super().action_return_picking()
 
         if return_picking:
-            partner = self.partner_id
+            partner = self.partner_id.commercial_partner_id
             repair_return_task_product = self.company_id.repair_return_task_product
             SaleOrderSudo = self.env['sale.order'].sudo()
             return_task_order = SaleOrderSudo.create({
-                'partner_id': partner.commercial_partner_id.id,
-                'partner_shipping_id': partner.id,
+                'partner_id': partner.id,
+                'partner_shipping_id': self.partner_id.id,
                 'order_line': [(0, 0, {
                     'product_uom_qty': 1,
                     'product_uom': repair_return_task_product.uom_id.id,
@@ -26,5 +26,5 @@ class Repair(models.Model):
                 })],
             })
             return_task_order.action_confirm()
-            return_picking.repair_task_id = return_task_order.task_ids[:1].id
+            self.repair_task_id = return_task_order.tasks_ids[:1].id
         return return_picking
