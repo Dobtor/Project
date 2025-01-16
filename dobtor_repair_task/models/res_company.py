@@ -6,7 +6,6 @@ class ResCompany(models.Model):
 
     def _get_task_product_domain(self):
         return [
-            ('website_published', '=', True),
             ('sale_ok', '=', True),
             ('detailed_type', '=', 'service'),
             ('service_tracking', '=', 'task_global_project'),
