@@ -20,6 +20,10 @@
                         <setting id="rma_done_stage">
                             <field name="rma_done_stage"/>
                         </setting>
+                        <setting id="return_task_init_stage">
+                            <field name="return_task_init_stage"/>
+                        </setting>
+                        
                         <setting id="installation_task_product">
                             <field name="installation_task_product"/>
                         </setting>

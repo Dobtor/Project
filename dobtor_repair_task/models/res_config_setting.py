@@ -13,3 +13,4 @@ class ResConfigSettings(models.TransientModel):
     repair_task_product = fields.Many2one('product.product', related='company_id.repair_task_product', string='Repair Task Product', readonly=False)
     repair_return_task_product = fields.Many2one('product.product', related='company_id.repair_return_task_product', string='Repair(Return) Task Product', readonly=False)
     return_task_product = fields.Many2one('product.product', related='company_id.return_task_product', string='Return Task Product', readonly=False)
+    return_task_init_stage = fields.Many2one('project.task.type', related='company_id.return_task_init_stage', string='Return Task Init Stage', readonly=False)

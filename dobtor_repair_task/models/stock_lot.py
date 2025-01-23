@@ -25,5 +25,6 @@ class StockLot(models.Model):
             })
             repair_task_order.action_confirm()
             repair_order.return_task_id = repair_task_order.tasks_ids[:1].id
+            repair_order.return_task_id.stage_id = repair_order.return_task_id.company_id.return_task_init_stage
 
         return repair_order
