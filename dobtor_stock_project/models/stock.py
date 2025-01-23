@@ -17,8 +17,8 @@ class StockPicking(models.Model):
             tasks_ids = None
             if "repair_task_id" in self.env["repair.order"]._fields and picking.return_id:
                 tasks_ids = picking and picking.return_id and picking.return_id.repair_ids and picking.return_id.repair_ids.repair_task_id 
-            if order and order.task_ids:
-                tasks_ids = order.task_ids
+            if order and order.task_id:
+                tasks_ids = order.task_id
             if tasks_ids:
                 if order:
                     all_done = all(p.state == "done" for p in order.picking_ids)
