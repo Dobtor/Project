@@ -27,11 +27,12 @@ class ShippingEcpayModel(models.Model):
                     
                     delivery_complte_stage = self.env.company.delivery_complete_stage
                     picking = self.env["stock.picking"].search([("logistic_ecpay_id", "=", ecpay.id)], limit=1)
+                    task_ids = None
                     if "repair_task_id" in self.env["repair.order"]._fields and picking.return_id:
                         task_ids = picking and picking.return_id and picking.return_id.repair_ids and picking.return_id.repair_ids.repair_task_id 
                     
-                    if ecpay.ReferenceNo and ecpay.ReferenceNo.task_ids:
-                        task_ids = ecpay.ReferenceNo.task_ids
+                    if ecpay.ReferenceNo and ecpay.ReferenceNo.tasks_ids:
+                        task_ids = ecpay.ReferenceNo.tasks_ids
                         
                     if logistics_code and delivery_complte_stage:
                         task_ids.sudo().write({

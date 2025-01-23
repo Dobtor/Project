@@ -19,3 +19,4 @@ class ResCompany(models.Model):
     repair_task_product = fields.Many2one('product.product', string='Repair Task Product', domain=_get_task_product_domain)
     repair_return_task_product = fields.Many2one('product.product', string='Repair(Return) Task Product', domain=_get_task_product_domain)
     return_task_product = fields.Many2one('product.product', string='Return Task Product', domain=_get_task_product_domain)
+    return_task_init_stage = fields.Many2one('project.task.type', string='Return Task Init Stage')
