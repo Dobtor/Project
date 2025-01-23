@@ -25,8 +25,9 @@ class SaleOrder(models.Model):
 
     def sale_create_return(self):
         repair_order = super().sale_create_return()
+        task_create = self.env.context.get('task_create') or True
 
-        if repair_order and self.env.context.get('task_create'):
+        if repair_order and task_create:
             return_task_product = self.company_id.return_task_product
             taxes = return_task_product.taxes_id._filter_taxes_by_company(self.company_id)
             taxes_ids = taxes.ids
