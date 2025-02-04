@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <record id="view_repair_order_form_inherit_task" model="ir.ui.view">
+            <field name="name">repair.form.inherit.task</field>
+            <field name="model">repair.order</field>
+            <field name="inherit_id" ref="repair.view_repair_order_form"/>
+            <field name="arch" type="xml">
+                <xpath expr="//div[hasclass('oe_button_box')]" position="inside">
+                    <button class="oe_stat_button"
+                            type="object" name="action_view_return_task" icon="fa-tasks"
+                            invisible="not return_task_id">
+                            <field name="return_task_id" invisible="1"/>
+                            <div class="o_stat_info">
+                                <span class="o_stat_text">Return Task</span>
+                            </div>
+                    </button>
+                    <button class="oe_stat_button"
+                            type="object" name="action_view_repair_return_task" icon="fa-tasks"
+                            invisible="not repair_task_id">
+                            <field name="repair_task_id" invisible="1"/>
+                            <div class="o_stat_info">
+                                <span class="o_stat_text">Repair Return Task</span>
+                            </div>
+                    </button>
+                </xpath>
+            </field>
+        </record>
+    </data>
+</odoo>

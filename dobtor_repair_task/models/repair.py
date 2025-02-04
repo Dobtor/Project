@@ -28,3 +28,17 @@ class Repair(models.Model):
             return_task_order.action_confirm()
             self.repair_task_id = return_task_order.tasks_ids[:1].id
         return return_picking
+
+    def action_view_return_task(self):
+        action = self.env['ir.actions.act_window']._for_xml_id('project.action_view_all_task')
+        action['view_mode'] = 'form'
+        action['res_id'] = self.return_task_id.id
+        action['views'] = []
+        return action
+    
+    def action_view_repair_return_task(self):
+        action = self.env['ir.actions.act_window']._for_xml_id('project.action_view_all_task')
+        action['view_mode'] = 'form'
+        action['res_id'] = self.repair_task_id.id
+        action['views'] = []
+        return action
