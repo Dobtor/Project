@@ -7,7 +7,7 @@ class StockLot(models.Model):
     
     def create_repair_order(self):
         repair_order = super().create_repair_order()
-        task_create = self.env.context.get('task_create') or True
+        task_create = self.env.context['task_create'] if 'task_create' in self.env.context else True
         
         if repair_order and task_create:
             partner = repair_order.partner_id.commercial_partner_id

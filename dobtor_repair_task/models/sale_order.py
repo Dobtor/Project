@@ -25,7 +25,7 @@ class SaleOrder(models.Model):
 
     def sale_create_return(self):
         repair_order = super().sale_create_return()
-        task_create = self.env.context.get('task_create') or True
+        task_create = self.env.context['task_create'] if 'task_create' in self.env.context else True
 
         if repair_order and task_create:
             return_task_product = self.company_id.return_task_product
