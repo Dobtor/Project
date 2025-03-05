@@ -34,7 +34,7 @@ class ShippingEcpayModel(models.Model):
                     if ecpay.ReferenceNo and ecpay.ReferenceNo.tasks_ids:
                         task_ids = ecpay.ReferenceNo.tasks_ids
                         
-                    if logistics_code and delivery_complte_stage:
+                    if task_ids and logistics_code and delivery_complte_stage:
                         task_ids.sudo().write({
                             "stage_id": delivery_complte_stage.id
                         })
