@@ -11,7 +11,7 @@ class Repair(models.Model):
     def action_return_picking(self):
         return_picking = super().action_return_picking()
 
-        if return_picking:
+        if return_picking and self.return_task_id:
             partner = self.partner_id.commercial_partner_id
             repair_return_task_product = self.company_id.repair_return_task_product
             SaleOrderSudo = self.env['sale.order'].sudo()
