@@ -35,8 +35,15 @@ class ShippingEcpayModel(models.Model):
                         task_ids = ecpay.ReferenceNo.tasks_ids
                         
                     if task_ids and logistics_code and delivery_complte_stage:
-                        task_ids.sudo().write({
-                            "stage_id": delivery_complte_stage.id
-                        })
+                        if 'cancel_stage' in self.env['res.company']._fields:
+                            cancel_stage = self.env.company.cancel_stage
+                            if cancel_stage:
+                                # 過濾掉已經是取消階段的任務
+                                task_ids = task_ids.filtered(lambda t: t.stage_id != cancel_stage)
+                        
+                        if task_ids:
+                            task_ids.sudo().write({
+                                "stage_id": delivery_complte_stage.id
+                            })
                 
         return res
