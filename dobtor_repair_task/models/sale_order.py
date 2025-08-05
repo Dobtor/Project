@@ -27,6 +27,17 @@ class SaleOrder(models.Model):
         repair_order = super().sale_create_return()
         task_create = self.env.context['task_create'] if 'task_create' in self.env.context else True
 
+        if self.company_id.cancel_stage:
+            tasks_to_cancel = self.tasks_ids
+
+            if self.company_id.done_stage:
+                tasks_to_cancel = tasks_to_cancel.filtered(lambda t: t.stage_id != self.company_id.done_stage)
+            
+            if tasks_to_cancel:
+                tasks_to_cancel.write({
+                    'stage_id': self.company_id.cancel_stage.id
+                })
+
         if repair_order and task_create:
             return_task_product = self.company_id.return_task_product
             taxes = return_task_product.taxes_id._filter_taxes_by_company(self.company_id)
