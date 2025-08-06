@@ -23,20 +23,33 @@ class SaleOrder(models.Model):
             else:
                 order.amount_project = sum(project_lines.mapped('price_total'))
 
+    def _cancel_related_tasks(self):
+        """取消相關派工的共用方法"""
+        self.ensure_one()
+        company = self.company_id
+        if not company.cancel_stage:
+            return
+            
+        tasks_to_cancel = self.tasks_ids.filtered(
+            lambda t: company.cancel_stage in t.project_id.type_ids
+        )
+        
+        # 排除已完成的任務
+        if company.done_stage:
+            tasks_to_cancel = tasks_to_cancel.filtered(
+                lambda t: t.stage_id != company.done_stage
+            )
+        
+        if tasks_to_cancel:
+            tasks_to_cancel.write({
+                'stage_id': company.cancel_stage.id
+            })
+
     def sale_create_return(self):
         repair_order = super().sale_create_return()
         task_create = self.env.context['task_create'] if 'task_create' in self.env.context else True
 
-        if self.company_id.cancel_stage:
-            tasks_to_cancel = self.tasks_ids
-
-            if self.company_id.done_stage:
-                tasks_to_cancel = tasks_to_cancel.filtered(lambda t: t.stage_id != self.company_id.done_stage)
-            
-            if tasks_to_cancel:
-                tasks_to_cancel.write({
-                    'stage_id': self.company_id.cancel_stage.id
-                })
+        self._cancel_related_tasks()
 
         if repair_order and task_create:
             return_task_product = self.company_id.return_task_product
@@ -61,3 +74,9 @@ class SaleOrder(models.Model):
             repair_order.return_task_id.stage_id = repair_order.return_task_id.company_id.return_task_init_stage
 
         return repair_order
+    
+    def _action_cancel(self):
+        res = super()._action_cancel()
+        for order in self:
+            order._cancel_related_tasks()
+        return res
