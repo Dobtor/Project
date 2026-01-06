@@ -16,8 +16,9 @@ class StockPicking(models.Model):
             order = self.env["sale.order"].search([("picking_ids", "in", [picking.id])], limit=1)
             tasks_ids = None
             if "repair_task_id" in self.env["repair.order"]._fields and picking.return_id:
-                tasks_ids = picking and picking.return_id and picking.return_id.repair_ids and picking.return_id.repair_ids.repair_task_id 
-            if order and order.tasks_ids:
+                # 退貨入庫單：只處理維修相關的派工單，不影響原始訂單的派工單
+                tasks_ids = picking and picking.return_id and picking.return_id.repair_ids and picking.return_id.repair_ids.repair_task_id
+            elif order and order.tasks_ids:
                 tasks_ids = order.tasks_ids
             if tasks_ids:
                 if order:
