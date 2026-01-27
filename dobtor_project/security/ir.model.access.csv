@@ -1,0 +1,5 @@
+"id","name","model_id:id","group_id:id","perm_read","perm_write","perm_create","perm_unlink"
+access_project_task_predecessor_user,project.task.predecessor.user,model_project_task_predecessor,project.group_project_user,1,1,1,1
+access_project_task_detail_plan_user,project.task.detail.plan.user,model_project_task_detail_plan,project.group_project_user,1,1,1,1
+access_project_task_info_user,project.task.info.user,model_project_task_info,project.group_project_user,1,1,1,1
+access_project_task_resource_link_user,project.task.resource.link.user,model_project_task_resource_link,project.group_project_user,1,1,1,1

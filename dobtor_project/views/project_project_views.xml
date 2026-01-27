@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <data>
+        <!-- Project Form View Extension -->
+        <record id="edit_project_ganttaps_inherited" model="ir.ui.view">
+            <field name="name">project.project.ganttaps.edit.inherited</field>
+            <field name="model">project.project</field>
+            <field name="inherit_id" ref="project.edit_project"/>
+            <field name="priority">24</field>
+            <field name="arch" type="xml">
+                <xpath expr="//notebook" position="inside">
+                    <page string="Gantt View" name="gantt_settings">
+                        <group>
+                            <group string="Tasks in Auto Mode">
+                                <field name="scheduling_type"/>
+                                <field name="schedule_start" invisible="scheduling_type == 'backward'"/>
+                                <field name="schedule_end" invisible="scheduling_type == 'forward'"/>
+                                <field name="use_calendar"/>
+                                <field name="tz" widget="timezone_mismatch" options="{'tz_offset_field': 'tz_offset'}"/>
+                                <field name="tz_offset" invisible="1"/>
+                            </group>
+
+                            <group string="Default for Task">
+                                <field name="task_default_duration" widget="float_time"/>
+                                <field name="task_default_start" widget="float_time"/>
+                                <field name="detail_plan"/>
+                            </group>
+
+                            <field name="task_default_start_end"/>
+
+                            <group name="duration_scale" string="Duration Scale">
+                                <field name="duration_scale"/>
+                                <field name="duration_picker"/>
+                            </group>
+
+                            <group name="critical_path" string="Critical Path">
+                                <field name="cp_shows"/>
+                                <field name="cp_detail"/>
+                            </group>
+                        </group>
+                    </page>
+                </xpath>
+            </field>
+        </record>
+    </data>
+</odoo>

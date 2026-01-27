@@ -1,0 +1,229 @@
+# Translation of Odoo Server.
+# This file contains the translation of the following modules:
+# 	* dobtor_project
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Odoo Server 18.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2024-01-01 00:00+0000\n"
+"PO-Revision-Date: 2024-01-01 00:00+0000\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: \n"
+"Plural-Forms: \n"
+
+#. module: dobtor_project
+#: model:ir.model,name:dobtor_project.model_project_project
+msgid "Project"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model,name:dobtor_project.model_project_task
+msgid "Task"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model,name:dobtor_project.model_project_task_predecessor
+msgid "Project Task Predecessor"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model,name:dobtor_project.model_project_task_detail_plan
+msgid "Project Task Detail Plan"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model,name:dobtor_project.model_project_task_info
+msgid "Project Task Info"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model,name:dobtor_project.model_project_task_resource_link
+msgid "Project Task Resource Link"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-python
+#: code:addons/dobtor_project/models/project_project.py
+msgid "Forward"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-python
+#: code:addons/dobtor_project/models/project_project.py
+msgid "Backward"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-python
+#: code:addons/dobtor_project/models/project_project.py
+msgid "Manual"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_project_project__use_calendar
+msgid "Use Calendar"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_project_project__scheduling_type
+msgid "Scheduling Type"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_project_project__date_start
+msgid "Starting Date"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_project_project__date_end
+msgid "Ending Date"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_project_project__task_default_duration
+msgid "Task Duration"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_project_project__cp_shows
+msgid "Critical Path"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_project_project__detail_plan
+msgid "Detail Plan"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-python
+#: code:addons/dobtor_project/models/project_task.py
+msgid "Auto"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-python
+#: code:addons/dobtor_project/models/project_task.py
+msgid "As Soon As Possible"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-python
+#: code:addons/dobtor_project/models/project_task.py
+msgid "As Late As Possible"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_project_task__is_milestone
+msgid "Mark as Milestone"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_project_task__schedule_mode
+msgid "Schedule Mode"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_project_task__constrain_type
+msgid "Constraint Type"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-python
+#: code:addons/dobtor_project/models/gantt_native_predecessor.py
+msgid "Finish to Start (FS)"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-python
+#: code:addons/dobtor_project/models/gantt_native_predecessor.py
+msgid "Start to Start (SS)"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-python
+#: code:addons/dobtor_project/models/gantt_native_predecessor.py
+msgid "Finish to Finish (FF)"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-python
+#: code:addons/dobtor_project/models/gantt_native_predecessor.py
+msgid "Start to Finish (SF)"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_gantt_native_predecessor__lag_type
+msgid "Lag type"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_gantt_native_predecessor__lag_qty
+msgid "Lag"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_project_task__task_resource_ids
+msgid "Resources"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_project_task_resource_link__load_factor
+msgid "Load Factor"
+msgstr ""
+
+#. module: dobtor_project
+#: model:ir.model.fields,field_description:dobtor_project.field_project_task_resource_link__load_control
+msgid "Load Control"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-javascript
+#: code:addons/dobtor_project/static/src/components/gantt_view/gantt_controller.js
+msgid "1 Hour"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-javascript
+#: code:addons/dobtor_project/static/src/components/gantt_view/gantt_controller.js
+msgid "Days"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-javascript
+#: code:addons/dobtor_project/static/src/components/gantt_view/gantt_controller.js
+msgid "Weeks"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-javascript
+#: code:addons/dobtor_project/static/src/components/gantt_view/gantt_controller.js
+msgid "Month"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-javascript
+#: code:addons/dobtor_project/static/src/components/gantt_view/gantt_view.xml
+msgid "Today"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-javascript
+#: code:addons/dobtor_project/static/src/components/gantt_view/gantt_view.xml
+msgid "Run Scheduler"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-javascript
+#: code:addons/dobtor_project/static/src/components/gantt_view/gantt_view.xml
+msgid "Task Name"
+msgstr ""
+
+#. module: dobtor_project
+#. odoo-javascript
+#: code:addons/dobtor_project/static/src/components/gantt_view/gantt_view.xml
+msgid "No Tasks"
+msgstr ""

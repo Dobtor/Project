@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Multi-company Record Rules for Odoo 18 -->
+
+        <!-- Project Task Predecessor: Multi-company rule -->
+        <record id="project_task_predecessor_multi_company_rule" model="ir.rule">
+            <field name="name">Project Task Predecessor: Multi-company</field>
+            <field name="model_id" ref="model_project_task_predecessor"/>
+            <field name="domain_force">[
+                '|',
+                ('task_id.company_id', '=', False),
+                ('task_id.company_id', 'in', company_ids)
+            ]</field>
+        </record>
+
+        <!-- Project Task Detail Plan: Multi-company rule -->
+        <record id="project_task_detail_plan_multi_company_rule" model="ir.rule">
+            <field name="name">Project Task Detail Plan: Multi-company</field>
+            <field name="model_id" ref="model_project_task_detail_plan"/>
+            <field name="domain_force">[
+                '|',
+                ('task_id.company_id', '=', False),
+                ('task_id.company_id', 'in', company_ids)
+            ]</field>
+        </record>
+
+        <!-- Project Task Info: Multi-company rule -->
+        <record id="project_task_info_multi_company_rule" model="ir.rule">
+            <field name="name">Project Task Info: Multi-company</field>
+            <field name="model_id" ref="model_project_task_info"/>
+            <field name="domain_force">[
+                '|',
+                ('task_id.company_id', '=', False),
+                ('task_id.company_id', 'in', company_ids)
+            ]</field>
+        </record>
+
+        <!-- Project Task Resource Link: Multi-company rule -->
+        <record id="project_task_resource_link_multi_company_rule" model="ir.rule">
+            <field name="name">Project Task Resource Link: Multi-company</field>
+            <field name="model_id" ref="model_project_task_resource_link"/>
+            <field name="domain_force">[
+                '|',
+                ('task_id.company_id', '=', False),
+                ('task_id.company_id', 'in', company_ids)
+            ]</field>
+        </record>
+
+    </data>
+</odoo>

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <data>
+        <!-- Resource Form View Extension -->
+        <record id="view_resource_form_ganttaps" model="ir.ui.view">
+            <field name="name">resource.resource.form.ganttaps</field>
+            <field name="model">resource.resource</field>
+            <field name="inherit_id" ref="resource.resource_resource_form"/>
+            <field name="arch" type="xml">
+                <xpath expr="//sheet" position="inside">
+                    <notebook>
+                        <page string="Task Assignments" name="task_assignments">
+                            <field name="resource_task_ids" nolabel="1">
+                                <list string="Task Assignments" editable="bottom">
+                                    <field name="task_id"/>
+                                    <field name="project_id"/>
+                                    <field name="load_factor"/>
+                                    <field name="load_control"/>
+                                    <field name="date_start"/>
+                                    <field name="date_end"/>
+                                    <field name="duration" widget="float_time"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
+                </xpath>
+            </field>
+        </record>
+    </data>
+</odoo>

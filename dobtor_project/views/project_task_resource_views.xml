@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <data>
+        <!-- Task Resource Link List View (Odoo 18: tree renamed to list) -->
+        <record id="view_project_task_resource_link_list" model="ir.ui.view">
+            <field name="name">project.task.resource.link.list</field>
+            <field name="model">project.task.resource.link</field>
+            <field name="arch" type="xml">
+                <list string="Resource Links" editable="bottom">
+                    <field name="task_id"/>
+                    <field name="resource_id"/>
+                    <field name="load_factor"/>
+                    <field name="resource_type"/>
+                    <field name="load_control"/>
+                    <field name="date_start"/>
+                    <field name="date_end"/>
+                    <field name="duration" widget="float_time"/>
+                    <field name="project_id"/>
+                </list>
+            </field>
+        </record>
+
+        <!-- Task Resource Link Form View -->
+        <record id="view_project_task_resource_link_form" model="ir.ui.view">
+            <field name="name">project.task.resource.link.form</field>
+            <field name="model">project.task.resource.link</field>
+            <field name="arch" type="xml">
+                <form string="Resource Link">
+                    <sheet>
+                        <group>
+                            <group>
+                                <field name="task_id"/>
+                                <field name="resource_id"/>
+                                <field name="load_factor"/>
+                            </group>
+                            <group>
+                                <field name="resource_type"/>
+                                <field name="load_control"/>
+                                <field name="project_id"/>
+                            </group>
+                        </group>
+                        <group>
+                            <group>
+                                <field name="date_start"/>
+                                <field name="date_end"/>
+                            </group>
+                            <group>
+                                <field name="duration" widget="float_time"/>
+                            </group>
+                        </group>
+                    </sheet>
+                </form>
+            </field>
+        </record>
+
+        <!-- Task Detail Plan List View (Odoo 18: tree renamed to list) -->
+        <record id="view_project_task_detail_plan_list" model="ir.ui.view">
+            <field name="name">project.task.detail.plan.list</field>
+            <field name="model">project.task.detail.plan</field>
+            <field name="arch" type="xml">
+                <list string="Detail Plan">
+                    <field name="name"/>
+                    <field name="task_id"/>
+                    <field name="type_level"/>
+                    <field name="data_from"/>
+                    <field name="data_to"/>
+                    <field name="duration" widget="float_time"/>
+                    <field name="resource_id"/>
+                    <field name="data_aggr"/>
+                </list>
+            </field>
+        </record>
+
+        <!-- Task Predecessor List View (Odoo 18: tree renamed to list) -->
+        <record id="view_project_task_predecessor_list" model="ir.ui.view">
+            <field name="name">project.task.predecessor.list</field>
+            <field name="model">project.task.predecessor</field>
+            <field name="arch" type="xml">
+                <list string="Predecessors" editable="bottom">
+                    <field name="task_id"/>
+                    <field name="parent_task_id"/>
+                    <field name="type"/>
+                    <field name="lag_qty"/>
+                    <field name="lag_type"/>
+                </list>
+            </field>
+        </record>
+
+        <!-- Task Info List View (Odoo 18: tree renamed to list) -->
+        <record id="view_project_task_info_list" model="ir.ui.view">
+            <field name="name">project.task.info.list</field>
+            <field name="model">project.task.info</field>
+            <field name="arch" type="xml">
+                <list string="Task Info">
+                    <field name="name"/>
+                    <field name="task_id"/>
+                    <field name="start"/>
+                    <field name="end"/>
+                    <field name="left_up"/>
+                    <field name="left_down"/>
+                    <field name="right_up"/>
+                    <field name="right_down"/>
+                    <field name="show"/>
+                </list>
+            </field>
+        </record>
+    </data>
+</odoo>
