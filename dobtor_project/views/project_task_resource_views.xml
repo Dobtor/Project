@@ -86,6 +86,47 @@
             </field>
         </record>
 
+        <!-- Resource Link Gantt View -->
+        <record id="view_project_task_resource_link_ganttaps" model="ir.ui.view">
+            <field name="name">project.task.resource.link.ganttaps</field>
+            <field name="model">project.task.resource.link</field>
+            <field name="type">ganttaps</field>
+            <field name="arch" type="xml">
+                <ganttaps
+                    default_group_by="resource_id"
+                    main_group_id_name="resource_id"
+                    name="name"
+                    date_start="date_start"
+                    date_stop="date_end"
+                    duration="duration"
+                    limit_view="500"
+                >
+                </ganttaps>
+            </field>
+        </record>
+
+        <!-- Detail Plan Gantt View -->
+        <record id="view_project_task_detail_plan_ganttaps" model="ir.ui.view">
+            <field name="name">project.task.detail.plan.ganttaps</field>
+            <field name="model">project.task.detail.plan</field>
+            <field name="type">ganttaps</field>
+            <field name="arch" type="xml">
+                <ganttaps
+                    default_group_by="task_id"
+                    main_group_id_name="task_id"
+                    name="name"
+                    date_start="data_from"
+                    date_stop="data_to"
+                    duration="duration"
+                    color_gantt_set="color_gantt_set"
+                    color_gantt="color_gantt"
+                    schedule_mode="schedule_mode"
+                    limit_view="1000"
+                >
+                </ganttaps>
+            </field>
+        </record>
+
         <!-- Task Info List View (Odoo 18: tree renamed to list) -->
         <record id="view_project_task_info_list" model="ir.ui.view">
             <field name="name">project.task.info.list</field>

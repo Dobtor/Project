@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from odoo import models, fields
+from odoo import models
 
 
 class ProjectTaskNativeSchedulerCalendar(models.Model):
@@ -72,24 +72,22 @@ class ProjectTaskNativeSchedulerCalendar(models.Model):
 
     def add_leave(self, cal_obj, leave_ids, task_resource=None):
         if not task_resource:
-            # In Odoo 18, leave_ids is now global_leave_ids
-            global_leaves = cal_obj.global_leave_ids if hasattr(cal_obj, 'global_leave_ids') else cal_obj.leave_ids if hasattr(cal_obj, 'leave_ids') else []
-            for leave_id in global_leaves:
+            # Odoo 18: global leaves are in global_leave_ids
+            for leave_id in cal_obj.global_leave_ids:
                 cal_leave_search = list(filter(lambda x: x["leave_id"] == str(leave_id.id), leave_ids))
                 if len(cal_leave_search) == 0:
                     leave_ids = self.add_leave_append(leave_id, leave_ids)
         else:
             cal_search = list(filter(lambda x: x["calendar_id"] == str(cal_obj.id), leave_ids))
             if len(cal_search) == 0:
-                global_leaves = cal_obj.global_leave_ids if hasattr(cal_obj, 'global_leave_ids') else []
-                for leave_id in global_leaves:
+                for leave_id in cal_obj.global_leave_ids:
                     if task_resource.id == leave_id.resource_id.id or not leave_id.resource_id.id:
                         leave_ids = self.add_leave_append(leave_id, leave_ids)
 
         return leave_ids
 
     def add_leave_level(self, cal_id, res_id, leave_ids, task_ids):
-        dp_records = self.env['project.task.detail.plan'].sudo().search([
+        dp_records = self.env['project.task.detail.plan'].search([
             ('resource_id', '=', res_id.id),
             ('task_id', 'not in', task_ids)
         ])
@@ -100,8 +98,8 @@ class ProjectTaskNativeSchedulerCalendar(models.Model):
                 "calendar_id": str(cal_id.id),
                 "resource_id": str(res_id.id),
                 "name": dp_record.name,
-                "date_from": fields.Datetime.to_string(dp_record.data_from),
-                "date_to": fields.Datetime.to_string(dp_record.data_to),
+                "date_from": dp_record.data_from,
+                "date_to": dp_record.data_to,
                 "flag_task": None,
                 "flag_project": None
             })
@@ -116,8 +114,8 @@ class ProjectTaskNativeSchedulerCalendar(models.Model):
                 attendance_ids.append({
                     "calendar_id": str(att_id.calendar_id.id),
                     "display_name": att_id.display_name,
-                    "date_from": fields.Date.from_string(att_id.date_from) if att_id.date_from else False,
-                    "date_to": fields.Date.from_string(att_id.date_to) if att_id.date_to else False,
+                    "date_from": att_id.date_from or False,
+                    "date_to": att_id.date_to or False,
                     "hour_from": att_id.hour_from,
                     "hour_to": att_id.hour_to,
                     "dayofweek": str(att_id.dayofweek),

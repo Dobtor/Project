@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from odoo import models, fields
+from odoo import models
 from datetime import timedelta
 import pytz
 
@@ -210,8 +210,8 @@ class ProjectTaskNativeCalendar(models.Model):
         """Check if work period falls within leave period"""
         if tz_name:
             for global_leave_id in global_leave_ids:
-                dt_leave_from = fields.Datetime.from_string(global_leave_id["date_from"])
-                dt_leave_to = fields.Datetime.from_string(global_leave_id["date_to"])
+                dt_leave_from = global_leave_id["date_from"]
+                dt_leave_to = global_leave_id["date_to"]
 
                 dt_leave_from = self.to_tz(dt_leave_from, tz_name)
                 dt_leave_to = self.to_tz(dt_leave_to, tz_name)

@@ -101,6 +101,7 @@ class ProjectTaskNative(models.Model):
         default=False
     )
     date_finished = fields.Datetime(string='Done Date')
+    progress = fields.Float(string="Progress", default=0)
 
     # Info - autoplanning
     duration = fields.Integer(
@@ -137,7 +138,7 @@ class ProjectTaskNative(models.Model):
         default=86400
     )
 
-    # Redefine default - using date_start from base project.task
+    # Redefine defaults - using date_start/date_end from base project.task
     date_start = fields.Datetime(
         string='Starting Date',
         default=_default_date_start,
@@ -145,7 +146,12 @@ class ProjectTaskNative(models.Model):
         copy=False
     )
 
-    # Note: date_end exists in Odoo 18 project.task
+    date_end = fields.Datetime(
+        string='Ending Date',
+        default=_default_date_end,
+        index=True,
+        copy=False
+    )
 
     # Color
     color_gantt_set = fields.Boolean(
@@ -176,15 +182,19 @@ class ProjectTaskNative(models.Model):
     )
 
     # Summary dates
+    # Note: recursive=True is required because _get_summary_date depends on
+    # child_ids.summary_date_start and child_ids.summary_date_end (self-referential)
     summary_date_start = fields.Datetime(
         compute='_get_summary_date',
         string="Summary Date Start",
-        store=False
+        store=False,
+        recursive=True
     )
     summary_date_end = fields.Datetime(
         compute='_get_summary_date',
         string="Summary Date End",
-        store=False
+        store=False,
+        recursive=True
     )
 
     # Loop detection

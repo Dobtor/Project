@@ -1,0 +1,188 @@
+# -*- coding: utf-8 -*-
+
+import re
+from datetime import datetime, timedelta
+from xml.dom import minidom
+from xml.etree import ElementTree as ET
+
+
+def prettify(elem):
+    """Return a pretty-printed XML string for the Element."""
+    rough = ET.tostring(elem, encoding='unicode')
+    reparsed = minidom.parseString(rough)
+    return reparsed.toprettyxml(indent="  ")
+
+
+# ---------------------------------------------------------------------------
+# Date conversion
+# ---------------------------------------------------------------------------
+
+DATE_FMT = "%Y-%m-%dT%H:%M:%S"
+
+
+def odoo_dt_to_xml(dt_str):
+    """Convert Odoo datetime string to XML format."""
+    if not dt_str:
+        return ""
+    if isinstance(dt_str, datetime):
+        return dt_str.strftime(DATE_FMT)
+    return str(dt_str).replace(" ", "T")[:19]
+
+
+def xml_dt_to_odoo(xml_str):
+    """Convert XML datetime string to Odoo datetime string."""
+    if not xml_str:
+        return False
+    try:
+        return datetime.strptime(xml_str[:19], DATE_FMT).strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# ISO 8601 duration
+# ---------------------------------------------------------------------------
+
+def seconds_to_iso8601(seconds):
+    """Convert seconds (int/float) to ISO 8601 duration: PT8H0M0S"""
+    if not seconds:
+        return "PT0H0M0S"
+    total = int(seconds)
+    h, rem = divmod(abs(total), 3600)
+    m, s = divmod(rem, 60)
+    return f"PT{h}H{m}M{s}S"
+
+
+def iso8601_to_seconds(iso_str):
+    """Convert ISO 8601 duration PT8H0M0S to seconds."""
+    if not iso_str:
+        return 0
+    match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', iso_str)
+    if not match:
+        return 0
+    h = int(match.group(1) or 0)
+    m = int(match.group(2) or 0)
+    s = int(match.group(3) or 0)
+    return h * 3600 + m * 60 + s
+
+
+# ---------------------------------------------------------------------------
+# Boolean / mode mappers
+# ---------------------------------------------------------------------------
+
+def bool_to_xml(val):
+    return "1" if val else "0"
+
+
+def xml_to_bool(val):
+    return val == "1" or val == "true"
+
+
+SCHEDULE_MODE_MAP = {"auto": "0", "manual": "1"}
+SCHEDULE_MODE_MAP_REV = {"0": "auto", "1": "manual"}
+
+
+def schedule_mode_to_xml(mode):
+    return SCHEDULE_MODE_MAP.get(mode, "1")
+
+
+def xml_to_schedule_mode(val):
+    return SCHEDULE_MODE_MAP_REV.get(val, "manual")
+
+
+SCHEDULING_TYPE_MAP = {"backward": "0", "forward": "1"}
+SCHEDULING_TYPE_MAP_REV = {"0": "backward", "1": "forward"}
+
+
+def scheduling_type_to_xml(stype):
+    return SCHEDULING_TYPE_MAP.get(stype, "1")
+
+
+def xml_to_scheduling_type(val):
+    return SCHEDULING_TYPE_MAP_REV.get(val, "forward")
+
+
+# ---------------------------------------------------------------------------
+# Constraint type mapping (8 types)
+# ---------------------------------------------------------------------------
+
+CONSTRAINT_MAP = {
+    "asap": "0", "alap": "1",
+    "mso": "2", "mfo": "3",
+    "snet": "4", "snlt": "5",
+    "fnet": "6", "fnlt": "7",
+}
+CONSTRAINT_MAP_REV = {v: k for k, v in CONSTRAINT_MAP.items()}
+
+
+def constraint_type_to_xml(ctype):
+    return CONSTRAINT_MAP.get(ctype, "0")
+
+
+def xml_to_constraint_type(val):
+    return CONSTRAINT_MAP_REV.get(val, "asap")
+
+
+# ---------------------------------------------------------------------------
+# Predecessor link type mapping
+# ---------------------------------------------------------------------------
+
+PRED_TYPE_MAP = {"FF": "0", "FS": "1", "SF": "2", "SS": "3"}
+PRED_TYPE_MAP_REV = {v: k for k, v in PRED_TYPE_MAP.items()}
+
+
+def pred_type_to_xml(ptype):
+    return PRED_TYPE_MAP.get(ptype, "1")
+
+
+def xml_to_pred_type(val):
+    return PRED_TYPE_MAP_REV.get(val, "FS")
+
+
+# ---------------------------------------------------------------------------
+# Lag format mapping
+# ---------------------------------------------------------------------------
+
+LAG_FORMAT_MAP = {
+    "minute": "3", "hour": "5",
+    "day": "7", "week": "9",
+    "month": "11", "percent": "19",
+}
+LAG_FORMAT_MAP_REV = {
+    "3": "minute", "4": "minute",
+    "5": "hour", "6": "hour",
+    "7": "day", "8": "day",
+    "9": "week", "10": "week",
+    "11": "month", "12": "month",
+    "19": "percent", "20": "percent",
+    "35": "minute", "36": "minute",
+    "37": "hour", "38": "hour",
+    "39": "day", "40": "day",
+    "41": "week", "42": "week",
+}
+
+LAG_MULTIPLIER = {
+    "minute": 10, "hour": 10,
+    "day": 4800, "week": 4800,
+    "month": 4800, "percent": 10,
+}
+
+
+def lag_format_to_xml(lag_type):
+    return LAG_FORMAT_MAP.get(lag_type, "7")
+
+
+def xml_to_lag_format(val):
+    return LAG_FORMAT_MAP_REV.get(val, "day")
+
+
+def lag_to_xml(qty, lag_type):
+    mult = LAG_MULTIPLIER.get(lag_type, 4800)
+    return str(int(qty * mult))
+
+
+def xml_to_lag(val, lag_type):
+    mult = LAG_MULTIPLIER.get(lag_type, 4800)
+    if mult == 0:
+        return 0.0
+    return float(val) / mult

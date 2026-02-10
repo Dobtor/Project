@@ -28,7 +28,7 @@ Migrated from Odoo 12 modules:
 - project_native_report
     """,
     "category": "Project",
-    "version": "18.0.1.0.0",
+    "version": "18.0.1.0.3",
     "author": "Dobtor SI",
     "license": "LGPL-3",
     "website": "https://www.dobtor.com",
@@ -45,6 +45,8 @@ Migrated from Odoo 12 modules:
         "views/project_task_views.xml",
         "views/project_task_resource_views.xml",
         "views/resource_views.xml",
+        "wizard/project_exchange_views.xml",
+        "report/project_gantt_report.xml",
     ],
     "assets": {
         "web.assets_backend": [

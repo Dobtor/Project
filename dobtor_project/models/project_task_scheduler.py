@@ -75,12 +75,12 @@ class ProjectTaskNativeScheduler(models.Model):
             late_date_end = None
 
             if scheduling_type == "forward":
-                soon_date_start = fields.Datetime.to_string(task.date_start) if task.date_start else None
-                soon_date_end = fields.Datetime.to_string(task.date_end) if task.date_end else None
+                soon_date_start = task.date_start or None
+                soon_date_end = task.date_end or None
 
             if scheduling_type == "backward":
-                late_date_start = fields.Datetime.to_string(task.date_start) if task.date_start else None
-                late_date_end = fields.Datetime.to_string(task.date_end) if task.date_end else None
+                late_date_start = task.date_start or None
+                late_date_end = task.date_end or None
 
             tasks_ap.append({
                 "id": task.id,
@@ -133,8 +133,8 @@ class ProjectTaskNativeScheduler(models.Model):
             if task_alap["constrain_type"] == "alap":
                 alap_run = False
                 if scheduling_type == "forward":
-                    soon_date_end = fields.Datetime.from_string(task_alap["soon_date_end"])
-                    late_date_end = fields.Datetime.from_string(task_alap["late_date_end"])
+                    soon_date_end = task_alap["soon_date_end"]
+                    late_date_end = task_alap["late_date_end"]
                     if late_date_end > soon_date_end:
                         alap_run = True
                         task_alap["soon_date_start"] = task_alap["late_date_start"]
@@ -142,8 +142,8 @@ class ProjectTaskNativeScheduler(models.Model):
                         if "late_detail_plan" in task_alap.keys():
                             task_alap["soon_detail_plan"] = task_alap["late_detail_plan"]
                 else:
-                    soon_date_start = fields.Datetime.from_string(task_alap["soon_date_start"])
-                    late_date_start = fields.Datetime.from_string(task_alap["late_date_start"])
+                    soon_date_start = task_alap["soon_date_start"]
+                    late_date_start = task_alap["late_date_start"]
                     if soon_date_start > late_date_start:
                         alap_run = True
                         task_alap["late_date_start"] = task_alap["soon_date_start"]
@@ -210,7 +210,7 @@ class ProjectTaskNativeScheduler(models.Model):
 
         for task in tasks_ap:
             if task[date_obj] and "calc" in task.keys():
-                prj_task_date.append(fields.Datetime.from_string(task[date_obj]))
+                prj_task_date.append(task[date_obj])
 
         if prj_task_date:
             new_date = limit(prj_task_date)
@@ -394,20 +394,18 @@ class ProjectTaskNativeScheduler(models.Model):
         new_date_end = None
 
         if date_type == "date_start":
-            new_date_start = fields.Datetime.to_string(date_input)
+            new_date_start = date_input
             if plan_duration == 0:
                 new_date_end = new_date_start
             else:
-                diff = timedelta(seconds=plan_duration)
-                new_date_end = fields.Datetime.to_string(date_input + diff)
+                new_date_end = date_input + timedelta(seconds=plan_duration)
 
         if date_type == "date_end":
-            new_date_end = fields.Datetime.to_string(date_input)
+            new_date_end = date_input
             if plan_duration == 0:
                 new_date_start = new_date_end
             else:
-                diff = timedelta(seconds=plan_duration)
-                new_date_start = fields.Datetime.to_string(date_input - diff)
+                new_date_start = date_input - timedelta(seconds=plan_duration)
 
         return new_date_start, new_date_end
 
@@ -541,10 +539,10 @@ class ProjectTaskNativeScheduler(models.Model):
             parent_task = self._task_from_list(tasks, task_id=date_obj[task_date_obj])
 
             if parent_task and parent_date_field_1 and parent_task[parent_date_field_1]:
-                parent_date = fields.Datetime.from_string(parent_task[parent_date_field_1])
+                parent_date = parent_task[parent_date_field_1]
 
                 if date_obj["lag_qty"] != 0 and parent_date and parent_task[parent_date_field_2]:
-                    parent_date_two = fields.Datetime.from_string(parent_task[parent_date_field_2])
+                    parent_date_two = parent_task[parent_date_field_2]
                     parent_date = self._predecessor_lag_timedelta(
                         parent_date, date_obj["lag_qty"], date_obj["lag_type"], parent_date_two
                     )
@@ -653,18 +651,15 @@ class ProjectTaskNativeScheduler(models.Model):
         constrain_date = task_obj["constrain_date"]
 
         if constrain_type and constrain_type not in ["asap", "alap"] and constrain_date and vals:
-            constrain_date = fields.Datetime.from_string(constrain_date)
             direction = date_type = None
 
             if constrain_type == "fnet":
-                sheduled_task_data = fields.Datetime.from_string(vals[cp_date_end])
-                if sheduled_task_data < constrain_date:
+                if vals[cp_date_end] < constrain_date:
                     direction = "revers"
                     date_type = "date_end"
 
             if constrain_type == "fnlt":
-                sheduled_task_data = fields.Datetime.from_string(vals[cp_date_end])
-                if sheduled_task_data > constrain_date:
+                if vals[cp_date_end] > constrain_date:
                     direction = "revers"
                     date_type = "date_end"
 
@@ -677,14 +672,12 @@ class ProjectTaskNativeScheduler(models.Model):
                 date_type = "date_end"
 
             if constrain_type == "snet":
-                sheduled_task_data = fields.Datetime.from_string(vals[cp_date_start])
-                if sheduled_task_data < constrain_date:
+                if vals[cp_date_start] < constrain_date:
                     direction = "normal"
                     date_type = "date_start"
 
             if constrain_type == "snlt":
-                sheduled_task_data = fields.Datetime.from_string(vals[cp_date_start])
-                if sheduled_task_data > constrain_date:
+                if vals[cp_date_start] > constrain_date:
                     direction = "normal"
                     date_type = "date_start"
 

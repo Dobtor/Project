@@ -1,85 +1,111 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo>
     <data>
-        <!-- Task Form View Extension -->
+        <!-- ============================================================ -->
+        <!-- Task Form View Extension - Integrated with Odoo 18 Structure -->
+        <!-- ============================================================ -->
         <record id="ganttaps_view_task_form2" model="ir.ui.view">
             <field name="name">project.task.ganttaps.form</field>
             <field name="model">project.task</field>
             <field name="inherit_id" ref="project.view_task_form2"/>
             <field name="priority">20</field>
             <field name="arch" type="xml">
-                <xpath expr="//notebook" position="inside">
-                    <page name="gantt_view" string="Gantt View">
-                        <group>
-                            <group>
-                                <field name="fixed_calc_type"/>
 
-                                <label for="plan_duration"
+                <!-- Add Gantt date fields to main form area (before notebook) -->
+                <xpath expr="//field[@name='tag_ids']/.." position="after">
+                    <group name="gantt_dates" col="4" invisible="not project_id">
+                        <field name="date_start" readonly="schedule_mode == 'auto'"/>
+                        <field name="date_end" readonly="schedule_mode == 'auto'"/>
+                        <field name="duration" widget="float_time" readonly="1"/>
+                        <field name="progress" widget="progressbar"/>
+                        <field name="is_milestone"/>
+                    </group>
+                </xpath>
+
+                <!-- Add Scheduling tab after sub_tasks_page -->
+                <xpath expr="//page[@name='sub_tasks_page']" position="after">
+                    <page name="gantt_scheduling" string="Scheduling" invisible="not project_id">
+                        <group>
+                            <group string="Schedule Settings">
+                                <field name="schedule_mode" widget="radio"/>
+                                <field name="fixed_calc_type" invisible="schedule_mode == 'manual'"/>
+                                <field name="plan_duration"
+                                       widget="float_time"
                                        invisible="schedule_mode == 'manual' or child_ids"
                                        string="Plan Duration"/>
-                                <div invisible="schedule_mode == 'manual' or child_ids">
-                                    <field name="plan_duration" widget="float_time" class="oe_inline"/>
-                                </div>
-
-                                <field name="date_start" readonly="schedule_mode == 'auto'"/>
-                                <field name="date_end" readonly="schedule_mode == 'auto'"/>
-
-                                <label for="duration"/>
-                                <div>
-                                    <field name="duration" widget="float_time" class="oe_inline"/>
-                                </div>
-
-                                <label for="detail_plan_work"/>
-                                <div>
-                                    <field name="detail_plan_work" widget="float_time" class="oe_inline"/>
-                                </div>
-
-                                <field name="duration_scale" invisible="1"/>
-                                <field name="duration_work_scale" invisible="1"/>
-                                <field name="duration_picker" invisible="1"/>
-                            </group>
-                            <group>
                                 <field name="on_gantt"/>
-                                <field name="is_milestone"/>
-                                <field name="schedule_mode" widget="radio"/>
+                            </group>
+                            <group string="Constraints">
                                 <field name="constrain_type"/>
-                                <field name="constrain_date"/>
-
-                                <field name="color_gantt_set"/>
-                                <field name="color_gantt" widget="color" invisible="not color_gantt_set"/>
-
-                                <field name="summary_date_start" invisible="1"/>
-                                <field name="summary_date_end" invisible="1"/>
-                                <field name="detail_plan"/>
+                                <field name="constrain_date" invisible="constrain_type in ('asap', 'alap')"/>
                             </group>
                         </group>
+                        <group>
+                            <group string="Display">
+                                <field name="color_gantt_set"/>
+                                <field name="color_gantt" widget="color" invisible="not color_gantt_set"/>
+                                <field name="detail_plan"/>
+                            </group>
+                            <group string="Work">
+                                <field name="detail_plan_work" widget="float_time" readonly="1"/>
+                            </group>
+                        </group>
+                        <!-- Hidden fields -->
+                        <field name="duration_scale" invisible="1"/>
+                        <field name="duration_work_scale" invisible="1"/>
+                        <field name="duration_picker" invisible="1"/>
+                        <field name="summary_date_start" invisible="1"/>
+                        <field name="summary_date_end" invisible="1"/>
                     </page>
+                </xpath>
 
-                    <page name="gantt_predecessor" string="Predecessor">
+                <!-- Add Predecessors tab - Gantt scheduling dependencies (different from Odoo's "Blocked By") -->
+                <xpath expr="//page[@name='task_dependencies']" position="after">
+                    <page name="gantt_predecessors" string="Predecessors" invisible="not project_id">
+                        <div class="text-muted mb-2">
+                            Define scheduling dependencies for Gantt chart (FS=Finish-to-Start, SS=Start-to-Start, FF=Finish-to-Finish, SF=Start-to-Finish)
+                        </div>
                         <field name="predecessor_ids" nolabel="1">
-                            <list string="Predecessor" editable="bottom">
-                                <field name="parent_task_id"/>
-                                <field name="type"/>
-                                <field name="lag_qty"/>
+                            <list string="Predecessors" editable="bottom">
+                                <field name="parent_task_id" string="Predecessor Task"/>
+                                <field name="type" string="Link Type"/>
+                                <field name="lag_qty" string="Lag"/>
                                 <field name="lag_type"/>
                             </list>
                         </field>
                     </page>
+                </xpath>
 
-                    <page name="resources" string="Resources">
+                <!-- Add Resources tab after Predecessors -->
+                <xpath expr="//page[@name='gantt_predecessors']" position="after">
+                    <page name="gantt_resources" string="Resources" invisible="not project_id">
                         <field name="task_resource_ids" nolabel="1">
-                            <list string="Resources Link" editable="bottom">
+                            <list string="Resource Assignments" editable="bottom">
                                 <field name="resource_id"/>
-                                <field name="load_factor"/>
+                                <field name="load_factor" string="Load %"/>
                                 <field name="resource_type"/>
                                 <field name="load_control"/>
                             </list>
                         </field>
                     </page>
+                </xpath>
 
-                    <page name="info_task" string="Info">
+                <!-- Add Gantt Info to Extra Info tab -->
+                <xpath expr="//page[@name='extra_info']//group" position="inside">
+                    <group string="Gantt Info" groups="base.group_no_one">
+                        <field name="critical_path" readonly="1"/>
+                        <field name="p_loop" readonly="1"/>
+                        <field name="sorting_seq"/>
+                        <field name="sorting_level"/>
+                        <field name="fold"/>
+                    </group>
+                </xpath>
+
+                <!-- Add info_ids to Extra Info tab -->
+                <xpath expr="//page[@name='extra_info']" position="inside">
+                    <group string="Gantt Display Info" groups="base.group_no_one">
                         <field name="info_ids" nolabel="1">
-                            <list string="Info" editable="bottom">
+                            <list string="Display Info" editable="bottom">
                                 <field name="name"/>
                                 <field name="start"/>
                                 <field name="end"/>
@@ -90,12 +116,15 @@
                                 <field name="show"/>
                             </list>
                         </field>
-                    </page>
+                    </group>
                 </xpath>
+
             </field>
         </record>
 
-        <!-- Task List View Extension (Odoo 18: tree renamed to list) -->
+        <!-- ============================================================ -->
+        <!-- Task List View Extension -->
+        <!-- ============================================================ -->
         <record id="view_task_list2_gantt" model="ir.ui.view">
             <field name="name">project.task.list.gantt</field>
             <field name="model">project.task</field>
@@ -103,6 +132,7 @@
             <field name="priority">20</field>
             <field name="arch" type="xml">
                 <xpath expr="//list" position="inside">
+                    <field name="date_start" optional="hide"/>
                     <field name="duration" widget="float_time" optional="hide"/>
                     <field name="schedule_mode" optional="hide"/>
                     <field name="is_milestone" optional="hide"/>
@@ -110,7 +140,9 @@
             </field>
         </record>
 
-        <!-- Gantt APS View -->
+        <!-- ============================================================ -->
+        <!-- Gantt APS View Definition -->
+        <!-- ============================================================ -->
         <record id="view_task_ganttaps" model="ir.ui.view">
             <field name="name">project.task.ganttaps</field>
             <field name="model">project.task</field>
@@ -118,6 +150,7 @@
             <field name="priority">20</field>
             <field name="arch" type="xml">
                 <ganttaps
+                    progress="progress"
                     default_group_by="project_id"
                     action_menu="project_id"
                     main_group_id_name="project_id"
@@ -166,13 +199,22 @@
                     load_ids_from="id"
                     default_order="date_start asc"
                     doc_count="attachment_ids"
+                    ghost_model="account.analytic.line"
+                    ghost_task_id="task_id"
+                    ghost_name="name"
+                    ghost_date_start="date"
+                    ghost_durations="unit_amount"
                 >
                 </ganttaps>
             </field>
         </record>
 
-        <!-- Add ganttaps to task actions -->
-        <record id="project.action_view_task" model="ir.actions.act_window">
+        <!-- ============================================================ -->
+        <!-- Action Configuration -->
+        <!-- ============================================================ -->
+
+        <!-- Add ganttaps to task actions (Odoo 18 correct action ID) -->
+        <record id="project.act_project_project_2_project_task_all" model="ir.actions.act_window">
             <field name="view_mode">kanban,list,form,calendar,pivot,graph,activity,ganttaps</field>
         </record>
 

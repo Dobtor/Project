@@ -6,25 +6,20 @@ import { GanttModel } from "./gantt_model";
 import { GanttRenderer } from "./gantt_renderer";
 import { GanttArchParser } from "./gantt_arch_parser";
 
+const viewRegistry = registry.category("views");
+
 export const ganttView = {
     type: "ganttaps",
-    display_name: "Gantt APS",
-    icon: "fa fa-tasks",
-    multiRecord: true,
-
-    searchMenuTypes: ["filter", "groupBy", "favorite"],
-
-    ArchParser: GanttArchParser,
     Controller: GanttController,
-    Model: GanttModel,
     Renderer: GanttRenderer,
-
+    Model: GanttModel,
+    ArchParser: GanttArchParser,
+    searchMenuTypes: ["filter", "groupBy", "favorite"],
     buttonTemplate: "dobtor_project.GanttController.Buttons",
 
     props: (genericProps, view) => {
-        const { ArchParser } = view;
         const { arch, relatedModels, resModel } = genericProps;
-        const archInfo = new ArchParser().parse(arch, relatedModels, resModel);
+        const archInfo = new view.ArchParser().parse(arch, relatedModels, resModel);
 
         return {
             ...genericProps,
@@ -36,4 +31,4 @@ export const ganttView = {
     },
 };
 
-registry.category("views").add("ganttaps", ganttView);
+viewRegistry.add("ganttaps", ganttView);

@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <template id="gantt_report">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <div class="page">
+                    <h2><t t-esc="project.name"/> — Gantt Report</h2>
+                    <p>Generated: <t t-esc="context_timestamp.strftime('%Y-%m-%d %H:%M')"/></p>
+
+                    <table class="table table-sm table-bordered">
+                        <thead>
+                            <tr>
+                                <th style="width:5%">#</th>
+                                <th style="width:25%">Task</th>
+                                <th style="width:12%">Start</th>
+                                <th style="width:12%">End</th>
+                                <th style="width:10%">Duration</th>
+                                <th style="width:8%">Progress</th>
+                                <th style="width:8%">Mode</th>
+                                <th style="width:20%">Predecessors</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <t t-foreach="tasks" t-as="task">
+                                <tr t-att-style="'background:#fff3f3;' if task.critical_path else ''">
+                                    <td><t t-esc="task_index + 1"/></td>
+                                    <td>
+                                        <span t-att-style="'padding-left:%dpx;' % (task.sorting_level * 16)"/>
+                                        <t t-if="task.is_milestone">&#9670; </t>
+                                        <t t-esc="task.name"/>
+                                    </td>
+                                    <td><t t-esc="task.date_start" t-options="{'widget': 'date'}"/></td>
+                                    <td><t t-esc="task.date_end" t-options="{'widget': 'date'}"/></td>
+                                    <td>
+                                        <t t-if="task.duration">
+                                            <t t-esc="'%.1fd' % (task.duration / 86400)"/>
+                                        </t>
+                                        <t t-else="">—</t>
+                                    </td>
+                                    <td><t t-esc="'%d%%' % task.progress"/></td>
+                                    <td><t t-esc="task.schedule_mode"/></td>
+                                    <td>
+                                        <t t-foreach="task.predecessor_ids" t-as="pred">
+                                            <span><t t-esc="pred.parent_task_id.name"/> (<t t-esc="pred.type"/>)</span>
+                                            <t t-if="not pred_last">, </t>
+                                        </t>
+                                    </td>
+                                </tr>
+                            </t>
+                        </tbody>
+                    </table>
+                </div>
+            </t>
+        </t>
+    </template>
+
+    <record id="action_gantt_report" model="ir.actions.report">
+        <field name="name">Gantt Report</field>
+        <field name="model">project.project</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">dobtor_project.gantt_report</field>
+        <field name="report_file">dobtor_project.gantt_report</field>
+        <field name="print_report_name">'Gantt_%s' % object.name</field>
+        <field name="binding_model_id" ref="project.model_project_project"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <!-- Landscape paper format for gantt reports -->
+    <record id="paperformat_gantt_landscape" model="report.paperformat">
+        <field name="name">Gantt Chart Landscape</field>
+        <field name="default" eval="False"/>
+        <field name="format">A4</field>
+        <field name="orientation">Landscape</field>
+        <field name="margin_top">20</field>
+        <field name="margin_bottom">15</field>
+        <field name="margin_left">7</field>
+        <field name="margin_right">7</field>
+        <field name="header_line" eval="False"/>
+        <field name="header_spacing">15</field>
+    </record>
+</odoo>

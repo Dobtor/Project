@@ -13,3 +13,4 @@ from . import project_task_scheduler
 from . import project_task_scheduler_calendar
 from . import project_task_critical_path
 from . import resource_resource
+from . import project_baseline

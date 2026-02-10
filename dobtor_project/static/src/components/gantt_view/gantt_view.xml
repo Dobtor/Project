@@ -1,129 +1,339 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <templates xml:space="preserve">
 
-    <!-- Gantt Controller Template - Apple HIG Style -->
+    <!-- Gantt Controller Template -->
     <t t-name="dobtor_project.GanttController">
         <Layout display="display" className="'o_gantt_view'">
-            <t t-set-slot="control-panel-create-button">
-                <t t-if="props.buttonTemplate" t-call="{{ props.buttonTemplate }}"/>
-            </t>
-
-            <t t-set-slot="layout-buttons">
-                <!-- Today Button -->
+            <t t-set-slot="control-panel-bottom-left">
                 <div class="o_gantt_controls">
+                    <!-- Group 1: Navigation -->
                     <button class="o_gantt_btn" t-on-click="onTodayClick" title="Go to Today">
                         <i class="fa fa-crosshairs"/> Today
                     </button>
+                    <div class="o_gantt_segmented_control">
+                        <t t-foreach="scales" t-as="scaleOption" t-key="scaleOption.value">
+                            <button t-att-class="'o_gantt_segment' + (state.scale === scaleOption.value ? ' o_gantt_segment_active' : '')"
+                                    t-on-click="() => this.onScaleChange(scaleOption.value)">
+                                <t t-esc="scaleOption.label"/>
+                            </button>
+                        </t>
+                    </div>
 
-                    <!-- Expand/Collapse All -->
+                    <div class="o_gantt_btn_separator"/>
+
+                    <!-- Group 2: View Controls -->
                     <button class="o_gantt_btn o_gantt_btn_icon" t-on-click="onExpandAll" title="Expand All">
                         <i class="fa fa-expand"/>
                     </button>
                     <button class="o_gantt_btn o_gantt_btn_icon" t-on-click="onCollapseAll" title="Collapse All">
                         <i class="fa fa-compress"/>
                     </button>
-                </div>
+                    <button class="o_gantt_btn" t-on-click="onSortToggle"
+                            t-att-title="'Sort by: ' + sortLabel">
+                        <i class="fa fa-sort-amount-asc"/>
+                        <span t-esc="sortLabel"/>
+                    </button>
 
-                <!-- Scale Selector (Segmented Control Style) -->
-                <div class="o_gantt_btn_group ms-3">
-                    <t t-foreach="scales" t-as="scaleOption" t-key="scaleOption.value">
-                        <button
-                            t-att-class="'o_gantt_btn' + (state.scale === scaleOption.value ? ' active' : '')"
-                            t-on-click="() => this.onScaleChange(scaleOption.value)">
-                            <t t-esc="scaleOption.label"/>
+                    <div class="o_gantt_btn_separator"/>
+
+                    <!-- Group 3: Actions -->
+                    <button class="o_gantt_btn o_gantt_btn_primary"
+                            t-on-click="onSchedulerClick"
+                            t-att-disabled="isLoading"
+                            title="Run Auto Scheduler">
+                        <i t-att-class="'fa ' + (isLoading ? 'fa-spinner fa-spin' : 'fa-magic')"/>
+                        Schedule
+                    </button>
+                    <button class="o_gantt_btn o_gantt_btn_icon" t-on-click="onRefresh" title="Refresh">
+                        <i class="fa fa-refresh"/>
+                    </button>
+
+                    <div class="o_gantt_btn_separator"/>
+
+                    <!-- Group 4: More menu (secondary actions) -->
+                    <div class="o_gantt_more_menu_wrapper">
+                        <button class="o_gantt_btn" t-on-click="onMoreMenuToggle" title="More options">
+                            <i class="fa fa-ellipsis-h"/>
                         </button>
+                        <div t-att-class="'o_gantt_more_menu' + (state.showMoreMenu ? ' o_gantt_more_menu_visible' : '')">
+                            <!-- View Options Section -->
+                            <div class="o_gantt_more_menu_section_label">View</div>
+                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onWeekTypeToggle(); }">
+                                <i class="fa fa-calendar"/>
+                                <span>Week Start: <b t-esc="weekTypeLabel"/></span>
+                            </div>
+                            <div t-att-class="'o_gantt_more_menu_item' + (state.showListDetail ? ' o_gantt_more_menu_item_active' : '')"
+                                 t-on-click.stop="() => { this.onListDetailToggle(); }">
+                                <i class="fa fa-list-ul"/>
+                                <span>List Details</span>
+                                <i class="fa fa-check o_gantt_more_menu_check" t-if="state.showListDetail"/>
+                            </div>
+                            <div t-att-class="'o_gantt_more_menu_item' + (state.showIntersection ? ' o_gantt_more_menu_item_active' : '')"
+                                 t-on-click.stop="() => { this.onIntersectionToggle(); }">
+                                <i class="fa fa-align-left"/>
+                                <span>Intersection View</span>
+                                <i class="fa fa-check o_gantt_more_menu_check" t-if="state.showIntersection"/>
+                            </div>
+                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onDetailPlanClick(); this.onMoreMenuClose(); }">
+                                <i class="fa fa-tasks"/>
+                                <span>Detail Plans</span>
+                            </div>
+
+                            <!-- Schedule Section -->
+                            <div class="o_gantt_more_menu_divider"/>
+                            <div class="o_gantt_more_menu_section_label">Schedule</div>
+                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onCatchUpClick(); this.onMoreMenuClose(); }">
+                                <i class="fa fa-clock-o"/>
+                                <span>Catch Up</span>
+                            </div>
+                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onRescheduleClick(); this.onMoreMenuClose(); }">
+                                <i class="fa fa-forward"/>
+                                <span>Reschedule Incomplete</span>
+                            </div>
+                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onLevelResourcesClick(); this.onMoreMenuClose(); }">
+                                <i class="fa fa-balance-scale"/>
+                                <span>Level Resources</span>
+                            </div>
+
+                            <!-- Data Section -->
+                            <div class="o_gantt_more_menu_divider"/>
+                            <div class="o_gantt_more_menu_section_label">Data</div>
+                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onExportClick(); this.onMoreMenuClose(); }">
+                                <i class="fa fa-download"/>
+                                <span>Export XML</span>
+                            </div>
+                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onImportClick(); this.onMoreMenuClose(); }">
+                                <i class="fa fa-upload"/>
+                                <span>Import XML</span>
+                            </div>
+
+                            <!-- Output Section -->
+                            <div class="o_gantt_more_menu_divider"/>
+                            <div class="o_gantt_more_menu_section_label">Output</div>
+                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onPrintClick(); this.onMoreMenuClose(); }">
+                                <i class="fa fa-print"/>
+                                <span>Print</span>
+                            </div>
+                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onReportClick(); this.onMoreMenuClose(); }">
+                                <i class="fa fa-file-pdf-o"/>
+                                <span>PDF Report</span>
+                            </div>
+
+                            <!-- Baseline Section -->
+                            <div class="o_gantt_more_menu_divider"/>
+                            <div class="o_gantt_more_menu_section_label">Baseline</div>
+                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onSaveBaselineClick(); this.onMoreMenuClose(); }">
+                                <i class="fa fa-camera"/>
+                                <span>Save Baseline</span>
+                            </div>
+                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onBaselineClear(); this.onMoreMenuClose(); }"
+                                 t-if="state.selectedBaselineId">
+                                <i class="fa fa-eye-slash"/>
+                                <span>Clear Baseline</span>
+                            </div>
+                            <t t-foreach="state.baselines" t-as="bl" t-key="bl.id">
+                                <div t-att-class="'o_gantt_more_menu_item' + (state.selectedBaselineId === bl.id ? ' o_gantt_more_menu_item_active' : '')"
+                                     t-on-click.stop="() => { this.onBaselineSelect(bl.id); this.onMoreMenuClose(); }">
+                                    <i class="fa fa-history"/>
+                                    <span t-esc="bl.name"/>
+                                    <i class="fa fa-check o_gantt_more_menu_check" t-if="state.selectedBaselineId === bl.id"/>
+                                </div>
+                            </t>
+
+                            <!-- Filter Section -->
+                            <div class="o_gantt_more_menu_divider"/>
+                            <div class="o_gantt_more_menu_section_label">Filter</div>
+                            <div t-att-class="'o_gantt_more_menu_item' + (state.filterCriticalPath ? ' o_gantt_more_menu_item_active' : '')"
+                                 t-on-click.stop="() => this.onFilterToggle('filterCriticalPath')">
+                                <i class="fa fa-fire"/>
+                                <span>Critical Path</span>
+                                <i class="fa fa-check o_gantt_more_menu_check" t-if="state.filterCriticalPath"/>
+                            </div>
+                            <div t-att-class="'o_gantt_more_menu_item' + (state.filterOverdue ? ' o_gantt_more_menu_item_active' : '')"
+                                 t-on-click.stop="() => this.onFilterToggle('filterOverdue')">
+                                <i class="fa fa-clock-o"/>
+                                <span>Overdue</span>
+                                <i class="fa fa-check o_gantt_more_menu_check" t-if="state.filterOverdue"/>
+                            </div>
+                            <div t-att-class="'o_gantt_more_menu_item' + (state.filterUnlinked ? ' o_gantt_more_menu_item_active' : '')"
+                                 t-on-click.stop="() => this.onFilterToggle('filterUnlinked')">
+                                <i class="fa fa-unlink"/>
+                                <span>Unlinked</span>
+                                <i class="fa fa-check o_gantt_more_menu_check" t-if="state.filterUnlinked"/>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Violation toggle button -->
+                    <button t-att-class="'o_gantt_btn o_gantt_btn_icon o_gantt_violation_toggle' + (state.showViolationPanel ? ' active' : '')"
+                            t-on-click="onViolationToggle"
+                            title="Violations">
+                        <i class="fa fa-exclamation-triangle"/>
+                        <span class="o_gantt_violation_count" t-if="state.violationCount > 0"
+                              t-esc="state.violationCount"/>
+                    </button>
+
+                    <!-- Active filter indicators -->
+                    <t t-if="state.filterCriticalPath || state.filterOverdue || state.filterUnlinked">
+                        <div class="o_gantt_filter_chips">
+                            <span class="o_gantt_filter_chip active" t-if="state.filterCriticalPath"
+                                  t-on-click="() => this.onFilterToggle('filterCriticalPath')">
+                                Critical <i class="fa fa-times"/>
+                            </span>
+                            <span class="o_gantt_filter_chip active" t-if="state.filterOverdue"
+                                  t-on-click="() => this.onFilterToggle('filterOverdue')">
+                                Overdue <i class="fa fa-times"/>
+                            </span>
+                            <span class="o_gantt_filter_chip active" t-if="state.filterUnlinked"
+                                  t-on-click="() => this.onFilterToggle('filterUnlinked')">
+                                Unlinked <i class="fa fa-times"/>
+                            </span>
+                        </div>
                     </t>
+
+                    <!-- Pager Info -->
+                    <span class="o_gantt_pager_info o_gantt_pager_clickable" t-if="pagerText"
+                          t-on-click="onPagerClick" title="Click to change record limit">
+                        <t t-esc="pagerText"/>
+                    </span>
                 </div>
             </t>
-
-            <t t-set-slot="layout-actions">
-                <!-- Scheduler Button -->
-                <button
-                    t-att-class="'o_gantt_btn o_gantt_btn_primary ms-2' + (isLoading ? ' disabled' : '')"
-                    t-on-click="onSchedulerClick"
-                    t-att-disabled="isLoading">
-                    <t t-if="isLoading">
-                        <i class="fa fa-spinner fa-spin"/> Running...
-                    </t>
-                    <t t-else="">
-                        <i class="fa fa-play"/> Run Scheduler
-                    </t>
-                </button>
+            <t t-if="model.data?.records?.length > 0 || model._isFirstLoadDone">
+                <t t-component="props.Renderer" t-props="rendererProps" t-ref="renderer"/>
             </t>
-
-            <t t-component="props.Renderer" t-props="rendererProps"/>
+            <t t-else="">
+                <div class="o_gantt_skeleton">
+                    <div class="o_gantt_skeleton_sidebar">
+                        <div class="o_gantt_skeleton_row" t-foreach="[1,2,3,4,5,6,7,8]" t-as="i" t-key="i">
+                            <div class="o_gantt_skeleton_line"/>
+                        </div>
+                    </div>
+                    <div class="o_gantt_skeleton_timeline">
+                        <div class="o_gantt_skeleton_bar" t-foreach="[1,2,3,4,5,6,7,8]" t-as="i" t-key="i"/>
+                    </div>
+                </div>
+            </t>
         </Layout>
     </t>
 
     <!-- Gantt Controller Buttons Template -->
-    <t t-name="dobtor_project.GanttController.Buttons">
-        <!-- Additional custom buttons can be added here -->
-    </t>
+    <t t-name="dobtor_project.GanttController.Buttons"/>
 
-    <!-- Gantt Renderer Template - Apple HIG Style -->
+    <!-- Gantt Renderer Template -->
     <t t-name="dobtor_project.GanttRenderer">
-        <div class="o_gantt_container" t-ref="ganttContainer" t-on-keydown="onKeyDown" tabindex="0">
-            <!-- Loading Overlay -->
-            <t t-if="state.isDragging">
-                <div class="o_gantt_drag_indicator">
-                    <t t-if="state.dragMode === 'move'">Moving task...</t>
-                    <t t-elif="state.dragMode === 'resize-left' or state.dragMode === 'resize-right'">Resizing...</t>
-                </div>
-            </t>
-
-            <!-- Left Panel: Task List (Sidebar) -->
-            <div class="o_gantt_list" t-att-style="'width:' + state.gutterWidth + 'px'">
-                <!-- Header -->
+        <div class="o_gantt_container">
+            <!-- Left Panel: Task List -->
+            <div class="o_gantt_list" t-att-style="'width: ' + state.gutterWidth + 'px;'">
                 <div class="o_gantt_list_header">
-                    <div class="o_gantt_list_header_cell">Task Name</div>
+                    <span class="o_gantt_list_header_cell">Tasks</span>
+                    <span class="o_gantt_list_header_info">Duration</span>
+                    <t t-if="props.showListDetail">
+                        <span class="o_gantt_list_header_date">Start</span>
+                        <span class="o_gantt_list_header_date">End</span>
+                    </t>
                 </div>
-
-                <!-- Rows -->
-                <div class="o_gantt_list_rows">
+                <div class="o_gantt_list_rows" t-ref="listRows">
                     <t t-foreach="flattenedRows" t-as="row" t-key="row.id || row_index">
-                        <div
-                            t-att-class="'o_gantt_list_row' +
-                                (row._isGroup ? ' o_gantt_group_row' : '') +
-                                (state.hoveredRecordId === row.id ? ' o_gantt_row_hover' : '') +
-                                (state.selectedRecordId === row.id ? ' o_gantt_selected' : '')"
-                            t-on-mouseenter="() => this.onRowHover(row.id)"
-                            t-on-mouseleave="onRowLeave"
-                            t-on-click="() => row._isGroup ? this.onGroupClick(row) : this.onRecordClick(row)">
-
+                        <div t-att-class="getRowClass(row)"
+                             t-att-data-record-id="row._isGroup ? undefined : row.id"
+                             t-on-click="() => row._isGroup ? this.onGroupClick(row) : this.onTaskSelect(row)"
+                             t-on-dblclick="(ev) => !row._isGroup and this.onTaskDblClick(row, ev)"
+                             t-on-mouseenter="() => this.onRowHover(row.id)"
+                             t-on-mouseleave="onRowLeave">
                             <t t-if="row._isGroup">
-                                <!-- Group Toggle Icon -->
-                                <div class="o_gantt_group_toggle">
+                                <span class="o_gantt_group_toggle">
                                     <i t-att-class="'fa ' + (row.fold ? 'fa-chevron-right' : 'fa-chevron-down')"/>
-                                </div>
+                                </span>
                                 <span class="o_gantt_group_name" t-esc="row.name"/>
                                 <span class="o_gantt_group_count" t-esc="row.records?.length || 0"/>
+                                <!-- Project progress indicator -->
+                                <span class="o_gantt_group_progress_bar" t-if="getGroupProgress(row) > 0">
+                                    <span class="o_gantt_group_progress_fill" t-att-style="getGroupProgressStyle(row)"/>
+                                </span>
+                                <span class="o_gantt_group_date_range" t-if="getGroupDateRange(row)"
+                                      t-esc="getGroupDateRange(row)"/>
+                                <span class="o_gantt_add_task_btn"
+                                      t-on-click.stop="() => this.onAddTaskToGroup(row)"
+                                      title="Add task">
+                                    <i class="fa fa-plus"/>
+                                </span>
                             </t>
                             <t t-else="">
-                                <!-- Task indent based on level -->
-                                <span class="o_gantt_task_name" t-esc="row.display_name || row[props.archInfo.name]"/>
-                                <!-- Milestone indicator -->
-                                <t t-if="row._isMilestone">
-                                    <span class="o_gantt_milestone_badge">◆</span>
+                                <!-- Tree drag handle -->
+                                <span class="o_gantt_tree_drag_handle" title="Drag to reorder">
+                                    <i class="fa fa-ellipsis-v"/>
+                                </span>
+                                <!-- Indent spacer for tree hierarchy -->
+                                <span class="o_gantt_indent_spacer" t-att-style="getIndentStyle(row)"/>
+                                <!-- Fold chevron for parent tasks -->
+                                <t t-if="row._hasChildren">
+                                    <span class="o_gantt_task_fold_toggle"
+                                          t-on-click.stop="() => this.onTaskFoldClick(row)">
+                                        <i t-att-class="'fa ' + (row._isFolded ? 'fa-chevron-right' : 'fa-chevron-down')"/>
+                                    </span>
                                 </t>
+                                <t t-else="">
+                                    <span class="o_gantt_task_fold_spacer"/>
+                                </t>
+                                <span class="o_gantt_task_name">
+                                    <t t-esc="row.display_name || row[props.archInfo?.name]"/>
+                                    <t t-if="row._isMilestone">
+                                        <i class="o_gantt_milestone_badge fa fa-diamond"/>
+                                    </t>
+                                    <!-- Loop detection icon -->
+                                    <t t-if="hasLoop(row)">
+                                        <i class="o_gantt_loop_icon fa fa-refresh text-danger"
+                                           title="Dependency loop detected"/>
+                                    </t>
+                                    <!-- Document count badge -->
+                                    <t t-if="getDocCount(row) > 0">
+                                        <span class="o_gantt_doc_badge" t-esc="getDocCount(row)"/>
+                                    </t>
+                                    <!-- Plan action warning icon -->
+                                    <t t-if="hasPlanAction(row)">
+                                        <i class="o_gantt_plan_action_icon fa fa-exclamation text-warning"
+                                           title="Needs re-scheduling"/>
+                                    </t>
+                                </span>
+                                <!-- Info column: duration + resource level -->
+                                <span class="o_gantt_task_info" t-att-title="getInfoDateRange(row)">
+                                    <t t-esc="getInfoDuration(row)"/>
+                                </span>
+                                <t t-if="props.showListDetail">
+                                    <span class="o_gantt_task_date" t-esc="getInfoStartDate(row)"/>
+                                    <span class="o_gantt_task_date" t-esc="getInfoEndDate(row)"/>
+                                </t>
+                                <span class="o_gantt_resource_level" t-if="getResourceLevel(row)"
+                                      t-esc="getResourceLevel(row)"/>
+                                <!-- Focus/scroll to bar -->
+                                <span class="o_gantt_focus_btn"
+                                      t-on-click.stop="() => this.onFocusClick(row)"
+                                      title="Scroll to bar">
+                                    <i class="fa fa-crosshairs"/>
+                                </span>
+                                <!-- Add subtask button (visible on hover) -->
+                                <span class="o_gantt_add_subtask_btn"
+                                      t-on-click.stop="() => this.onAddSubtask(row)"
+                                      title="Add subtask">
+                                    <i class="fa fa-plus"/>
+                                </span>
                             </t>
                         </div>
                     </t>
-
-                    <!-- Empty State -->
-                    <t t-if="!flattenedRows.length">
+                    <t t-if="!flattenedRows || !flattenedRows.length">
                         <div class="o_gantt_empty_state">
-                            <div class="o_gantt_empty_icon">
-                                <i class="fa fa-tasks"/>
+                            <i class="o_gantt_empty_icon fa fa-tasks"/>
+                            <div class="o_gantt_empty_title">No tasks found</div>
+                            <div class="o_gantt_empty_description">
+                                Create tasks with dates to see them on the Gantt chart
                             </div>
-                            <div class="o_gantt_empty_title">No Tasks</div>
-                            <div class="o_gantt_empty_description">Create your first task to see it on the timeline.</div>
                         </div>
                     </t>
                 </div>
             </div>
 
             <!-- Gutter (Resizable Divider) -->
-            <div class="o_gantt_gutter" t-on-mousedown="onGutterResize">
+            <div class="o_gantt_gutter" t-ref="gutter">
                 <div class="o_gantt_gutter_handle"/>
             </div>
 
@@ -131,107 +341,456 @@
             <div class="o_gantt_timeline" t-ref="timeline">
                 <!-- Timeline Header -->
                 <div class="o_gantt_timeline_header">
-                    <!-- Month/Year Row -->
+                    <!-- Month Row -->
                     <div class="o_gantt_timeline_header_row o_gantt_timeline_header_months">
-                        <t t-foreach="timelineHeader.months" t-as="month" t-key="month_index">
+                        <t t-foreach="groupedMonths" t-as="month" t-key="month_index">
                             <div class="o_gantt_timeline_header_cell"
-                                 t-att-style="'width:' + month.width + 'px'">
-                                <t t-esc="month.month"/> <t t-esc="month.year"/>
+                                 t-att-style="'flex: 0 0 ' + (month.span * cellWidth) + 'px; width: ' + (month.span * cellWidth) + 'px;'">
+                                <t t-esc="month.label"/>
                             </div>
                         </t>
                     </div>
-
-                    <!-- Day Row -->
+                    <!-- Day/Week Row (with column hints) -->
                     <div class="o_gantt_timeline_header_row o_gantt_timeline_header_days">
-                        <t t-foreach="timelineHeader.days" t-as="day" t-key="day_index">
-                            <div t-att-class="'o_gantt_timeline_header_cell' +
-                                (day.isWeekend ? ' o_gantt_weekend' : '') +
-                                (day.isToday ? ' o_gantt_today' : '')"
-                                 t-att-style="'width:' + currentScalePixels + 'px'">
-                                <span class="o_gantt_day_weekday" t-esc="day.weekday"/>
-                                <span class="o_gantt_day_number" t-esc="day.day"/>
+                        <t t-foreach="timelineColumns" t-as="column" t-key="column_index">
+                            <div t-att-class="getCellClass(column)"
+                                 t-att-style="'flex: 0 0 ' + cellWidth + 'px; width: ' + cellWidth + 'px;'"
+                                 t-att-title="getColumnHint(column)">
+                                <span class="o_gantt_day_weekday" t-esc="column.weekday"/>
+                                <span class="o_gantt_day_number" t-esc="column.label"/>
                             </div>
                         </t>
                     </div>
                 </div>
 
-                <!-- Timeline Data Grid -->
-                <div class="o_gantt_timeline_data" t-att-style="'width:' + state.timelineWidth + 'px; min-width: 100%;'">
-                    <!-- SVG Container for Predecessor Arrows -->
-                    <svg class="o_gantt_arrow_container" t-ref="arrowContainer">
-                        <defs>
-                            <marker id="arrowhead" markerWidth="10" markerHeight="7"
-                                    refX="9" refY="3.5" orient="auto">
-                                <polygon points="0 0, 10 3.5, 0 7" class="o_gantt_arrow_marker"/>
-                            </marker>
-                            <marker id="arrowhead-highlight" markerWidth="10" markerHeight="7"
-                                    refX="9" refY="3.5" orient="auto">
-                                <polygon points="0 0, 10 3.5, 0 7" class="o_gantt_arrow_marker o_gantt_arrow_marker_highlight"/>
-                            </marker>
-                            <marker id="arrowhead-critical" markerWidth="10" markerHeight="7"
-                                    refX="9" refY="3.5" orient="auto">
-                                <polygon points="0 0, 10 3.5, 0 7" class="o_gantt_arrow_marker o_gantt_arrow_marker_critical"/>
-                            </marker>
-                        </defs>
-
-                        <!-- Render Predecessor Arrows -->
-                        <t t-foreach="predecessorArrows" t-as="arrow" t-key="arrow.id">
-                            <path
-                                t-att-class="getArrowClass(arrow)"
-                                t-att-d="getArrowPath(arrow)"
-                                t-att-marker-end="getArrowMarker(arrow)"
-                                fill="none"/>
+                <!-- Timeline Data -->
+                <div class="o_gantt_timeline_data" t-att-style="'width: ' + timelineWidth + 'px;'" t-ref="timelineData">
+                    <!-- Intersection Grid (vertical column lines) -->
+                    <div class="o_gantt_grid_columns">
+                        <t t-foreach="timelineColumns" t-as="column" t-key="column_index">
+                            <div t-att-class="'o_gantt_grid_col' + (column.isWeekend ? ' o_gantt_weekend' : '') + (column.isToday ? ' o_gantt_grid_today' : '')"
+                                 t-att-style="'flex: 0 0 ' + cellWidth + 'px; width: ' + cellWidth + 'px;'"/>
                         </t>
-                    </svg>
+                    </div>
+
+                    <!-- Today Marker -->
+                    <t t-if="todayPosition !== null">
+                        <div class="o_gantt_today_marker" t-att-style="'left: ' + todayPosition + 'px;'"/>
+                    </t>
+
+                    <!-- Predecessor Arrows -->
+                    <GanttArrows t-props="arrowProps"/>
+
+                    <!-- Tooltip -->
+                    <GanttTooltip archInfo="props.archInfo"
+                                  getRecord="(id) => this.props.model.data?.records?.find(r => r.id === id)"/>
+
+                    <!-- Context Menu -->
+                    <GanttContextMenu archInfo="props.archInfo"
+                                      getRecord="(id) => this.props.model.data?.records?.find(r => r.id === id)"
+                                      onAction="(rid, action) => this.onContextAction(rid, action)"/>
 
                     <!-- Timeline Rows -->
                     <t t-foreach="flattenedRows" t-as="row" t-key="row.id || row_index">
-                        <div
-                            t-att-class="'o_gantt_timeline_row' +
-                                (row._isGroup ? ' o_gantt_group_row' : '') +
-                                (state.hoveredRecordId === row.id ? ' o_gantt_row_hover' : '')"
-                            t-on-mouseenter="() => this.onRowHover(row.id)"
-                            t-on-mouseleave="onRowLeave">
-
-                            <!-- Task Bar (not milestone, not group) -->
-                            <t t-if="!row._isGroup and !row._isMilestone">
-                                <div t-att-class="getBarClass(row)"
-                                     t-att-style="getBarStyle(row)"
-                                     t-on-mousedown="(ev) => this.onBarMouseDown(ev, row)"
-                                     t-att-title="row.display_name">
-
-                                    <!-- Left Resize Handle -->
-                                    <div class="o_gantt_bar_resize_handle o_gantt_bar_resize_left"/>
-
-                                    <!-- Progress Indicator -->
-                                    <div class="o_gantt_bar_progress" t-att-style="getProgressStyle(row)"/>
-
-                                    <!-- Label -->
-                                    <t t-if="row[props.archInfo.onGantt]">
-                                        <span class="o_gantt_bar_label" t-esc="row.display_name"/>
-                                    </t>
-
-                                    <!-- Right Resize Handle -->
-                                    <div class="o_gantt_bar_resize_handle o_gantt_bar_resize_right"/>
+                        <div t-att-class="getTimelineRowClass(row)"
+                             t-on-mouseenter="() => this.onRowHover(row.id)"
+                             t-on-mouseleave="onRowLeave">
+                            <!-- Project aggregate bar for group rows -->
+                            <t t-if="row._isGroup">
+                                <div class="o_gantt_group_bar"
+                                     t-att-style="getGroupBarStyle(row)"
+                                     t-att-title="row.name + ' (' + getGroupProgress(row) + '%)'">
+                                    <div class="o_gantt_group_bar_progress"
+                                         t-att-style="getGroupProgressStyle(row)"/>
                                 </div>
+                                <!-- Intersection bars (child tasks on group row) -->
+                                <t t-if="props.showIntersection">
+                                    <t t-foreach="getIntersectionBars(row)" t-as="iBar" t-key="iBar.id">
+                                        <div class="o_gantt_intersection_bar"
+                                             t-att-style="'left:' + iBar.left + 'px; width:' + iBar.width + 'px; top:' + iBar.top + 'px; background:' + iBar.color + ';'"
+                                             t-att-title="iBar.name">
+                                            <span class="o_gantt_intersection_label" t-esc="iBar.name"/>
+                                        </div>
+                                    </t>
+                                </t>
+                                <!-- Daily resource load bars on group row -->
+                                <t t-foreach="getGroupLoadBars(row)" t-as="loadDay" t-key="loadDay.date">
+                                    <div class="o_gantt_group_load_bar"
+                                         t-att-style="'left:' + loadDay.left + 'px; width:' + loadDay.width + 'px;'"
+                                         t-att-title="loadDay.label + ' total work'">
+                                        <span class="o_gantt_group_load_label" t-esc="loadDay.label"/>
+                                    </div>
+                                </t>
                             </t>
-
-                            <!-- Milestone (Diamond) -->
-                            <t t-if="!row._isGroup and row._isMilestone">
-                                <div t-att-class="'o_gantt_milestone' +
-                                    (row._isCriticalPath ? ' o_gantt_critical_path' : '')"
-                                     t-att-style="getBarStyle(row)"
-                                     t-on-click.stop="() => this.onRecordClick(row)"
-                                     t-att-title="row.display_name"/>
+                            <t t-if="!row._isGroup">
+                                <div t-att-class="getBarClass(row)"
+                                     t-att-style="getBarStyle(row) + getBarCustomStyle(row)"
+                                     t-att-data-record-id="row.id"
+                                     t-on-click.stop="() => this.onBarClick(row)"
+                                     t-on-dblclick.stop="() => this.props.onRecordClick(row)">
+                                    <t t-if="!row._hasChildren">
+                                        <!-- Progress bar fill + drag handle -->
+                                        <div class="o_gantt_bar_progress"
+                                             t-att-style="'width:' + Math.min(row._progress||0, 100) + '%;'"/>
+                                        <div class="o_gantt_bar_progress_handle"
+                                             t-att-style="'left:' + Math.min(row._progress||0, 100) + '%;'"/>
+                                        <span class="o_gantt_bar_progress_text" t-if="row._progress > 0"
+                                              t-esc="Math.round(row._progress) + '%'"/>
+                                        <span class="o_gantt_bar_label" t-esc="row.display_name"/>
+                                        <!-- Constraint badge -->
+                                        <t t-set="constraintBadge" t-value="getConstraintBadge(row)"/>
+                                        <span class="o_gantt_constraint_badge" t-if="constraintBadge"
+                                              t-esc="constraintBadge" t-att-title="'Constraint: ' + constraintBadge"/>
+                                        <div class="o_gantt_bar_resize_handle o_gantt_bar_resize_left"/>
+                                        <div class="o_gantt_bar_resize_handle o_gantt_bar_resize_right"/>
+                                        <!-- Connector dots for arrow drawing -->
+                                        <div class="o_gantt_connector o_gantt_connector_left" title="Drag to create link (Start)"/>
+                                        <div class="o_gantt_connector o_gantt_connector_right" title="Drag to create link (End)"/>
+                                    </t>
+                                    <t t-else="">
+                                        <!-- Summary bracket bar: no label, no resize handles -->
+                                        <div class="o_gantt_summary_end"/>
+                                    </t>
+                                </div>
+                                <!-- Deadline marker (diamond) - draggable -->
+                                <t t-if="hasDeadline(row)">
+                                    <div t-att-class="getDeadlineClass(row) + ' o_gantt_deadline_draggable'"
+                                         t-att-style="getDeadlineStyle(row)"
+                                         t-att-title="'Deadline: ' + formatDeadline(row)"/>
+                                </t>
+                                <!-- Deadline lag bar (colored region between bar end and deadline) -->
+                                <t t-set="lagInfo" t-value="getDeadlineLagInfo(row)"/>
+                                <t t-if="lagInfo">
+                                    <div t-att-class="'o_gantt_deadline_lag_bar' + (lagInfo.overdue ? ' o_gantt_deadline_lag_overdue' : '')"
+                                         t-att-style="'left:' + lagInfo.left + 'px; width:' + lagInfo.width + 'px;'">
+                                        <span class="o_gantt_deadline_lag_text" t-esc="lagInfo.label"/>
+                                    </div>
+                                </t>
+                                <!-- Date done marker (checkmark) -->
+                                <t t-if="row._dateDone">
+                                    <div class="o_gantt_done_marker"
+                                         t-att-style="getDoneMarkerStyle(row)"
+                                         t-att-title="'Done: ' + row._dateDone.toFormat('MMM d, yyyy')"/>
+                                </t>
+                                <!-- Task info overlay (ES/LS/EF/LF) -->
+                                <t t-if="getTaskInfos(row).length > 0">
+                                    <t t-foreach="getTaskInfos(row)" t-as="info" t-key="info_index">
+                                        <div class="o_gantt_task_info_overlay"
+                                             t-att-style="getBarStyle(row)">
+                                            <span class="o_gantt_info_lu" t-esc="info.leftUp"/>
+                                            <span class="o_gantt_info_ru" t-esc="info.rightUp"/>
+                                            <span class="o_gantt_info_ld" t-esc="info.leftDown"/>
+                                            <span class="o_gantt_info_rd" t-esc="info.rightDown"/>
+                                        </div>
+                                    </t>
+                                </t>
+                                <!-- Ghost/Baseline bars -->
+                                <t t-foreach="getGhostBars(row)" t-as="ghostBar" t-key="ghostBar.id">
+                                    <div class="o_gantt_ghost_bar"
+                                         t-att-style="getGhostBarStyle(ghostBar)"
+                                         t-att-title="'Baseline: ' + (ghostBar.name || '')"/>
+                                </t>
+                                <!-- Resource conflict indicator -->
+                                <t t-if="hasResourceConflict(row)">
+                                    <div class="o_gantt_resource_conflict_indicator"
+                                         t-att-style="getBarStyle(row)"
+                                         title="Resource conflict: overlapping assignments"/>
+                                </t>
+                                <!-- Resource load bars (detail plan) -->
+                                <t t-foreach="getLoadBars(row)" t-as="loadBar" t-key="loadBar.id">
+                                    <div class="o_gantt_load_bar"
+                                         t-att-style="getLoadBarStyle(loadBar)"
+                                         t-att-title="loadBar.name"/>
+                                </t>
                             </t>
                         </div>
                     </t>
                 </div>
+            </div>
 
-                <!-- Today Marker -->
-                <div class="o_gantt_today_marker" t-att-style="getTodayMarkerStyle()"/>
+            <!-- Violation Panel (slide-in from right) -->
+            <div t-att-class="'o_gantt_violation_panel' + (props.showViolationPanel ? ' o_gantt_violation_panel_visible' : '')">
+                <div class="o_gantt_violation_header">
+                    <span class="o_gantt_violation_title">Violations</span>
+                    <span class="o_gantt_violation_close" t-on-click="props.onViolationClose">
+                        <i class="fa fa-times"/>
+                    </span>
+                </div>
+                <div class="o_gantt_violation_body">
+                    <t t-if="!props.violations || props.violations.length === 0">
+                        <div class="o_gantt_violation_empty">
+                            <i class="fa fa-check-circle"/>
+                            <span>No violations found</span>
+                        </div>
+                    </t>
+                    <t t-foreach="props.violations || []" t-as="v" t-key="v_index">
+                        <div t-att-class="'o_gantt_violation_item o_gantt_violation_' + v.severity"
+                             t-on-click="() => this.onViolationClick(v.task_id)">
+                            <i t-att-class="'fa ' + (v.type === 'loop' ? 'fa-refresh' : v.type === 'overdue' ? 'fa-clock-o' : v.type === 'constraint' ? 'fa-lock' : v.type === 'resource_overload' ? 'fa-users' : 'fa-unlink')"/>
+                            <div class="o_gantt_violation_content">
+                                <div class="o_gantt_violation_task" t-esc="v.task_name"/>
+                                <div class="o_gantt_violation_message" t-esc="v.message"/>
+                            </div>
+                            <span class="o_gantt_violation_severity_badge" t-esc="v.severity"/>
+                        </div>
+                    </t>
+                </div>
+            </div>
+
+            <!-- Task Inspector Panel (slide-in from right) -->
+            <GanttInspector
+                visible="props.showInspectorPanel"
+                record="inspectorRecord"
+                archInfo="props.archInfo"
+                predecessors="inspectorPredecessors"
+                onClose="props.onInspectorClose"
+                onFieldChange="(rid, field, val) => this.onInspectorFieldChange(rid, field, val)"
+                onOpenForm="(record) => this.props.onRecordClick(record)"
+            />
+
+            <!-- Mini-map scroll indicator -->
+            <div class="o_gantt_scrollmap_container">
+                <GanttScrollMap t-props="scrollMapProps"/>
             </div>
         </div>
+    </t>
+
+    <!-- Gantt ScrollMap Template -->
+    <t t-name="dobtor_project.GanttScrollMap">
+        <canvas t-ref="scrollMapCanvas"
+                class="o_gantt_scrollmap_canvas"
+                t-on-mousedown="_onMouseDown"/>
+    </t>
+
+    <!-- Gantt Tooltip Template (Apple Popover Style) -->
+    <t t-name="dobtor_project.GanttTooltip">
+        <div t-ref="tooltip"
+             t-att-class="'o_gantt_tooltip' + (state.visible ? ' o_gantt_tooltip_visible' : '')"
+             t-att-style="'left: ' + state.x + 'px; top: ' + state.y + 'px;'">
+            <t t-if="tooltipData">
+                <!-- Header section: name + badges -->
+                <div class="o_gantt_tooltip_header">
+                    <div class="o_gantt_tooltip_title" t-esc="tooltipData.name"/>
+                    <div class="o_gantt_tooltip_badges" t-if="tooltipData.isCritical || tooltipData.isMilestone">
+                        <span class="o_gantt_tooltip_badge o_gantt_tooltip_badge_critical" t-if="tooltipData.isCritical">Critical</span>
+                        <span class="o_gantt_tooltip_badge o_gantt_tooltip_badge_milestone" t-if="tooltipData.isMilestone">Milestone</span>
+                    </div>
+                </div>
+                <!-- Schedule section -->
+                <div class="o_gantt_tooltip_section">
+                    <div class="o_gantt_tooltip_row" t-if="tooltipData.dateStart">
+                        <span class="o_gantt_tooltip_label">Start</span>
+                        <span class="o_gantt_tooltip_value" t-esc="tooltipData.dateStart"/>
+                    </div>
+                    <div class="o_gantt_tooltip_row" t-if="tooltipData.dateEnd">
+                        <span class="o_gantt_tooltip_label">End</span>
+                        <span class="o_gantt_tooltip_value" t-esc="tooltipData.dateEnd"/>
+                    </div>
+                    <div class="o_gantt_tooltip_row" t-if="tooltipData.duration">
+                        <span class="o_gantt_tooltip_label">Duration</span>
+                        <span class="o_gantt_tooltip_value" t-esc="tooltipData.duration"/>
+                    </div>
+                </div>
+                <!-- Status section -->
+                <div class="o_gantt_tooltip_section" t-if="tooltipData.progress || tooltipData.scheduleMode">
+                    <div class="o_gantt_tooltip_row" t-if="tooltipData.progress">
+                        <span class="o_gantt_tooltip_label">Progress</span>
+                        <span class="o_gantt_tooltip_value">
+                            <span class="o_gantt_tooltip_progress_bar">
+                                <span class="o_gantt_tooltip_progress_fill" t-att-style="'width:' + tooltipData.progressPct + '%;'"/>
+                            </span>
+                            <t t-esc="tooltipData.progress"/>
+                        </span>
+                    </div>
+                    <div class="o_gantt_tooltip_row" t-if="tooltipData.scheduleMode">
+                        <span class="o_gantt_tooltip_label">Mode</span>
+                        <span class="o_gantt_tooltip_value" t-esc="tooltipData.scheduleMode"/>
+                    </div>
+                </div>
+                <!-- Constraints section -->
+                <div class="o_gantt_tooltip_section" t-if="tooltipData.deadline || tooltipData.constraint">
+                    <div t-att-class="'o_gantt_tooltip_row' + (tooltipData.deadlineOverdue ? ' o_gantt_tooltip_row_danger' : '')" t-if="tooltipData.deadline">
+                        <span class="o_gantt_tooltip_label">Deadline</span>
+                        <span class="o_gantt_tooltip_value">
+                            <t t-esc="tooltipData.deadline"/>
+                            <i class="fa fa-exclamation-triangle ms-1" t-if="tooltipData.deadlineOverdue"/>
+                        </span>
+                    </div>
+                    <div class="o_gantt_tooltip_row" t-if="tooltipData.constraint">
+                        <span class="o_gantt_tooltip_label">Constraint</span>
+                        <span class="o_gantt_tooltip_value" t-esc="tooltipData.constraint"/>
+                    </div>
+                </div>
+                <!-- Arrow pointing down to the bar -->
+                <div class="o_gantt_tooltip_arrow"/>
+            </t>
+        </div>
+    </t>
+
+    <!-- Gantt Inspector Panel Template -->
+    <t t-name="dobtor_project.GanttInspector">
+        <div t-att-class="'o_gantt_inspector_panel' + (props.visible ? ' o_gantt_inspector_visible' : '')">
+            <div class="o_gantt_inspector_header">
+                <span class="o_gantt_inspector_title">Inspector</span>
+                <span class="o_gantt_inspector_action" t-on-click="() => props.onOpenForm(props.record)" title="Open Form"
+                      t-if="props.record">
+                    <i class="fa fa-external-link"/>
+                </span>
+                <span class="o_gantt_inspector_action" t-on-click="props.onClose">
+                    <i class="fa fa-times"/>
+                </span>
+            </div>
+            <div class="o_gantt_inspector_body" t-if="props.record">
+                <!-- General Section -->
+                <div class="o_gantt_inspector_section">
+                    <div class="o_gantt_inspector_section_title" t-on-click="() => this.toggleSection('general')">
+                        <i t-att-class="'fa fa-chevron-' + (state.expandedSections.general ? 'down' : 'right')"/>
+                        General
+                    </div>
+                    <div t-if="state.expandedSections.general">
+                        <div class="o_gantt_inspector_field">
+                            <label>Name</label>
+                            <input type="text" t-att-value="props.record.display_name"
+                                   t-on-blur="(ev) => this.onFieldBlur('name', ev)"/>
+                        </div>
+                        <div class="o_gantt_inspector_field">
+                            <label>Mode</label>
+                            <select t-on-change="(ev) => this.onSelectChange(props.archInfo.scheduleMode || 'schedule_mode', ev)">
+                                <option value="auto" t-att-selected="props.record._scheduleMode === 'auto'">Auto</option>
+                                <option value="manual" t-att-selected="props.record._scheduleMode === 'manual'">Manual</option>
+                            </select>
+                        </div>
+                        <div class="o_gantt_inspector_field">
+                            <label>Milestone</label>
+                            <input type="checkbox"
+                                   t-att-checked="props.record[props.archInfo.isMilestone || 'is_milestone']"
+                                   t-on-change="(ev) => this.onCheckboxChange(props.archInfo.isMilestone || 'is_milestone', ev)"/>
+                        </div>
+                    </div>
+                </div>
+                <!-- Schedule Section -->
+                <div class="o_gantt_inspector_section">
+                    <div class="o_gantt_inspector_section_title" t-on-click="() => this.toggleSection('schedule')">
+                        <i t-att-class="'fa fa-chevron-' + (state.expandedSections.schedule ? 'down' : 'right')"/>
+                        Schedule
+                    </div>
+                    <div t-if="state.expandedSections.schedule">
+                        <div class="o_gantt_inspector_field">
+                            <label>Start</label>
+                            <input type="datetime-local"
+                                   t-att-value="props.record._dateStart ? props.record._dateStart.toFormat('yyyy-MM-dd\\'T\\'HH:mm') : ''"
+                                   t-on-change="(ev) => this.onFieldBlur(props.archInfo.dateStart || 'date_start', ev)"/>
+                        </div>
+                        <div class="o_gantt_inspector_field">
+                            <label>End</label>
+                            <input type="datetime-local"
+                                   t-att-value="props.record._dateEnd ? props.record._dateEnd.toFormat('yyyy-MM-dd\\'T\\'HH:mm') : ''"
+                                   t-on-change="(ev) => this.onFieldBlur(props.archInfo.dateStop || 'date_end', ev)"/>
+                        </div>
+                        <div class="o_gantt_inspector_field">
+                            <label>Progress</label>
+                            <div class="o_gantt_inspector_progress_row">
+                                <input type="range" min="0" max="100"
+                                       t-att-value="Math.round(props.record._progress || 0)"
+                                       t-on-input="onProgressChange"/>
+                                <span class="o_gantt_inspector_progress_val"
+                                      t-esc="Math.round(props.record._progress || 0) + '%'"/>
+                            </div>
+                        </div>
+                        <div class="o_gantt_inspector_field">
+                            <label>Constraint</label>
+                            <select t-on-change="(ev) => this.onSelectChange(props.archInfo.constrainType || 'constrain_type', ev)">
+                                <t t-foreach="[['asap','ASAP'],['alap','ALAP'],['snet','SNET'],['snlt','SNLT'],['fnet','FNET'],['fnlt','FNLT'],['mso','MSO'],['mfo','MFO']]"
+                                   t-as="ct" t-key="ct[0]">
+                                    <option t-att-value="ct[0]"
+                                            t-att-selected="props.record[props.archInfo.constrainType || 'constrain_type'] === ct[0]"
+                                            t-esc="ct[1]"/>
+                                </t>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <!-- Predecessors Section (read-only) -->
+                <div class="o_gantt_inspector_section">
+                    <div class="o_gantt_inspector_section_title" t-on-click="() => this.toggleSection('predecessors')">
+                        <i t-att-class="'fa fa-chevron-' + (state.expandedSections.predecessors ? 'down' : 'right')"/>
+                        Predecessors
+                        <span class="o_gantt_inspector_section_count" t-if="props.predecessors"
+                              t-esc="props.predecessors.length"/>
+                    </div>
+                    <div t-if="state.expandedSections.predecessors">
+                        <div class="o_gantt_inspector_list_item" t-foreach="props.predecessors || []" t-as="pred" t-key="pred_index">
+                            <span class="o_gantt_inspector_badge" t-esc="pred.type ? pred.type.toUpperCase() : 'FS'"/>
+                            <span t-esc="pred._parentName || pred._childName || '...'"/>
+                        </div>
+                        <div class="o_gantt_inspector_list_empty" t-if="!props.predecessors || props.predecessors.length === 0">
+                            No predecessors
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="o_gantt_inspector_empty" t-if="!props.record">
+                <i class="fa fa-mouse-pointer"/>
+                <span>Select a task to inspect</span>
+            </div>
+        </div>
+    </t>
+
+    <!-- Gantt Context Menu Template -->
+    <t t-name="dobtor_project.GanttContextMenu">
+        <div t-ref="contextMenu"
+             t-att-class="'o_gantt_context_menu' + (state.visible ? ' o_gantt_context_menu_visible' : '')"
+             t-att-style="'left: ' + state.x + 'px; top: ' + state.y + 'px;'">
+            <t t-foreach="menuItems" t-as="item" t-key="item.id">
+                <div class="o_gantt_context_menu_item"
+                     t-on-click.stop="() => this.onMenuItemClick(item.id)">
+                    <i t-att-class="'fa ' + item.icon"/>
+                    <span t-esc="item.label"/>
+                </div>
+            </t>
+        </div>
+    </t>
+
+    <!-- Gantt Arrows SVG Template -->
+    <t t-name="dobtor_project.GanttArrows">
+        <svg class="o_gantt_arrow_container" t-att-style="'width: 100%; height: 100%;'">
+            <defs>
+                <!-- Normal arrowhead marker -->
+                <marker id="gantt_arrowhead" markerWidth="8" markerHeight="6"
+                        refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                    <path d="M0,0 L8,3 L0,6 Z" class="o_gantt_arrow_marker"/>
+                </marker>
+                <!-- Highlight arrowhead marker -->
+                <marker id="gantt_arrowhead_highlight" markerWidth="8" markerHeight="6"
+                        refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                    <path d="M0,0 L8,3 L0,6 Z" class="o_gantt_arrow_marker o_gantt_arrow_marker_highlight"/>
+                </marker>
+                <!-- Critical arrowhead marker -->
+                <marker id="gantt_arrowhead_critical" markerWidth="8" markerHeight="6"
+                        refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                    <path d="M0,0 L8,3 L0,6 Z" class="o_gantt_arrow_marker o_gantt_arrow_marker_critical"/>
+                </marker>
+            </defs>
+            <t t-foreach="arrowPaths" t-as="arrow" t-key="arrow.id">
+                <!-- Wider invisible hit area for easier clicking -->
+                <path t-att-d="arrow.d"
+                      class="o_gantt_arrow_hitarea"
+                      t-att-data-pred-id="arrow.id"
+                      fill="none" stroke="transparent" stroke-width="12"
+                      style="cursor: pointer;"/>
+                <path t-att-d="arrow.d"
+                      t-att-class="arrow.pathClass"
+                      t-att-data-pred-id="arrow.id"
+                      t-att-marker-end="'url(#gantt_arrowhead' + (arrow.markerClass ? '_' + arrow.markerClass : '') + ')'"/>
+                <t t-if="arrow.lagLabel">
+                    <text t-att-x="arrow.lagX" t-att-y="arrow.lagY"
+                          class="o_gantt_arrow_lag_label"
+                          text-anchor="middle">
+                        <t t-esc="arrow.lagLabel"/>
+                    </text>
+                </t>
+            </t>
+        </svg>
     </t>
 
 </templates>

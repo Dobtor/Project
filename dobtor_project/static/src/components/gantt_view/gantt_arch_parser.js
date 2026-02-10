@@ -1,26 +1,21 @@
 /** @odoo-module **/
 
-import { XMLParser } from "@web/core/utils/xml";
+import { visitXML } from "@web/core/utils/xml";
 
 export class GanttArchParser {
     parse(arch, models, modelName) {
-        const xmlDoc = new XMLParser().parseXML(arch);
-        const ganttNode = xmlDoc.querySelector("ganttaps");
-
-        if (!ganttNode) {
-            throw new Error("Invalid ganttaps arch: missing ganttaps node");
-        }
-
-        const attrs = ganttNode.attributes;
         const archInfo = {
             resModel: modelName,
         };
 
-        // Parse all attributes from the ganttaps node
-        for (let i = 0; i < attrs.length; i++) {
-            const attr = attrs[i];
-            archInfo[this._toCamelCase(attr.name)] = attr.value;
-        }
+        visitXML(arch, (node) => {
+            if (node.tagName === "ganttaps") {
+                // Parse all attributes from the ganttaps node
+                for (const attr of node.attributes) {
+                    archInfo[this._toCamelCase(attr.name)] = attr.value;
+                }
+            }
+        });
 
         // Set defaults
         archInfo.dateStart = archInfo.dateStart || "date_start";
@@ -28,6 +23,7 @@ export class GanttArchParser {
         archInfo.name = archInfo.name || "name";
         archInfo.defaultGroupBy = archInfo.defaultGroupBy || "project_id";
         archInfo.mainGroupIdName = archInfo.mainGroupIdName || "project_id";
+
         // Parse limitView with explicit handling - minimum 1, default 250
         const parsedLimit = parseInt(archInfo.limitView, 10);
         archInfo.limitView = (!isNaN(parsedLimit) && parsedLimit > 0) ? parsedLimit : 250;
@@ -45,6 +41,11 @@ export class GanttArchParser {
         archInfo.constrainDate = archInfo.constrainDate || "constrain_date";
         archInfo.duration = archInfo.duration || "duration";
         archInfo.planDuration = archInfo.planDuration || "plan_duration";
+        archInfo.fixedCalcType = archInfo.fixedCalcType || "";
+
+        // Dates
+        archInfo.dateDeadline = archInfo.dateDeadline || "";
+        archInfo.dateDone = archInfo.dateDone || "";
 
         // Summary dates
         archInfo.summaryDateStart = archInfo.summaryDateStart || "";
@@ -58,10 +59,11 @@ export class GanttArchParser {
         archInfo.sortingSeq = archInfo.sortingSeq || "sorting_seq";
         archInfo.sortingLevel = archInfo.sortingLevel || "sorting_level";
 
-        // Critical path
+        // Critical path & loop detection
         archInfo.criticalPath = archInfo.criticalPath || "";
         archInfo.cpShows = archInfo.cpShows || "";
         archInfo.cpDetail = archInfo.cpDetail || "";
+        archInfo.pLoop = archInfo.pLoop || "";
 
         // Parent/child
         archInfo.parentId = archInfo.parentId || "parent_id";
@@ -72,6 +74,51 @@ export class GanttArchParser {
 
         // Show on gantt
         archInfo.onGantt = archInfo.onGantt || "on_gantt";
+
+        // Progress
+        archInfo.progress = archInfo.progress || "";
+
+        // Action/plan
+        archInfo.planAction = archInfo.planAction || "";
+        archInfo.actionMenu = archInfo.actionMenu || "";
+
+        // User/project identity
+        archInfo.userId = archInfo.userId || "";
+        archInfo.projectId = archInfo.projectId || "";
+        archInfo.subtaskProjectId = archInfo.subtaskProjectId || "";
+        archInfo.mainGroupModel = archInfo.mainGroupModel || "";
+
+        // Sequence
+        archInfo.defaultSeq = archInfo.defaultSeq || "";
+        archInfo.defaultOrder = archInfo.defaultOrder || "";
+
+        // Document count
+        archInfo.docCount = archInfo.docCount || "";
+
+        // Duration scale
+        archInfo.durationScale = archInfo.durationScale || "";
+
+        // Load bar (resource detail plan)
+        archInfo.loadBarModel = archInfo.loadBarModel || "";
+        archInfo.loadId = archInfo.loadId || "";
+        archInfo.loadIdFrom = archInfo.loadIdFrom || "";
+        archInfo.loadIdsFrom = archInfo.loadIdsFrom || "";
+
+        // Info model (critical path info overlay)
+        archInfo.infoModel = archInfo.infoModel || "";
+        archInfo.infoIds = archInfo.infoIds || "";
+
+        // Ghost/Baseline model (snapshot comparison)
+        archInfo.ghostModel = archInfo.ghostModel || "";
+        archInfo.ghostDateStart = archInfo.ghostDateStart || "";
+        archInfo.ghostDateEnd = archInfo.ghostDateEnd || "";
+        archInfo.ghostDurations = archInfo.ghostDurations || "";
+        archInfo.ghostName = archInfo.ghostName || "";
+        archInfo.ghostTaskId = archInfo.ghostTaskId || "task_id";
+
+        // Resource intersection
+        archInfo.resourceField = archInfo.resourceField || "";
+        archInfo.resourceModel = archInfo.resourceModel || "";
 
         return archInfo;
     }
