@@ -14,28 +14,28 @@ class Project(models.Model):
     @api.model
     def _get_scheduling_type(self):
         return [
-            ('forward', _('Forward')),
-            ('backward', _('Backward')),
-            ('manual', _('Manual')),
+            ('forward', _('正排')),
+            ('backward', _('逆排')),
+            ('manual', _('手動')),
         ]
 
     @api.model
     def _get_duration_picker(self):
         return [
-            ('day', _('Day')),
-            ('second', _('Second')),
-            ('day_second', _('Day Second'))
+            ('day', _('天')),
+            ('second', _('秒')),
+            ('day_second', _('天秒'))
         ]
 
     use_calendar = fields.Boolean(
-        string="Use Calendar",
-        help="Set Calendar in Setting Tab",
+        string="使用行事曆",
+        help="在設定頁籤中設定行事曆",
         default=True
     )
 
     scheduling_type = fields.Selection(
         selection='_get_scheduling_type',
-        string='Scheduling Type',
+        string='排程類型',
         required=True,
         default='forward'
     )
@@ -43,97 +43,154 @@ class Project(models.Model):
     # Note: Using schedule_start/schedule_end to avoid conflict with
     # native project.project.date_start (fields.Date) - Odoo 18 compatibility
     schedule_start = fields.Datetime(
-        string='Schedule Starting Date',
-        default=fields.Datetime.now,
-        help="Datetime Start for Scheduler Auto Mode",
+        string='排程開始日期',
+        default=False,
+        help="自動排程的起始日期。空值 = 規劃模式。",
         index=True,
         copy=False
     )
 
     schedule_end = fields.Datetime(
-        string='Schedule Ending Date',
-        default=lambda self: fields.Datetime.now() + timedelta(days=1),
-        help="Datetime End for Scheduler Auto Mode",
+        string='排程結束日期',
+        default=False,
+        help="自動排程的結束日期",
         index=True,
         copy=False
     )
 
-    task_default_duration = fields.Integer(
-        string='Task Duration',
-        default=86400,
-        help="Default Task Duration in seconds"
+    task_default_duration = fields.Float(
+        string='預設工期',
+        default=24.0,
+        help="新建任務時的預設計劃工期（小時）"
     )
 
-    task_default_start = fields.Integer(
-        string='Task Start (UTC)',
-        default=28800,
-        help="Default Task Start after midnight, UTC - without Time Zone"
+    task_default_start = fields.Float(
+        string='預設開始時間',
+        default=8.0,
+        help="新建任務時的預設開始時間（UTC 午夜後小時數）"
+    )
+
+    @api.model
+    def _get_schedule_mode(self):
+        return [('auto', _('自動')), ('manual', _('手動'))]
+
+    @api.model
+    def _get_constrain_type(self):
+        return [
+            ('asap', _('盡早開始')), ('alap', _('盡晚開始')),
+            ('snet', _('開始不早於')), ('snlt', _('開始不晚於')),
+            ('fnet', _('完成不早於')), ('fnlt', _('完成不晚於')),
+            ('mso', _('必須開始於')), ('mfo', _('必須完成於')),
+        ]
+
+    @api.model
+    def _get_fixed_calc_type(self):
+        return [('duration', _('固定工期')), ('work', _('固定工時'))]
+
+    task_default_schedule_mode = fields.Selection(
+        selection='_get_schedule_mode', string='預設排程模式',
+        default='manual', help="新建任務時的預設排程模式"
+    )
+    task_default_color_gantt = fields.Integer(
+        string='預設長條顏色', default=0,
+        help="新建任務時的預設甘特圖顏色索引 (0=無, 1-11=固定色)"
+    )
+    task_default_constrain_type = fields.Selection(
+        selection='_get_constrain_type', string='預設約束類型',
+        default='asap', help="新建任務時的預設約束類型"
+    )
+    task_default_fixed_calc_type = fields.Selection(
+        selection='_get_fixed_calc_type', string='預設計算方式',
+        default='work', help="新建任務時的預設計算方式"
+    )
+    task_default_on_gantt = fields.Boolean(
+        string='預設顯示名稱', default=False,
+        help="新建任務時是否在甘特圖長條上顯示任務名稱"
     )
 
     task_default_start_end = fields.Char(
-        string='Task Start (tz)',
+        string='預設開始時間 (時區)',
         readonly=True,
         compute='_compute_default_start_end',
-        help="Default Task Start after midnight, with user Time Zone"
+        help="預設任務開始時間（含使用者時區）"
     )
 
     # humanize duration
     duration_scale = fields.Char(
-        string='Duration Scale',
+        string='工期顯示格式',
         default='d,h',
-        help="You can set: y,mo,w,d,h,m,s,ms"
+        help="可設定：y,mo,w,d,h,m,s,ms"
     )
 
     duration_picker = fields.Selection(
         selection='_get_duration_picker',
-        string='Duration Picker',
+        string='工期輸入格式',
         default=None,
-        help="Empty it is Hide: day and second"
+        help="空值則隱藏工期輸入器"
     )
 
     duration_work_scale = fields.Char(
-        string='Duration Work Scale',
+        string='工時顯示格式',
         default='h',
-        help="You can set: y,mo,w,d,h,m,s,ms"
+        help="可設定：y,mo,w,d,h,m,s,ms"
     )
 
     tz = fields.Selection(
         selection=_tz_get,
-        string='Timezone',
+        string='時區',
         default=lambda self: self._context.get('tz'),
-        help="Time Zone"
+        help="時區"
     )
 
-    # Note: In Odoo 18, 'invisible' is a view-layer attribute, not a field parameter.
-    # Use invisible="1" in XML views to hide this field.
     tz_offset = fields.Char(
         compute='_compute_tz_offset',
-        string='Timezone offset'
+        string='時區偏移'
     )
 
     cp_shows = fields.Boolean(
-        string="Critical Path",
-        help="Critical Path Shows",
+        string="關鍵路徑",
+        help="顯示關鍵路徑",
         default=True
     )
 
     cp_detail = fields.Boolean(
-        string="Critical Path Detail",
-        help="Critical Path Shows Detail on Gantt",
+        string="關鍵路徑細節",
+        help="在甘特圖上顯示關鍵路徑細節",
         default=False
     )
 
     detail_plan = fields.Boolean(
-        string="Detail Plan",
-        help="Allow Save Detail Plan",
+        string="細節計劃",
+        help="允許儲存排程細節計劃",
         default=False
     )
 
     fold = fields.Boolean(
-        string="Fold Project",
-        help="Fold project in Gantt view",
+        string="收闔專案",
+        help="在甘特圖中收闔專案",
         default=False
     )
+
+    # -------------------------------------------------------------------------
+    # Planning Mode: Schedule Start / Clear
+    # -------------------------------------------------------------------------
+
+    def action_set_schedule_start(self, date_str):
+        """Set schedule_start and trigger forward scheduler."""
+        self.ensure_one()
+        dt = fields.Datetime.from_string(date_str)
+        self.write({'schedule_start': dt, 'schedule_end': False})
+        self.env['project.task'].scheduler_plan(self.id)
+        return True
+
+    def action_clear_schedule_dates(self, clear_tasks=False):
+        """Clear schedule dates, optionally clear all task dates."""
+        self.ensure_one()
+        self.write({'schedule_start': False, 'schedule_end': False})
+        if clear_tasks:
+            tasks = self.env['project.task'].search([('project_id', '=', self.id)])
+            tasks.write({'date_start': False, 'date_end': False})
+        return True
 
     # -------------------------------------------------------------------------
     # Catch Up / Reschedule Actions
@@ -204,7 +261,7 @@ class Project(models.Model):
                     'type': 'loop',
                     'task_id': task.id,
                     'task_name': task.name,
-                    'message': 'Circular dependency detected',
+                    'message': '偵測到循環依賴',
                     'severity': 'error',
                 })
 
@@ -221,7 +278,7 @@ class Project(models.Model):
                         'type': 'overdue',
                         'task_id': task.id,
                         'task_name': task.name,
-                        'message': 'End date exceeds deadline',
+                        'message': '結束日期超過截止日期',
                         'severity': 'warning',
                     })
 
@@ -247,7 +304,7 @@ class Project(models.Model):
                         'type': 'constraint',
                         'task_id': task.id,
                         'task_name': task.name,
-                        'message': '%s constraint violated' % ct.upper(),
+                        'message': '%s 約束違反' % ct.upper(),
                         'severity': 'warning',
                     })
 
@@ -259,7 +316,7 @@ class Project(models.Model):
                     'type': 'unlinked',
                     'task_id': task.id,
                     'task_name': task.name,
-                    'message': 'Auto task with no predecessor or constraint',
+                    'message': '自動排程任務無前置關聯或約束',
                     'severity': 'info',
                 })
 
@@ -283,7 +340,7 @@ class Project(models.Model):
                         'type': 'resource_overload',
                         'task_id': intervals[i]['task'].id,
                         'task_name': intervals[i]['task'].name,
-                        'message': 'Resource "%s" overlaps with %s' % (
+                        'message': '資源「%s」與 %s 重疊' % (
                             data['name'], intervals[i-1]['task'].name),
                         'severity': 'warning',
                     })
@@ -381,9 +438,9 @@ class Project(models.Model):
                 # Odoo 18: fields.Datetime.now() returns datetime object directly
                 date_start = fields.Datetime.now()
                 date_start = date_start.replace(hour=0, minute=0, second=0)
-                date_start = date_start + timedelta(seconds=proj.task_default_start)
+                date_start = date_start + timedelta(hours=proj.task_default_start)
 
-                date_end = date_start + timedelta(seconds=proj.task_default_duration)
+                date_end = date_start + timedelta(hours=proj.task_default_duration)
 
                 date_start_tz = date_start.replace(tzinfo=pytz.utc).astimezone(user_tz)
                 date_end_tz = date_end.replace(tzinfo=pytz.utc).astimezone(user_tz)

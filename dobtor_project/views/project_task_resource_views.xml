@@ -6,7 +6,7 @@
             <field name="name">project.task.resource.link.list</field>
             <field name="model">project.task.resource.link</field>
             <field name="arch" type="xml">
-                <list string="Resource Links" editable="bottom">
+                <list editable="bottom">
                     <field name="task_id"/>
                     <field name="resource_id"/>
                     <field name="load_factor"/>
@@ -25,7 +25,7 @@
             <field name="name">project.task.resource.link.form</field>
             <field name="model">project.task.resource.link</field>
             <field name="arch" type="xml">
-                <form string="Resource Link">
+                <form string="資源關聯">
                     <sheet>
                         <group>
                             <group>
@@ -58,15 +58,15 @@
             <field name="name">project.task.detail.plan.list</field>
             <field name="model">project.task.detail.plan</field>
             <field name="arch" type="xml">
-                <list string="Detail Plan">
+                <list>
                     <field name="name"/>
                     <field name="task_id"/>
                     <field name="type_level"/>
-                    <field name="data_from"/>
-                    <field name="data_to"/>
+                    <field name="date_from"/>
+                    <field name="date_to"/>
                     <field name="duration" widget="float_time"/>
                     <field name="resource_id"/>
-                    <field name="data_aggr"/>
+                    <field name="date_aggr"/>
                 </list>
             </field>
         </record>
@@ -76,12 +76,11 @@
             <field name="name">project.task.predecessor.list</field>
             <field name="model">project.task.predecessor</field>
             <field name="arch" type="xml">
-                <list string="Predecessors" editable="bottom">
+                <list editable="bottom">
                     <field name="task_id"/>
                     <field name="parent_task_id"/>
                     <field name="type"/>
-                    <field name="lag_qty"/>
-                    <field name="lag_type"/>
+                    <field name="lag_hours" string="延遲(小時)" widget="float_time"/>
                 </list>
             </field>
         </record>
@@ -115,10 +114,9 @@
                     default_group_by="task_id"
                     main_group_id_name="task_id"
                     name="name"
-                    date_start="data_from"
-                    date_stop="data_to"
+                    date_start="date_from"
+                    date_stop="date_to"
                     duration="duration"
-                    color_gantt_set="color_gantt_set"
                     color_gantt="color_gantt"
                     schedule_mode="schedule_mode"
                     limit_view="1000"
@@ -132,7 +130,7 @@
             <field name="name">project.task.info.list</field>
             <field name="model">project.task.info</field>
             <field name="arch" type="xml">
-                <list string="Task Info">
+                <list>
                     <field name="name"/>
                     <field name="task_id"/>
                     <field name="start"/>

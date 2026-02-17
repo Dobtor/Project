@@ -7,12 +7,12 @@ class ProjectBaseline(models.Model):
     _description = "Project Baseline"
     _order = 'create_date desc'
 
-    name = fields.Char(string="Name", required=True)
-    project_id = fields.Many2one('project.project', string="Project",
+    name = fields.Char(string="名稱", required=True)
+    project_id = fields.Many2one('project.project', string="專案",
                                  required=True, ondelete='cascade')
     line_ids = fields.One2many('project.baseline.line', 'baseline_id',
-                               string="Baseline Lines")
-    note = fields.Text(string="Notes")
+                               string="基線明細")
+    note = fields.Text(string="備註")
 
     def action_save_snapshot(self):
         self.ensure_one()
@@ -37,7 +37,7 @@ class ProjectBaselineLine(models.Model):
 
     baseline_id = fields.Many2one('project.baseline', required=True, ondelete='cascade')
     task_id = fields.Many2one('project.task', required=True, ondelete='cascade')
-    date_start = fields.Datetime(string="Start Date")
-    date_end = fields.Datetime(string="End Date")
-    duration = fields.Integer(string="Duration")
-    progress = fields.Float(string="Progress")
+    date_start = fields.Datetime(string="開始日期")
+    date_end = fields.Datetime(string="結束日期")
+    duration = fields.Float(string="工期（小時）")
+    progress = fields.Float(string="進度")

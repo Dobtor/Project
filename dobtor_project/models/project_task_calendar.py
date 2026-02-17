@@ -24,8 +24,6 @@ class ProjectTaskNativeCalendar(models.Model):
                     saved[end_key] = range_set[end_key]
 
             yield dict(saved)
-        else:
-            return ()
 
     def get_sec(self, from_time):
         h = from_time.hour
@@ -75,7 +73,7 @@ class ProjectTaskNativeCalendar(models.Model):
         :return: list of calendar levels
         """
         if task_obj["project_id"] and task_obj["project_id"].use_calendar or task_obj["task_resource_ids"].ids:
-            diff = timedelta(seconds=duration)
+            diff = timedelta(hours=duration)
             tz_name = task_obj["project_id"].tz
 
             if tz_name and date_in:

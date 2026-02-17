@@ -4,7 +4,7 @@ import base64
 import logging
 from xml.etree import ElementTree as ET
 
-from odoo import api, fields, models, _
+from odoo import api, fields, models, _, Command
 from odoo.exceptions import UserError
 
 from . import project_exchange_tool as tool
@@ -42,9 +42,9 @@ class ProjectExchange(models.TransientModel):
         self._add_el(root, "ScheduleFromStart",
                      tool.scheduling_type_to_xml(project.scheduling_type or "forward"))
         self._add_el(root, "StartDate",
-                     tool.odoo_dt_to_xml(project.date_start_gantt))
+                     tool.odoo_dt_to_xml(project.schedule_start))
         self._add_el(root, "FinishDate",
-                     tool.odoo_dt_to_xml(project.date_end_gantt))
+                     tool.odoo_dt_to_xml(project.schedule_end))
         self._add_el(root, "CurrentDate",
                      tool.odoo_dt_to_xml(fields.Datetime.now()))
 
@@ -97,7 +97,6 @@ class ProjectExchange(models.TransientModel):
                      tool.seconds_to_iso8601(task.duration or 0))
         self._add_el(t, "Work",
                      tool.seconds_to_iso8601(task.plan_duration or 0))
-        self._add_el(t, "Milestone", tool.bool_to_xml(task.is_milestone))
         self._add_el(t, "OnGantt", tool.bool_to_xml(task.on_gantt))
         self._add_el(t, "ConstraintType",
                      tool.constraint_type_to_xml(task.constrain_type or "asap"))
@@ -106,20 +105,16 @@ class ProjectExchange(models.TransientModel):
             self._add_el(t, "ConstraintDate",
                          tool.odoo_dt_to_xml(task.constrain_date))
 
-        self._add_el(t, "ColorGanttSet",
-                     tool.bool_to_xml(task.color_gantt_set))
-        if task.color_gantt:
-            self._add_el(t, "ColorGantt", task.color_gantt)
+        self._add_el(t, "ColorGantt", str(task.color_gantt or 0))
 
         # Predecessors
         for pred in task.predecessor_ids:
             pl = ET.SubElement(t, "PredecessorLink")
             self._add_el(pl, "PredecessorUID", str(pred.parent_task_id.id))
             self._add_el(pl, "Type", tool.pred_type_to_xml(pred.type or "FS"))
-            lag_type = pred.lag_type or "day"
-            self._add_el(pl, "LinkLag",
-                         tool.lag_to_xml(pred.lag_qty or 0, lag_type))
-            self._add_el(pl, "LagFormat", tool.lag_format_to_xml(lag_type))
+            link_lag, lag_format = tool.lag_hours_to_xml(pred.lag_hours or 0)
+            self._add_el(pl, "LinkLag", link_lag)
+            self._add_el(pl, "LagFormat", lag_format)
 
         # Tags
         for tag in task.tag_ids:
@@ -176,14 +171,14 @@ class ProjectExchangeImport(models.TransientModel):
         finish_date = self._get_text(root, "FinishDate")
 
         lines = []
-        lines.append((0, 0, {
+        lines.append(Command.create({
             "section": "project",
             "field_name": "name",
             "xml_element": "Name",
             "xml_value": proj_name,
             "converted_value": proj_name,
         }))
-        lines.append((0, 0, {
+        lines.append(Command.create({
             "section": "project",
             "field_name": "scheduling_type",
             "xml_element": "ScheduleFromStart",
@@ -200,7 +195,7 @@ class ProjectExchangeImport(models.TransientModel):
                 uid = self._get_text(task_el, "UID")
                 start = self._get_text(task_el, "Start")
                 finish = self._get_text(task_el, "Finish")
-                lines.append((0, 0, {
+                lines.append(Command.create({
                     "section": "task",
                     "field_name": f"Task {idx}",
                     "xml_element": "Task",
@@ -244,9 +239,9 @@ class ProjectExchangeImport(models.TransientModel):
         start_dt = tool.xml_dt_to_odoo(self._get_text(root, "StartDate"))
         end_dt = tool.xml_dt_to_odoo(self._get_text(root, "FinishDate"))
         if start_dt:
-            proj_vals["date_start_gantt"] = start_dt
+            proj_vals["schedule_start"] = start_dt
         if end_dt:
-            proj_vals["date_end_gantt"] = end_dt
+            proj_vals["schedule_end"] = end_dt
 
         project = self.env["project.project"].create(proj_vals)
         self.project_id = project
@@ -318,18 +313,16 @@ class ProjectExchangeImport(models.TransientModel):
 
                 pred_type = tool.xml_to_pred_type(
                     self._get_text(pred_el, "Type"))
-                lag_format = tool.xml_to_lag_format(
-                    self._get_text(pred_el, "LagFormat"))
-                lag_val = tool.xml_to_lag(
-                    self._get_text(pred_el, "LinkLag") or "0", lag_format)
+                lag_hours = tool.xml_lag_to_hours(
+                    self._get_text(pred_el, "LinkLag") or "0",
+                    self._get_text(pred_el, "LagFormat") or "7")
 
                 try:
                     Predecessor.create({
                         "task_id": task.id,
                         "parent_task_id": parent_task.id,
                         "type": pred_type,
-                        "lag_qty": lag_val,
-                        "lag_type": lag_format,
+                        "lag_hours": lag_hours,
                     })
                 except Exception as e:
                     errors.append(f"Predecessor {pred_uid}→{uid}: {e}")
@@ -358,7 +351,7 @@ class ProjectExchangeImport(models.TransientModel):
                 tag_ids.append(tag.id)
 
             if tag_ids:
-                task.write({"tag_ids": [(4, tid) for tid in tag_ids]})
+                task.write({"tag_ids": [Command.link(tid) for tid in tag_ids]})
 
         if errors:
             self.errors = "\n".join(errors)
@@ -371,8 +364,6 @@ class ProjectExchangeImport(models.TransientModel):
             "name": self._get_text(task_el, "Name") or f"Task {idx}",
             "schedule_mode": tool.xml_to_schedule_mode(
                 self._get_text(task_el, "Manual")),
-            "is_milestone": tool.xml_to_bool(
-                self._get_text(task_el, "Milestone")),
             "on_gantt": tool.xml_to_bool(
                 self._get_text(task_el, "OnGantt") or "1"),
             "sorting_seq": idx,
@@ -406,12 +397,12 @@ class ProjectExchangeImport(models.TransientModel):
         if cdate:
             vals["constrain_date"] = cdate
 
-        color_set = tool.xml_to_bool(
-            self._get_text(task_el, "ColorGanttSet"))
-        vals["color_gantt_set"] = color_set
         color = self._get_text(task_el, "ColorGantt")
         if color:
-            vals["color_gantt"] = color
+            try:
+                vals["color_gantt"] = int(color)
+            except (ValueError, TypeError):
+                vals["color_gantt"] = 0
 
         return vals
 

@@ -2,6 +2,7 @@
 
 import { onMounted, onWillUnmount } from "@odoo/owl";
 import { useThrottleForAnimation } from "@web/core/utils/timing";
+import { cellsDeltaToDuration, humanizeDays, formatDeltaLabel } from "./gantt_utils";
 
 /**
  * Custom OWL hook for bar resize via left/right handles.
@@ -10,7 +11,8 @@ import { useThrottleForAnimation } from "@web/core/utils/timing";
  * @param {Function} params.getTimelineEl - returns the timeline data DOM element
  * @param {Function} params.getCellWidth - returns current cell width in px
  * @param {Function} params.getRecord - (recordId) => record object
- * @param {Function} params.onResizeEnd - (recordId, side, daysDelta) => Promise
+ * @param {Function} params.onResizeEnd - (recordId, side, cellsDelta) => Promise
+ * @param {Function} [params.getScale] - () => current scale string (e.g. "day", "1h", "week")
  * @param {Function} [params.onConstraintSet] - (recordId, constrainType, constrainDate) => Promise
  */
 export function useGanttBarResize(params) {
@@ -29,10 +31,10 @@ export function useGanttBarResize(params) {
 
         const deltaX = ev.clientX - startX;
         const cellWidth = params.getCellWidth();
-        const minWidth = cellWidth; // 1 day minimum
+        const minWidth = 4; // minimum visible bar width in px
 
+        // Pixel-level resize (no grid snap) for minute-level precision
         if (side === "left") {
-            // Adjusting start date: move left edge, adjust width inversely
             const newLeft = originalLeft + deltaX;
             const newWidth = originalWidth - deltaX;
             if (newWidth >= minWidth) {
@@ -40,7 +42,6 @@ export function useGanttBarResize(params) {
                 resizeBar.style.width = `${newWidth}px`;
             }
         } else {
-            // Adjusting end date: only change width
             const newWidth = originalWidth + deltaX;
             if (newWidth >= minWidth) {
                 resizeBar.style.width = `${newWidth}px`;
@@ -105,44 +106,49 @@ export function useGanttBarResize(params) {
 
         const deltaX = ev.clientX - startX;
         const cellWidth = params.getCellWidth();
-        const daysDelta = Math.round(deltaX / cellWidth);
+        // Fractional cell delta for sub-cell (minute-level) precision
+        const cellsDelta = deltaX / cellWidth;
 
         resizeBar.classList.remove("o_gantt_bar_dragging");
         resizeBar.classList.remove("o_gantt_bar_constraint_mode");
         _removeHint();
 
-        if (isConstraintMode && daysDelta !== 0 && params.onConstraintSet) {
+        const _scale = params.getScale ? params.getScale() : "day";
+        const shiftDur = cellsDeltaToDuration(cellsDelta, _scale);
+
+        if (isConstraintMode && Math.abs(cellsDelta) > 0.01 && params.onConstraintSet) {
             // Constraint mode: set constraint instead of modifying dates
             const record = params.getRecord(recordId);
             if (record) {
                 const constrainType = side === "left" ? "snet" : "fnet";
                 const targetDate = side === "left"
-                    ? record._dateStart.plus({ days: daysDelta })
-                    : record._dateEnd.plus({ days: daysDelta });
-                params.onConstraintSet(recordId, constrainType, targetDate.toISO());
+                    ? record._dateStart.plus(shiftDur)
+                    : record._dateEnd.plus(shiftDur);
+                // Odoo Datetime field expects "yyyy-MM-dd HH:mm:ss" string format
+                params.onConstraintSet(recordId, constrainType, targetDate.toFormat("yyyy-MM-dd HH:mm:ss"));
             }
-        } else if (daysDelta !== 0) {
+        } else if (Math.abs(cellsDelta) > 0.01) {
             // Normal resize mode
             // Validate: for left resize, check that start stays before end
             const record = params.getRecord(recordId);
             if (record && record._dateStart && record._dateEnd) {
                 let valid = true;
                 if (side === "left") {
-                    const newStart = record._dateStart.plus({ days: daysDelta });
+                    const newStart = record._dateStart.plus(shiftDur);
                     if (newStart >= record._dateEnd) valid = false;
                 } else {
-                    const newEnd = record._dateEnd.plus({ days: daysDelta });
+                    const newEnd = record._dateEnd.plus(shiftDur);
                     if (newEnd <= record._dateStart) valid = false;
                 }
                 if (valid) {
-                    params.onResizeEnd(recordId, side, daysDelta);
+                    params.onResizeEnd(recordId, side, cellsDelta);
                 } else {
                     // Snap back
                     resizeBar.style.left = `${originalLeft}px`;
                     resizeBar.style.width = `${originalWidth}px`;
                 }
             } else {
-                params.onResizeEnd(recordId, side, daysDelta);
+                params.onResizeEnd(recordId, side, cellsDelta);
             }
         } else {
             // Snap back
@@ -170,43 +176,44 @@ export function useGanttBarResize(params) {
         if (!hintEl || !resizeBar) return;
 
         const cellWidth = params.getCellWidth();
-        const daysDelta = Math.round(deltaX / cellWidth);
+        const cellsDelta = deltaX / cellWidth;
         const record = params.getRecord(recordId);
+        const _scale = params.getScale ? params.getScale() : "day";
+
+        const shiftDur = cellsDeltaToDuration(cellsDelta, _scale);
 
         if (isConstraintMode && record && record._dateStart && record._dateEnd) {
-            // Constraint mode: show constraint type and target date
             const constraintType = side === "left" ? "SNET" : "FNET";
             const targetDate = side === "left"
-                ? record._dateStart.plus({ days: daysDelta })
-                : record._dateEnd.plus({ days: daysDelta });
+                ? record._dateStart.plus(shiftDur)
+                : record._dateEnd.plus(shiftDur);
             hintEl.innerHTML =
                 `<div class="o_gantt_hint_row o_gantt_hint_constraint">` +
                 `<span class="o_gantt_hint_label">${constraintType}</span> ` +
-                `${targetDate.toFormat("MMM d, yyyy")}` +
+                `${targetDate.toFormat("M/d HH:mm")}` +
                 `</div>`;
         } else if (record && record._dateStart && record._dateEnd) {
             const newStart = side === "left"
-                ? record._dateStart.plus({ days: daysDelta })
+                ? record._dateStart.plus(shiftDur)
                 : record._dateStart;
             const newEnd = side === "right"
-                ? record._dateEnd.plus({ days: daysDelta })
+                ? record._dateEnd.plus(shiftDur)
                 : record._dateEnd;
 
             const durationDays = Math.round(newEnd.diff(newStart, "days").days * 10) / 10;
-            const durationStr = _humanizeDays(durationDays);
+            const durationStr = humanizeDays(durationDays);
 
-            const sideLabel = side === "left" ? "Start" : "End";
-            const sign = daysDelta >= 0 ? "+" : "";
+            const sideLabel = side === "left" ? "\u958B\u59CB" : "\u7D50\u675F";
+            const deltaLabel = formatDeltaLabel(cellsDelta, _scale);
 
             const lines = [];
-            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">Start:</span> ${newStart.toFormat("MMM d, yyyy")}</div>`);
-            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">End:</span> ${newEnd.toFormat("MMM d, yyyy")}</div>`);
-            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">Duration:</span> ${durationStr}</div>`);
-            lines.push(`<div class="o_gantt_hint_delta">${sideLabel} ${sign}${daysDelta}d</div>`);
+            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">\u958B\u59CB:</span> ${newStart.toFormat("M/d HH:mm")}</div>`);
+            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">\u7D50\u675F:</span> ${newEnd.toFormat("M/d HH:mm")}</div>`);
+            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">\u5DE5\u671F:</span> ${durationStr}</div>`);
+            lines.push(`<div class="o_gantt_hint_delta">${sideLabel} ${deltaLabel}</div>`);
             hintEl.innerHTML = lines.join("");
         } else {
-            const sign = daysDelta >= 0 ? "+" : "";
-            hintEl.textContent = `${sign}${daysDelta}d`;
+            hintEl.textContent = formatDeltaLabel(cellsDelta, _scale);
         }
 
         // Position near the resize handle
@@ -218,21 +225,6 @@ export function useGanttBarResize(params) {
         }
         hintEl.style.top = `${rect.top - 60}px`;
         hintEl.style.transform = "translateX(-50%)";
-    }
-
-    function _humanizeDays(days) {
-        if (days < 0) return "0d";
-        if (days < 1) {
-            const hours = Math.round(days * 24);
-            return `${hours}h`;
-        }
-        if (days < 7) {
-            return `${days}d`;
-        }
-        const weeks = Math.floor(days / 7);
-        const remainDays = Math.round(days % 7);
-        if (remainDays === 0) return `${weeks}w`;
-        return `${weeks}w ${remainDays}d`;
     }
 
     function _removeHint() {

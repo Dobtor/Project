@@ -98,8 +98,8 @@ class ProjectTaskNativeSchedulerCalendar(models.Model):
                 "calendar_id": str(cal_id.id),
                 "resource_id": str(res_id.id),
                 "name": dp_record.name,
-                "date_from": dp_record.data_from,
-                "date_to": dp_record.data_to,
+                "date_from": dp_record.date_from,
+                "date_to": dp_record.date_to,
                 "flag_task": None,
                 "flag_project": None
             })

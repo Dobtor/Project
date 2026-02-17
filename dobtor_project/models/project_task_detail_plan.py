@@ -9,8 +9,8 @@ class ProjectTaskDetailPlan(models.Model):
     @api.model
     def _get_type(self):
         return [
-            ('cut', _('Cut of DateTime')),
-            ('attendance', _('Attendance')),
+            ('cut', _('日期時間截斷')),
+            ('attendance', _('出勤')),
         ]
 
     @api.depends('resource_id', 'name_att')
@@ -19,7 +19,7 @@ class ProjectTaskDetailPlan(models.Model):
             rec.name = "{} - {}".format(rec.name_att or "", rec.resource_id.name or "")
 
     name = fields.Char(
-        string="Name",
+        string="名稱",
         compute='_compute_name',
         readonly=True,
         store=True
@@ -27,62 +27,58 @@ class ProjectTaskDetailPlan(models.Model):
 
     task_id = fields.Many2one(
         'project.task',
-        string='Task',
+        string='任務',
         readonly=True,
         ondelete='cascade'
     )
     type_level = fields.Selection(
         selection='_get_type',
-        string='Type',
+        string='類型',
         readonly=True
     )
 
-    data_from = fields.Datetime(
-        string="Date From",
+    date_from = fields.Datetime(
+        string="開始日期",
         readonly=True
     )
-    data_to = fields.Datetime(
-        string="Date To",
+    date_to = fields.Datetime(
+        string="結束日期",
         readonly=True
     )
-    duration = fields.Integer(
-        string='Duration',
+    duration = fields.Float(
+        string='工期（小時）',
         readonly=True
     )
     iteration = fields.Integer(
-        string='iteration',
+        string='迭代次數',
         readonly=True
     )
     name_att = fields.Char(
-        string="Name att",
+        string="出勤名稱",
         readonly=True
     )
     resource_id = fields.Many2one(
         'resource.resource',
-        string='Resource',
+        string='資源',
         readonly=True
     )
 
-    color_gantt_set = fields.Boolean(
-        string="Set Color Task",
-        default=True
-    )
-    color_gantt = fields.Char(
-        string="Color",
+    color_gantt = fields.Integer(
+        string="顏色",
         store=True,
-        default="rgba(170,170,13,0.53)",
+        default=3,
         compute='_compute_color_gantt'
     )
 
     schedule_mode = fields.Selection(
         selection=[('auto', 'Auto'), ('manual', 'Manual')],
-        string='Schedule Mode',
+        string='排程模式',
         default='auto',
         readonly=True
     )
 
-    data_aggr = fields.Date(
-        string="Date Aggr.",
+    date_aggr = fields.Date(
+        string="彙總日期",
         readonly=True
     )
 
@@ -90,9 +86,9 @@ class ProjectTaskDetailPlan(models.Model):
     def _compute_color_gantt(self):
         for plan in self:
             if plan.type_level == "cut":
-                plan.color_gantt = "rgba(190,170,23,0.53)"
+                plan.color_gantt = 3  # Yellow
             else:
-                plan.color_gantt = "rgba(170,170,13,0.53)"
+                plan.color_gantt = 2  # Orange
 
 
 class ProjectTaskDetailPlanMixin(models.Model):
@@ -109,22 +105,22 @@ class ProjectTaskDetailPlanMixin(models.Model):
 
     detail_plan_count = fields.Integer(
         compute='_compute_detail_plan_count',
-        string='Detail plan Count',
+        string='細節計劃數',
         store=True
     )
     detail_plan_ids = fields.One2many(
         'project.task.detail.plan',
         'task_id',
-        string='Detail Plan List'
+        string='細節計劃列表'
     )
     detail_plan = fields.Boolean(
-        string="Detail Plan",
-        help="Allow Save Detail Plan",
+        string="細節計劃",
+        help="允許儲存排程細節計劃",
         default=False
     )
-    detail_plan_work = fields.Integer(
+    detail_plan_work = fields.Float(
         compute='_compute_detail_plan_count',
-        string='Detail plan work',
+        string='細節工時（小時）',
         store=True
     )
 
@@ -139,12 +135,12 @@ class ProjectTaskDetailPlanMixin(models.Model):
             value = {
                 "name": level["name"],
                 "type_level": level["type"],
-                "data_from": level["date_from"],
-                "data_to": level["date_to"],
-                "duration": level["interval"].total_seconds(),
+                "date_from": level["date_from"],
+                "date_to": level["date_to"],
+                "duration": level["interval"].total_seconds() / 3600.0,
                 "iteration": level["iteration"],
                 "name_att": level["name"],
-                "data_aggr": level["date_from"].date() if hasattr(level["date_from"], 'date') else level["date_from"],
+                "date_aggr": level["date_from"].date() if hasattr(level["date_from"], 'date') else level["date_from"],
                 "resource_id": resource_id
             }
 

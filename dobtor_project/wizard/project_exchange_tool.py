@@ -140,7 +140,10 @@ def xml_to_pred_type(val):
 
 
 # ---------------------------------------------------------------------------
-# Lag format mapping
+# Lag format mapping (MS Project XML compatibility)
+# Internally lag is stored as Float hours (lag_hours).
+# MS Project XML uses LagFormat codes and a multiplier-based LinkLag value.
+# These helpers convert between lag_hours and MS Project XML format.
 # ---------------------------------------------------------------------------
 
 LAG_FORMAT_MAP = {
@@ -167,22 +170,30 @@ LAG_MULTIPLIER = {
     "month": 4800, "percent": 10,
 }
 
-
-def lag_format_to_xml(lag_type):
-    return LAG_FORMAT_MAP.get(lag_type, "7")
-
-
-def xml_to_lag_format(val):
-    return LAG_FORMAT_MAP_REV.get(val, "day")
-
-
-def lag_to_xml(qty, lag_type):
-    mult = LAG_MULTIPLIER.get(lag_type, 4800)
-    return str(int(qty * mult))
+# Conversion factors: unit → hours
+_UNIT_TO_HOURS = {
+    "minute": 1.0 / 60,
+    "hour": 1.0,
+    "day": 24.0,
+    "week": 168.0,
+    "month": 720.0,
+}
 
 
-def xml_to_lag(val, lag_type):
-    mult = LAG_MULTIPLIER.get(lag_type, 4800)
+def lag_hours_to_xml(lag_hours):
+    """Convert lag_hours (Float) to MS Project XML (LinkLag str, LagFormat str)."""
+    if not lag_hours:
+        return "0", "7"  # 0 days
+    # Export as hours (LagFormat=5, multiplier=10)
+    link_lag = str(int(lag_hours * 10))
+    return link_lag, "5"
+
+
+def xml_lag_to_hours(link_lag_str, lag_format_str):
+    """Convert MS Project XML LinkLag + LagFormat to lag_hours (Float)."""
+    unit = LAG_FORMAT_MAP_REV.get(lag_format_str, "day")
+    mult = LAG_MULTIPLIER.get(unit, 4800)
     if mult == 0:
         return 0.0
-    return float(val) / mult
+    qty_in_unit = float(link_lag_str) / mult
+    return qty_in_unit * _UNIT_TO_HOURS.get(unit, 24.0)

@@ -47,5 +47,27 @@
             ]</field>
         </record>
 
+        <!-- Project Baseline: Multi-company rule -->
+        <record id="project_baseline_multi_company_rule" model="ir.rule">
+            <field name="name">Project Baseline: Multi-company</field>
+            <field name="model_id" ref="model_project_baseline"/>
+            <field name="domain_force">[
+                '|',
+                ('project_id.company_id', '=', False),
+                ('project_id.company_id', 'in', company_ids)
+            ]</field>
+        </record>
+
+        <!-- Project Baseline Line: Multi-company rule -->
+        <record id="project_baseline_line_multi_company_rule" model="ir.rule">
+            <field name="name">Project Baseline Line: Multi-company</field>
+            <field name="model_id" ref="model_project_baseline_line"/>
+            <field name="domain_force">[
+                '|',
+                ('baseline_id.project_id.company_id', '=', False),
+                ('baseline_id.project_id.company_id', 'in', company_ids)
+            ]</field>
+        </record>
+
     </data>
 </odoo>

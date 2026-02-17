@@ -1,14 +1,14 @@
 /** @odoo-module **/
 
 import { _t } from "@web/core/l10n/translation";
-import { useService, useOwnedDialogs } from "@web/core/utils/hooks";
+import { useBus, useService, useOwnedDialogs } from "@web/core/utils/hooks";
 import { Layout } from "@web/search/layout";
 import { useModel } from "@web/model/model";
 import { standardViewProps } from "@web/views/standard_view_props";
 import { FormViewDialog } from "@web/views/view_dialogs/form_view_dialog";
 
 import { ConfirmationDialog } from "@web/core/confirmation_dialog/confirmation_dialog";
-import { Component, useState, useRef, onWillUnmount } from "@odoo/owl";
+import { Component, useState, onWillUnmount } from "@odoo/owl";
 
 export class GanttController extends Component {
     static template = "dobtor_project.GanttController";
@@ -26,7 +26,7 @@ export class GanttController extends Component {
         this.action = useService("action");
         this.orm = useService("orm");
         this.notification = useService("notification");
-        this.rendererRef = useRef("renderer");
+        this._rendererApi = null;
         this.displayDialog = useOwnedDialogs();
 
         // Use useModel - it automatically handles load on props change
@@ -35,6 +35,10 @@ export class GanttController extends Component {
             resModel: this.props.resModel,
             fields: this.props.fields,
         });
+
+        // useModel doesn't subscribe to model.notify() — add explicit subscription
+        // so in-place mutations (toggleGroup, toggleTaskFold, rename, etc.) trigger re-render.
+        useBus(this.model.bus, "update", () => this.render(true));
 
         // Restore persisted toolbar state from localStorage
         const savedScale = localStorage.getItem("gantt_scale") || "day";
@@ -72,14 +76,14 @@ export class GanttController extends Component {
 
         // Scale options — 8 zoom levels matching old module
         this.scales = [
-            { value: "1h", label: _t("1H") },
-            { value: "2h", label: _t("2H") },
-            { value: "4h", label: _t("4H") },
-            { value: "8h", label: _t("8H") },
-            { value: "day", label: _t("Day") },
-            { value: "week", label: _t("Week") },
-            { value: "month", label: _t("Month") },
-            { value: "quarter", label: _t("Quarter") },
+            { value: "1h", label: _t("1\u6642") },
+            { value: "2h", label: _t("2\u6642") },
+            { value: "4h", label: _t("4\u6642") },
+            { value: "8h", label: _t("8\u6642") },
+            { value: "day", label: _t("\u65E5") },
+            { value: "week", label: _t("\u9031") },
+            { value: "month", label: _t("\u6708") },
+            { value: "quarter", label: _t("\u5B63") },
         ];
 
         // Keyboard handler for Delete/Escape/Enter/Arrow navigation
@@ -102,6 +106,9 @@ export class GanttController extends Component {
 
     get rendererProps() {
         return {
+            onRendererReady: (api) => {
+                this._rendererApi = api;
+            },
             model: this.model,
             archInfo: this.props.archInfo,
             onRecordClick: this.onRecordClick.bind(this),
@@ -116,6 +123,8 @@ export class GanttController extends Component {
             violations: this.state.violations,
             onViolationClose: () => { this.state.showViolationPanel = false; },
             onViolationTaskClick: (taskId) => this.onViolationTaskClick(taskId),
+            // Reload callback (uses controller's props with proper domain/context)
+            onReload: () => this._loadWithScrollRestore(this.props),
             // Inspector (Phase 3A)
             showInspectorPanel: this.state.showInspectorPanel,
             inspectorRecordId: this.state.inspectorRecordId,
@@ -126,6 +135,8 @@ export class GanttController extends Component {
             filterCriticalPath: this.state.filterCriticalPath,
             filterOverdue: this.state.filterOverdue,
             filterUnlinked: this.state.filterUnlinked,
+            // PDF report
+            onReportClick: this.onReportClick.bind(this),
         };
     }
 
@@ -144,9 +155,9 @@ export class GanttController extends Component {
         if (!records || records.length === 0) return "";
         const limit = this.props.archInfo.limitView || 250;
         if (records.length >= limit) {
-            return `${records.length}+ records (limit: ${limit})`;
+            return `${records.length}+ 筆 (上限: ${limit})`;
         }
-        return `${records.length} records`;
+        return `${records.length} 筆`;
     }
 
     // Button handlers
@@ -180,7 +191,7 @@ export class GanttController extends Component {
 
         if (!projectId) {
             this.notification.add(
-                _t("Please select a project first to run the scheduler."),
+                _t("請先選擇專案以執行排程器。"),
                 { type: "warning" }
             );
             return;
@@ -191,11 +202,11 @@ export class GanttController extends Component {
         try {
             await this.orm.call(this.props.resModel, "scheduler_plan", [projectId]);
             await this._loadWithScrollRestore(this.props);
-            this.notification.add(_t("Scheduler completed successfully."), { type: "success" });
+            this.notification.add(_t("排程完成。"), { type: "success" });
         } catch (error) {
             console.error("Scheduler error:", error);
             this.notification.add(
-                _t("Scheduler failed: ") + (error.message || "Unknown error"),
+                _t("排程失敗: ") + (error.message || "未知錯誤"),
                 { type: "danger" }
             );
         } finally {
@@ -208,10 +219,9 @@ export class GanttController extends Component {
      * does not jump back to the top-left corner after a data reload.
      */
     async _loadWithScrollRestore(loadProps) {
-        const renderer = this.rendererRef?.comp;
-        const scrollState = renderer?.saveScroll?.();
+        const scrollState = this._rendererApi?.saveScroll?.();
         await this.model.load(loadProps);
-        renderer?.restoreScroll?.(scrollState);
+        this._rendererApi?.restoreScroll?.(scrollState);
     }
 
     _getProjectIdFromContext() {
@@ -231,7 +241,7 @@ export class GanttController extends Component {
                 const loadIdField = this.props.archInfo.loadId || "task_id";
                 await this.action.doAction({
                     type: "ir.actions.act_window",
-                    name: _t("Detail Plans"),
+                    name: _t("細節計畫"),
                     res_model: loadBarModel,
                     views: [[false, "list"], [false, "form"]],
                     domain: [[loadIdField, "=", record.id]],
@@ -244,24 +254,41 @@ export class GanttController extends Component {
         // Handle delete action from context menu
         if (record.action === "delete") {
             const rec = this.model.data?.records?.find(r => r.id === record.id);
-            const name = rec?.display_name || `Task #${record.id}`;
+            const name = rec?.display_name || `\u4EFB\u52D9 #${record.id}`;
             this.displayDialog(ConfirmationDialog, {
-                body: _t("Delete \"%s\"?", name),
+                body: _t("刪除「%s」？", name),
                 confirm: async () => {
                     await this.model.deleteRecord(record.id);
-                    const renderer = this.rendererRef?.comp;
-                    if (renderer) renderer.state.selectedRowId = null;
+                    this._rendererApi?.setSelectedRowId?.(null);
                 },
             });
             return;
         }
 
+        // Handle duplicate action from context menu
+        if (record.action === "duplicate") {
+            try {
+                // orm.call("copy") returns the new record ID (integer)
+                const newIds = await this.orm.call(this.props.resModel, "copy", [record.id]);
+                await this._loadWithScrollRestore(this.props);
+                this.notification.add(_t("任務已複製。"), { type: "success" });
+            } catch (e) {
+                this.notification.add(_t("複製失敗: ") + e.message, { type: "danger" });
+            }
+            return;
+        }
+
+        // Milestone records use negative IDs → open project.milestone form
+        const isMilestone = record._isMilestoneRecord || record.id < 0;
+        const resModel = isMilestone ? "project.milestone" : this.props.resModel;
+        const resId = isMilestone ? Math.abs(record.id) : record.id;
+
         this.displayDialog(
             FormViewDialog,
             {
-                resModel: this.props.resModel,
-                resId: record.id,
-                title: record.display_name || _t("Task"),
+                resModel,
+                resId,
+                title: record.display_name || (isMilestone ? _t("里程碑") : _t("任務")),
                 onRecordSaved: async () => {
                     await this._loadWithScrollRestore(this.props);
                 },
@@ -275,7 +302,7 @@ export class GanttController extends Component {
             {
                 resModel: this.props.resModel,
                 context: { ...this.props.context, ...defaults },
-                title: _t("New Task"),
+                title: _t("新增任務"),
                 onRecordSaved: async () => {
                     await this._loadWithScrollRestore(this.props);
                 },
@@ -320,8 +347,8 @@ export class GanttController extends Component {
     }
 
     get sortLabel() {
-        const labels = { seq: "Seq", start: "Start", name: "Name" };
-        return labels[this.state.sortMode] || "Seq";
+        const labels = { seq: "\u5E8F\u865F", start: "\u958B\u59CB", name: "\u540D\u7A31" };
+        return labels[this.state.sortMode] || "\u5E8F\u865F";
     }
 
     onWeekTypeToggle() {
@@ -330,7 +357,7 @@ export class GanttController extends Component {
     }
 
     get weekTypeLabel() {
-        return this.state.weekType === "iso" ? "Mon" : "Sun";
+        return this.state.weekType === "iso" ? "\u9031\u4E00" : "\u9031\u65E5";
     }
 
     onListDetailToggle() {
@@ -352,6 +379,61 @@ export class GanttController extends Component {
 
     onMoreMenuClose() {
         this.state.showMoreMenu = false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Batch Operations (multi-select)
+    // -------------------------------------------------------------------------
+
+    _getSelectedIds() {
+        const api = this._rendererApi;
+        const multiIds = api?.getSelectedRowIds?.();
+        if (multiIds && multiIds.size > 0) return [...multiIds];
+        const singleId = api?.getSelectedRowId?.();
+        return singleId ? [singleId] : [];
+    }
+
+    async onBatchSetAuto() {
+        const ids = this._getSelectedIds();
+        if (!ids.length) {
+            this.notification.add(_t("\u8ACB\u5148\u9078\u64C7\u4EFB\u52D9"), { type: "warning" });
+            return;
+        }
+        const field = this.props.archInfo.scheduleMode || "schedule_mode";
+        for (const id of ids) {
+            await this.model.updateRecord(id, { [field]: "auto" });
+        }
+        await this._loadWithScrollRestore(this.props);
+        this.notification.add(_t("\u5DF2\u5C07 %s \u7B46\u4EFB\u52D9\u8A2D\u70BA\u81EA\u52D5\u6392\u7A0B", ids.length), { type: "success" });
+    }
+
+    async onBatchSetManual() {
+        const ids = this._getSelectedIds();
+        if (!ids.length) {
+            this.notification.add(_t("\u8ACB\u5148\u9078\u64C7\u4EFB\u52D9"), { type: "warning" });
+            return;
+        }
+        const field = this.props.archInfo.scheduleMode || "schedule_mode";
+        for (const id of ids) {
+            await this.model.updateRecord(id, { [field]: "manual" });
+        }
+        await this._loadWithScrollRestore(this.props);
+        this.notification.add(_t("\u5DF2\u5C07 %s \u7B46\u4EFB\u52D9\u8A2D\u70BA\u624B\u52D5\u6392\u7A0B", ids.length), { type: "success" });
+    }
+
+    async onBatchRemoveConstraints() {
+        const ids = this._getSelectedIds();
+        if (!ids.length) {
+            this.notification.add(_t("\u8ACB\u5148\u9078\u64C7\u4EFB\u52D9"), { type: "warning" });
+            return;
+        }
+        const typeField = this.props.archInfo.constrainType || "constrain_type";
+        const dateField = this.props.archInfo.constrainDate || "constrain_date";
+        for (const id of ids) {
+            await this.model.updateRecord(id, { [typeField]: "asap", [dateField]: false });
+        }
+        await this._loadWithScrollRestore(this.props);
+        this.notification.add(_t("\u5DF2\u79FB\u9664 %s \u7B46\u4EFB\u52D9\u7684\u9650\u5236", ids.length), { type: "success" });
     }
 
     // -------------------------------------------------------------------------
@@ -408,7 +490,7 @@ export class GanttController extends Component {
         const projectId = this._getProjectIdFromContext();
         if (!projectId) {
             this.notification.add(
-                _t("Please select a project first."),
+                _t("請先選擇專案。"),
                 { type: "warning" }
             );
             return;
@@ -427,7 +509,7 @@ export class GanttController extends Component {
         const projectId = this._getProjectIdFromContext();
         if (!projectId) {
             this.notification.add(
-                _t("Please select a project first to export."),
+                _t("請先選擇專案以匯出。"),
                 { type: "warning" }
             );
             return;
@@ -437,7 +519,7 @@ export class GanttController extends Component {
             const ids = await this.orm.create("project.exchange", [{ project_id: projectId }]);
             await this.action.doAction({
                 type: "ir.actions.act_window",
-                name: _t("Export Project (XML)"),
+                name: _t("匯出專案 (XML)"),
                 res_model: "project.exchange",
                 res_id: ids[0],
                 views: [[false, "form"]],
@@ -446,7 +528,7 @@ export class GanttController extends Component {
         } catch (error) {
             console.error("Export error:", error);
             this.notification.add(
-                _t("Failed to open export wizard."),
+                _t("無法開啟匯出精靈。"),
                 { type: "danger" }
             );
         }
@@ -455,7 +537,7 @@ export class GanttController extends Component {
     async onImportClick() {
         await this.action.doAction({
             type: "ir.actions.act_window",
-            name: _t("Import Project (XML)"),
+            name: _t("匯入專案 (XML)"),
             res_model: "project.exchange.import",
             views: [[false, "form"]],
             target: "new",
@@ -467,40 +549,61 @@ export class GanttController extends Component {
     // -------------------------------------------------------------------------
 
     async _onKeyDown(ev) {
+        if (ev.isComposing) return; // IME composition (e.g. 注音選字)
         // Only act when Gantt view is focused (not inside input/dialog)
         if (ev.target.closest("input, textarea, [contenteditable], .modal")) return;
 
-        const renderer = this.rendererRef?.comp;
-        const selectedId = renderer?.state?.selectedRowId;
+        const api = this._rendererApi;
+        const selectedId = api?.getSelectedRowId?.();
 
         if (ev.key === "Delete" && selectedId) {
             ev.preventDefault();
-            const record = this.model.data?.records?.find(r => r.id === selectedId);
-            const name = record?.display_name || `Task #${selectedId}`;
-            this.displayDialog(ConfirmationDialog, {
-                body: _t("Delete \"%s\"?", name),
-                confirm: async () => {
-                    await this.model.deleteRecord(selectedId);
-                    if (renderer) renderer.state.selectedRowId = null;
-                },
-            });
-        }
-
-        if (ev.key === "Escape") {
-            if (renderer) renderer.state.selectedRowId = null;
-        }
-
-        if (ev.key === "Enter" && selectedId) {
-            ev.preventDefault();
-            const record = this.model.data?.records?.find(r => r.id === selectedId);
-            if (record) {
-                this.onRecordClick(record);
+            // Multi-select delete
+            const multiIds = api?.getSelectedRowIds?.();
+            if (multiIds && multiIds.size > 1) {
+                const count = multiIds.size;
+                this.displayDialog(ConfirmationDialog, {
+                    body: _t("刪除已選取的 %s 個任務？", count),
+                    confirm: async () => {
+                        for (const id of multiIds) {
+                            await this.model.deleteRecord(id);
+                        }
+                        api?.clearMultiSelect?.();
+                        api?.setSelectedRowId?.(null);
+                        await this._loadWithScrollRestore(this.props);
+                    },
+                });
+            } else {
+                const record = this.model.data?.records?.find(r => r.id === selectedId);
+                const name = record?.display_name || `\u4EFB\u52D9 #${selectedId}`;
+                this.displayDialog(ConfirmationDialog, {
+                    body: _t("刪除「%s」？", name),
+                    confirm: async () => {
+                        await this.model.deleteRecord(selectedId);
+                        api?.setSelectedRowId?.(null);
+                    },
+                });
             }
         }
 
-        if ((ev.key === "ArrowUp" || ev.key === "ArrowDown") && renderer) {
+        if (ev.key === "Escape") {
+            api?.setSelectedRowId?.(null);
+            api?.clearMultiSelect?.();
+            // Also close panels
+            if (this.state.showInspectorPanel) {
+                this.state.showInspectorPanel = false;
+                this.state.inspectorRecordId = null;
+            }
+            if (this.state.showViolationPanel) {
+                this.state.showViolationPanel = false;
+            }
+        }
+
+        // Enter key: handled in GanttRenderer directly (avoids cross-component API timing issues)
+
+        if ((ev.key === "ArrowUp" || ev.key === "ArrowDown") && api) {
             ev.preventDefault();
-            const rows = renderer.flattenedRows.filter(r => !r._isGroup);
+            const rows = api.getFlattenedRows?.()?.filter(r => !r._isGroup) || [];
             if (!rows.length) return;
             const currentIdx = rows.findIndex(r => r.id === selectedId);
             let nextIdx;
@@ -509,7 +612,17 @@ export class GanttController extends Component {
             } else {
                 nextIdx = currentIdx < 0 ? 0 : Math.max(currentIdx - 1, 0);
             }
-            renderer.state.selectedRowId = rows[nextIdx].id;
+            api.setSelectedRowId?.(rows[nextIdx].id);
+        }
+
+        // Ctrl+A: select all visible tasks
+        if (ev.key === "a" && (ev.ctrlKey || ev.metaKey) && api) {
+            ev.preventDefault();
+            const rows = api.getFlattenedRows?.()?.filter(r => !r._isGroup) || [];
+            const multiIds = api.getSelectedRowIds?.();
+            if (multiIds) {
+                rows.forEach(r => multiIds.add(r.id));
+            }
         }
     }
 
@@ -520,19 +633,19 @@ export class GanttController extends Component {
     async onCatchUpClick() {
         const projectId = this._getProjectIdFromContext();
         if (!projectId) {
-            this.notification.add(_t("Please select a project first."), { type: "warning" });
+            this.notification.add(_t("請先選擇專案。"), { type: "warning" });
             return;
         }
         this.displayDialog(ConfirmationDialog, {
-            body: _t("Update task progress based on today's date and re-schedule?"),
+            body: _t("根據今日日期更新任務進度並重新排程？"),
             confirm: async () => {
                 this.state.isLoading = true;
                 try {
                     await this.model.catchUp(projectId);
                     await this._loadWithScrollRestore(this.props);
-                    this.notification.add(_t("Catch up completed."), { type: "success" });
+                    this.notification.add(_t("追趕進度完成。"), { type: "success" });
                 } catch (e) {
-                    this.notification.add(_t("Catch up failed: ") + e.message, { type: "danger" });
+                    this.notification.add(_t("追趕進度失敗: ") + e.message, { type: "danger" });
                 } finally {
                     this.state.isLoading = false;
                 }
@@ -543,19 +656,19 @@ export class GanttController extends Component {
     async onRescheduleClick() {
         const projectId = this._getProjectIdFromContext();
         if (!projectId) {
-            this.notification.add(_t("Please select a project first."), { type: "warning" });
+            this.notification.add(_t("請先選擇專案。"), { type: "warning" });
             return;
         }
         this.displayDialog(ConfirmationDialog, {
-            body: _t("Move remaining work of overdue tasks to today and re-schedule?"),
+            body: _t("將逾期任務的剩餘工作移至今天並重新排程？"),
             confirm: async () => {
                 this.state.isLoading = true;
                 try {
                     await this.model.rescheduleIncomplete(projectId);
                     await this._loadWithScrollRestore(this.props);
-                    this.notification.add(_t("Reschedule completed."), { type: "success" });
+                    this.notification.add(_t("重新排程完成。"), { type: "success" });
                 } catch (e) {
-                    this.notification.add(_t("Reschedule failed: ") + e.message, { type: "danger" });
+                    this.notification.add(_t("重新排程失敗: ") + e.message, { type: "danger" });
                 } finally {
                     this.state.isLoading = false;
                 }
@@ -588,11 +701,8 @@ export class GanttController extends Component {
     }
 
     onViolationTaskClick(taskId) {
-        const renderer = this.rendererRef?.comp;
-        if (renderer) {
-            renderer.state.selectedRowId = taskId;
-            renderer.scrollToRecord(taskId);
-        }
+        this._rendererApi?.setSelectedRowId?.(taskId);
+        this._rendererApi?.scrollToRecord?.(taskId);
     }
 
     // -------------------------------------------------------------------------
@@ -629,22 +739,22 @@ export class GanttController extends Component {
     async onLevelResourcesClick() {
         const projectId = this._getProjectIdFromContext();
         if (!projectId) {
-            this.notification.add(_t("Please select a project first."), { type: "warning" });
+            this.notification.add(_t("請先選擇專案。"), { type: "warning" });
             return;
         }
         this.displayDialog(ConfirmationDialog, {
-            body: _t("Level resources? Non-critical tasks will be delayed to resolve conflicts."),
+            body: _t("執行資源平準化？非關鍵任務將被延遲以解決衝突。"),
             confirm: async () => {
                 this.state.isLoading = true;
                 try {
                     const count = await this.model.levelResources(projectId);
                     await this._loadWithScrollRestore(this.props);
                     this.notification.add(
-                        count > 0 ? _t("%s tasks adjusted.", count) : _t("No conflicts found."),
+                        count > 0 ? _t("%s 個任務已調整。", count) : _t("未發現衝突。"),
                         { type: count > 0 ? "success" : "info" }
                     );
                 } catch (e) {
-                    this.notification.add(_t("Leveling failed: ") + e.message, { type: "danger" });
+                    this.notification.add(_t("平準化失敗: ") + e.message, { type: "danger" });
                 } finally {
                     this.state.isLoading = false;
                 }
@@ -662,7 +772,7 @@ export class GanttController extends Component {
         this.state.isLoading = true;
         try {
             const result = await this.model.saveBaseline(projectId);
-            this.notification.add(_t("Baseline saved: %s", result.name), { type: "success" });
+            this.notification.add(_t("基線已儲存: %s", result.name), { type: "success" });
             this.state.baselines = await this.model.getBaselines(projectId);
         } finally {
             this.state.isLoading = false;
@@ -692,22 +802,22 @@ export class GanttController extends Component {
 
     // Feature 20: Detail plan stat button — open detail plans for selected task
     async onDetailPlanClick() {
-        const selectedId = this.rendererRef?.comp?.state?.selectedRowId;
+        const selectedId = this._rendererApi?.getSelectedRowId?.();
         if (!selectedId) {
-            this.notification.add(_t("Please select a task first."), { type: "info" });
+            this.notification.add(_t("請先選擇任務。"), { type: "info" });
             return;
         }
 
         const loadBarModel = this.props.archInfo.loadBarModel;
         if (!loadBarModel) {
-            this.notification.add(_t("No detail plan model configured."), { type: "warning" });
+            this.notification.add(_t("未設定細節計畫模型。"), { type: "warning" });
             return;
         }
 
         const loadIdField = this.props.archInfo.loadId || "task_id";
         await this.action.doAction({
             type: "ir.actions.act_window",
-            name: _t("Detail Plans"),
+            name: _t("細節計畫"),
             res_model: loadBarModel,
             views: [[false, "list"], [false, "form"]],
             domain: [[loadIdField, "=", selectedId]],

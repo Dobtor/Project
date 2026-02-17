@@ -10,25 +10,62 @@ class ProjectTaskNative(models.Model):
     @api.model
     def _get_schedule_mode(self):
         return [
-            ('auto', _('Auto')),
-            ('manual', _('Manual')),
+            ('auto', _('自動')),
+            ('manual', _('手動')),
         ]
 
     @api.model
     def _get_constrain_type(self):
         return [
-            ('asap', _('As Soon As Possible')),
-            ('alap', _('As Late As Possible')),
-            ('fnet', _('Finish No Earlier Than')),
-            ('fnlt', _('Finish No Later Than')),
-            ('mso', _('Must Start On')),
-            ('mfo', _('Must Finish On')),
-            ('snet', _('Start No Earlier Than')),
-            ('snlt', _('Start No Later Than')),
+            ('asap', _('盡早開始')),
+            ('alap', _('盡晚開始')),
+            ('fnet', _('完成不早於')),
+            ('fnlt', _('完成不晚於')),
+            ('mso', _('必須開始於')),
+            ('mfo', _('必須完成於')),
+            ('snet', _('開始不早於')),
+            ('snlt', _('開始不晚於')),
         ]
 
     @api.model
+    def default_get(self, fields_list):
+        defaults = super().default_get(fields_list)
+        project_id = self._context.get('default_project_id')
+        if not project_id:
+            return defaults
+
+        project = self.env['project.project'].browse(project_id)
+        if not project.exists():
+            return defaults
+
+        mapping = {
+            'schedule_mode': project.task_default_schedule_mode,
+            'color_gantt': project.task_default_color_gantt,
+            'constrain_type': project.task_default_constrain_type,
+            'fixed_calc_type': project.task_default_fixed_calc_type,
+            'on_gantt': project.task_default_on_gantt,
+            'plan_duration': project.task_default_duration,
+        }
+        for field_name, value in mapping.items():
+            if field_name in fields_list:
+                defaults[field_name] = value
+
+        return defaults
+
+    @api.model
     def _default_date_end(self):
+        if 'default_project_id' in self._context:
+            project_id = self._context['default_project_id']
+            project = self.env['project.project'].browse(project_id)
+            if not project.schedule_start:
+                return False  # Planning mode: no dates
+
+        # Subtask inherits parent's date range
+        if 'default_parent_id' in self._context:
+            parent = self.env['project.task'].browse(self._context['default_parent_id'])
+            if parent.date_end:
+                return parent.date_end
+
         # Odoo 18: fields.Datetime.now() returns datetime object directly
         date_end = fields.Datetime.now()
         date_end = date_end.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -41,12 +78,24 @@ class ProjectTaskNative(models.Model):
             if project.task_default_duration != 0 and project.task_default_start != 0:
                 date_end = fields.Datetime.now()
                 date_end = date_end.replace(hour=0, minute=0, second=0, microsecond=0)
-                date_end = date_end + timedelta(seconds=project.task_default_start + project.task_default_duration)
+                date_end = date_end + timedelta(hours=project.task_default_start + project.task_default_duration)
 
         return date_end
 
     @api.model
     def _default_date_start(self):
+        if 'default_project_id' in self._context:
+            project_id = self._context['default_project_id']
+            project = self.env['project.project'].browse(project_id)
+            if not project.schedule_start:
+                return False  # Planning mode: no dates
+
+        # Subtask inherits parent's date range
+        if 'default_parent_id' in self._context:
+            parent = self.env['project.task'].browse(self._context['default_parent_id'])
+            if parent.date_start:
+                return parent.date_start
+
         # Odoo 18: fields.Datetime.now() returns datetime object directly
         date_start = fields.Datetime.now()
         date_start = date_start.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -56,20 +105,20 @@ class ProjectTaskNative(models.Model):
             project = self.env['project.project'].browse(project_id)
 
             if project.task_default_start != 0:
-                date_start = date_start + timedelta(seconds=project.task_default_start)
+                date_start = date_start + timedelta(hours=project.task_default_start)
 
         return date_start
 
     @api.model
     def _get_fixed_calc_type(self):
         return [
-            ('duration', _('Duration')),
-            ('work', _('Work')),
+            ('duration', _('固定工期')),
+            ('work', _('固定工時')),
         ]
 
     fixed_calc_type = fields.Selection(
         selection='_get_fixed_calc_type',
-        string='Calc Type',
+        string='計算方式',
         required=True,
         default='work'
     )
@@ -78,34 +127,39 @@ class ProjectTaskNative(models.Model):
     predecessor_ids = fields.One2many(
         'project.task.predecessor',
         'task_id',
-        string='Links'
+        string='前置關聯'
     )
     predecessor_count = fields.Integer(
         compute='_compute_predecessor_count',
-        string='Predecessor Count',
+        string='前置數量',
         store=True
     )
+    # Design note: predecessor_parent is a hybrid field — computed via
+    # _compute_predecessor_count for initial/batch population, but also
+    # manually written by project.task.predecessor's create/write/unlink
+    # to maintain accuracy without side effects in compute methods.
+    # This avoids Odoo 18's restriction on write() inside compute.
     predecessor_parent = fields.Integer(
         compute='_compute_predecessor_count',
-        string='Predecessor parent',
+        string='被依賴數量',
         store=True
     )
 
     # Gantt
-    is_milestone = fields.Boolean(
-        string="Mark as Milestone",
-        default=False
-    )
     on_gantt = fields.Boolean(
-        string="Task name on gantt",
+        string="長條顯示名稱",
         default=False
     )
-    date_finished = fields.Datetime(string='Done Date')
-    progress = fields.Float(string="Progress", default=0)
+    date_finished = fields.Datetime(
+        string='完成日期',
+        compute='_compute_date_finished',
+        store=True,
+    )
+    progress = fields.Float(string="進度", default=0)
 
-    # Info - autoplanning
-    duration = fields.Integer(
-        string='Duration',
+    # Info - autoplanning (hours)
+    duration = fields.Float(
+        string='實際工期',
         compute='_compute_duration',
         readonly=True,
         store=True
@@ -114,7 +168,7 @@ class ProjectTaskNative(models.Model):
     # Scheduler
     schedule_mode = fields.Selection(
         selection='_get_schedule_mode',
-        string='Schedule Mode',
+        string='排程模式',
         required=True,
         default='manual'
     )
@@ -122,61 +176,62 @@ class ProjectTaskNative(models.Model):
     # Constrain
     constrain_type = fields.Selection(
         selection='_get_constrain_type',
-        string='Constraint Type',
+        string='約束類型',
         required=True,
         default='asap'
     )
-    constrain_date = fields.Datetime(string='Constraint Date')
+    constrain_date = fields.Datetime(string='約束日期')
 
-    plan_action = fields.Integer(
+    plan_action = fields.Boolean(
         compute='_compute_plan_action',
-        string='Plan Action',
+        string='排程動作',
         store=True
     )
-    plan_duration = fields.Integer(
-        string='Plan Value',
-        default=86400
+    plan_duration = fields.Float(
+        string='計劃工期',
+        default=24.0
+    )
+    plan_offset = fields.Float(
+        string='計劃偏移（小時）',
+        default=0.0,
+        help="規劃模式中從 T=0 起算的虛擬時間軸偏移（小時）"
     )
 
     # Redefine defaults - using date_start/date_end from base project.task
     date_start = fields.Datetime(
-        string='Starting Date',
+        string='開始日期',
         default=_default_date_start,
         index=True,
         copy=False
     )
 
     date_end = fields.Datetime(
-        string='Ending Date',
+        string='結束日期',
         default=_default_date_end,
         index=True,
         copy=False
     )
 
-    # Color
-    color_gantt_set = fields.Boolean(
-        string="Set Color Task",
-        default=False
-    )
-    color_gantt = fields.Char(
-        string="Color Task Bar",
-        help="Choose your color for Task Bar",
-        default="rgba(170,170,13,0.53)"
+    # Color (0=no color, 1-11 = Kanban fixed colors)
+    color_gantt = fields.Integer(
+        string="長條顏色",
+        help="甘特圖長條顏色索引 (0=無自訂顏色, 1-11=固定色)",
+        default=0
     )
 
     # Humanize duration
     duration_scale = fields.Char(
-        string='Duration Scale',
+        string='工期顯示格式',
         related="project_id.duration_scale",
         readonly=True
     )
     duration_picker = fields.Selection(
-        string='Duration Picker',
+        string='工期輸入格式',
         related="project_id.duration_picker",
         readonly=True
     )
     duration_work_scale = fields.Char(
-        string='Duration Work Scale',
+        string='工時顯示格式',
         related="project_id.duration_work_scale",
         readonly=True
     )
@@ -186,49 +241,49 @@ class ProjectTaskNative(models.Model):
     # child_ids.summary_date_start and child_ids.summary_date_end (self-referential)
     summary_date_start = fields.Datetime(
         compute='_get_summary_date',
-        string="Summary Date Start",
+        string="摘要開始日期",
         store=False,
         recursive=True
     )
     summary_date_end = fields.Datetime(
         compute='_get_summary_date',
-        string="Summary Date End",
+        string="摘要結束日期",
         store=False,
         recursive=True
     )
 
     # Loop detection
-    p_loop = fields.Boolean(string="Loop Detected")
+    p_loop = fields.Boolean(string="循環偵測")
 
     # Tree sorting
     fold = fields.Boolean(
-        string="Fold Task",
-        help="Fold task in Gantt view",
+        string="收闔任務",
+        help="在甘特圖中收闔任務",
         default=False
     )
     sorting_seq = fields.Integer(
-        string='Sorting Seq.',
+        string='排序序號',
         default=0
     )
     sorting_level = fields.Integer(
-        string='Sorting Level',
+        string='排序層級',
         default=0
     )
 
     # Critical path
     critical_path = fields.Boolean(
-        string="is Critical Path",
-        help="is Critical Path",
+        string="關鍵路徑",
+        help="是否在關鍵路徑上",
         default=False,
         readonly=True
     )
     cp_shows = fields.Boolean(
-        string='Critical Path',
+        string='關鍵路徑',
         related="project_id.cp_shows",
         readonly=True
     )
     cp_detail = fields.Boolean(
-        string='Critical Path Detail',
+        string='關鍵路徑細節',
         related="project_id.cp_detail",
         readonly=True
     )
@@ -282,18 +337,18 @@ class ProjectTaskNative(models.Model):
 
     @api.onchange('project_id')
     def _onchange_project(self):
-        if hasattr(super(ProjectTaskNative, self), '_onchange_project'):
+        if hasattr(super(), '_onchange_project'):
             if self._origin.id:
                 if self.env['project.task.predecessor'].search(
                         ['|', ('task_id', '=', self._origin.id), ('parent_task_id', '=', self._origin.id)], limit=1):
                     raise UserError(_(
-                        'You can not change a Project for task.\nPlease Delete - Predecessor: for parent or child.'))
+                        '無法變更任務的專案。\n請先刪除前置關聯。'))
 
                 if self.search([('parent_id', '=', self._origin.id)], limit=1):
                     raise UserError(_(
-                        'You can not change a Project for Task.\nPlease Delete or Remove - sub tasks first.'))
+                        '無法變更任務的專案。\n請先刪除或移除子任務。'))
 
-            super(ProjectTaskNative, self)._onchange_project()
+            super()._onchange_project()
 
     @api.depends("predecessor_ids")
     def _compute_predecessor_count(self):
@@ -305,7 +360,8 @@ class ProjectTaskNative(models.Model):
         if not self:
             return
 
-        # Batch query: get all parent task counts in one query
+        # Raw SQL for performance: single GROUP BY query instead of
+        # per-record ORM search_count on the predecessor table.
         task_ids = self.ids
         parent_counts = {}
         if task_ids:
@@ -328,22 +384,22 @@ class ProjectTaskNative(models.Model):
         # Use browse instead of search for known ID - more efficient
         search_project = self.env['project.project'].browse(project_id).exists()
         if not search_project:
-            raise UserError(_('Project not found.'))
+            raise UserError(_('找不到專案。'))
 
         scheduling_type = search_project.scheduling_type
 
         if scheduling_type == "manual":
             raise UserError(_(
-                'Not work in manual mode. Please set in project: Backward or Forward'))
+                '手動模式不適用。請在專案中設定為正排或逆排。'))
 
         # project_task_scheduler.py
         self._scheduler_plan_start_calc(project=search_project)
         self._summary_work(project_id=project_id)
-        self._scheduler_plan_complite(project_id=project_id, scheduling_type=scheduling_type)
+        self._scheduler_plan_complete(project_id=project_id, scheduling_type=scheduling_type)
 
         return True
 
-    def _scheduler_plan_complite(self, project_id, scheduling_type):
+    def _scheduler_plan_complete(self, project_id, scheduling_type):
         """Calculate and update project schedule dates - optimized batch operations.
 
         Note: Uses schedule_end/schedule_start (Datetime) to avoid conflict
@@ -380,20 +436,30 @@ class ProjectTaskNative(models.Model):
 
         for task in search_tasks:
             if task.schedule_mode == "auto":
+                date_start = task.summary_date_start
+                date_end = task.summary_date_end
+
+                # Enforce FS predecessor constraints: parent start cannot be
+                # earlier than the latest end date of its FS predecessors.
+                for pred in task.predecessor_ids:
+                    if pred.type == 'FS' and pred.parent_task_id.date_end:
+                        if date_start and date_start < pred.parent_task_id.date_end:
+                            date_start = pred.parent_task_id.date_end
+
                 var_data = {
-                    "date_start": task.summary_date_start,
-                    "date_end": task.summary_date_end,
+                    "date_start": date_start,
+                    "date_end": date_end,
                 }
 
                 # Odoo 18: datetime fields are already datetime objects
-                if task.summary_date_end and task.summary_date_start:
-                    diff = task.summary_date_end - task.summary_date_start
-                    var_data["plan_duration"] = diff.total_seconds()
+                if date_end and date_start:
+                    diff = date_end - date_start
+                    var_data["plan_duration"] = diff.total_seconds() / 3600.0
 
                 task.write(var_data)
 
     @api.depends("predecessor_ids.task_id", "predecessor_ids.type", "constrain_type", "constrain_date", "plan_duration",
-                 "duration", "project_id.scheduling_type", "task_resource_ids.name")
+                 "duration", "project_id.scheduling_type")
     def _compute_plan_action(self):
         for task in self:
             if task.schedule_mode != "manual":
@@ -401,28 +467,129 @@ class ProjectTaskNative(models.Model):
             else:
                 task.plan_action = False
 
+    def write(self, vals):
+        """Propagate date changes to ancestors.
+        After date changes, ancestor parent tasks auto-extend to span children.
+        Subtask dates are NOT clamped to parent's start — parent summary dates
+        auto-adjust via _update_ancestor_dates().
+        """
+        date_changed = 'date_start' in vals or 'date_end' in vals
+        result = super().write(vals)
+        if result and date_changed:
+            self._update_ancestor_dates()
+        return result
+
+    def _update_ancestor_dates(self):
+        """Propagate date changes upward: each parent task auto-extends to
+        span all its children. Recurses through write() for multi-level."""
+        parents = self.env['project.task']
+        for task in self:
+            if task.parent_id and task.parent_id.child_ids:
+                parents |= task.parent_id
+
+        for parent in parents:
+            # Compute directly from children to bypass ORM cache issues
+            # with non-stored compute fields within the same transaction.
+            children = parent.child_ids
+            starts = []
+            ends = []
+            for child in children:
+                if child.child_ids:
+                    # Nested parent: recurse through summary dates
+                    if child.summary_date_start:
+                        starts.append(child.summary_date_start)
+                    if child.summary_date_end:
+                        ends.append(child.summary_date_end)
+                else:
+                    if child.date_start:
+                        starts.append(child.date_start)
+                    if child.date_end:
+                        ends.append(child.date_end)
+
+            new_start = min(starts) if starts else False
+            new_end = max(ends) if ends else False
+            if not new_start and not new_end:
+                continue
+
+            update_vals = {}
+            if new_start and new_start != parent.date_start:
+                update_vals['date_start'] = new_start
+            if new_end and new_end != parent.date_end:
+                update_vals['date_end'] = new_end
+            # Recompute plan_duration to match new span
+            effective_start = new_start or parent.date_start
+            effective_end = new_end or parent.date_end
+            if effective_start and effective_end:
+                new_plan_dur = (effective_end - effective_start).total_seconds() / 3600.0
+                if abs(new_plan_dur - (parent.plan_duration or 0)) > 0.01:
+                    update_vals['plan_duration'] = new_plan_dur
+
+            if update_vals:
+                parent.write(update_vals)  # recursive — triggers grandparent
+
+    def action_move_with_descendants(self, shift_hours):
+        """Move this task and all descendants by shift_hours (float).
+        Preserves relative positions. Uses super().write() to avoid
+        recursive ancestor updates until the end."""
+        self.ensure_one()
+        delta = timedelta(hours=shift_hours)
+        # Collect all descendants
+        all_tasks = self.env['project.task']
+        stack = list(self.child_ids)
+        while stack:
+            task = stack.pop()
+            all_tasks |= task
+            stack.extend(task.child_ids)
+        # Move descendants first (skip ancestor update via super)
+        for task in all_tasks:
+            vals = {}
+            if task.date_start:
+                vals['date_start'] = task.date_start + delta
+            if task.date_end:
+                vals['date_end'] = task.date_end + delta
+            if task.plan_duration:
+                pass  # duration unchanged (same span, just shifted)
+            if vals:
+                super(ProjectTaskNative, task).write(vals)
+        # Move self
+        self_vals = {}
+        if self.date_start:
+            self_vals['date_start'] = self.date_start + delta
+        if self.date_end:
+            self_vals['date_end'] = self.date_end + delta
+        if self_vals:
+            super(ProjectTaskNative, self).write(self_vals)
+        # Propagate to ancestors above self
+        if self.parent_id:
+            self._update_ancestor_dates()
+
     @api.depends('date_end', 'date_start')
     def _compute_duration(self):
-        """Compute task duration in seconds - Odoo 18 style"""
+        """Compute task duration in hours - Odoo 18 style"""
         for task in self:
             if task.date_end and task.date_start:
-                # Odoo 18: datetime fields are already datetime objects
                 diff = task.date_end - task.date_start
-                task.duration = int(diff.total_seconds())
+                task.duration = diff.total_seconds() / 3600.0
             else:
                 task.duration = 0
+
+    @api.depends('state', 'date_last_stage_update')
+    def _compute_date_finished(self):
+        """Auto-derive completion date from native Odoo 18 fields.
+
+        When task enters a closed state (done/canceled), date_finished
+        is set to date_last_stage_update. When reopened, it clears.
+        """
+        for task in self:
+            if task.is_closed:
+                task.date_finished = task.date_last_stage_update or fields.Datetime.now()
+            else:
+                task.date_finished = False
 
     def unlink(self):
         if self.search([('parent_id', 'in', self.ids)], limit=1):
             raise UserError(_(
-                'You can not delete a Parent Task.\nPlease Delete - sub tasks first.'))
-        return super(ProjectTaskNative, self).unlink()
-
-    def conv_sec_tofloat(self, sec, type="sec"):
-        if type == "sec":
-            tde = timedelta(seconds=sec)
-        if type == "hrs":
-            tde = timedelta(hours=sec)
-        return tde.total_seconds() / timedelta(hours=1).total_seconds()
+                '無法刪除父任務。\n請先刪除子任務。'))
+        return super().unlink()
 
     # Note: _check_subtask_level removed - empty constraint served no purpose

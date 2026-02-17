@@ -14,6 +14,7 @@ export class GanttTooltip extends Component {
     static props = {
         archInfo: Object,
         getRecord: Function,
+        getPredecessorCount: { type: Function, optional: true },
     };
 
     setup() {
@@ -117,33 +118,46 @@ export class GanttTooltip extends Component {
             name: record.display_name || "",
         };
 
-        // Dates
-        if (record._dateStart) {
-            data.dateStart = record._dateStart.toFormat("MMM d, yyyy");
+        // Dates (use summary dates for parent tasks)
+        const dateStart = (record._hasChildren && record._summaryDateStart) || record._dateStart;
+        const dateEnd = (record._hasChildren && record._summaryDateEnd) || record._dateEnd;
+        if (dateStart) {
+            data.dateStart = dateStart.toFormat("yyyy/M/d");
         }
-        if (record._dateEnd) {
-            data.dateEnd = record._dateEnd.toFormat("MMM d, yyyy");
+        if (dateEnd) {
+            data.dateEnd = dateEnd.toFormat("yyyy/M/d");
         }
 
         // Duration
-        if (record._dateStart && record._dateEnd) {
-            const days = record._dateEnd.diff(record._dateStart, "days").days;
-            data.duration = `${Math.round(days * 10) / 10} days`;
+        if (dateStart && dateEnd) {
+            const days = dateEnd.diff(dateStart, "days").days;
+            data.duration = `${Math.round(days * 10) / 10} \u5929`;
         }
 
-        // Progress
-        if (record._progress != null) {
-            data.progress = `${Math.round(record._progress)}%`;
+        // Progress (use summary progress for parent tasks)
+        const progressVal = (record._hasChildren && record._summaryProgress != null)
+            ? record._summaryProgress
+            : record._progress;
+        if (progressVal != null) {
+            data.progress = `${Math.round(progressVal)}%`;
+            data.progressPct = Math.min(Math.round(progressVal), 100);
         }
 
         // Schedule mode
         if (record._scheduleMode) {
-            data.scheduleMode = record._scheduleMode === "auto" ? "Auto" : "Manual";
+            data.scheduleMode = record._scheduleMode === "auto" ? "\u81EA\u52D5" : "\u624B\u52D5";
+        }
+
+        // Fixed calc type (固定工期/固定工時)
+        const fixedCalcField = archInfo.fixedCalcType;
+        if (fixedCalcField && record[fixedCalcField]) {
+            const calcLabels = { duration: "\u56FA\u5B9A\u5DE5\u671F", work: "\u56FA\u5B9A\u5DE5\u6642" };
+            data.fixedCalcType = calcLabels[record[fixedCalcField]] || record[fixedCalcField];
         }
 
         // Deadline
         if (record._dateDeadline) {
-            data.deadline = record._dateDeadline.toFormat("MMM d, yyyy");
+            data.deadline = record._dateDeadline.toFormat("yyyy/M/d");
             // Check if overdue
             if (record._dateEnd && record._dateEnd > record._dateDeadline) {
                 data.deadlineOverdue = true;
@@ -164,8 +178,23 @@ export class GanttTooltip extends Component {
         }
 
         // Milestone
-        if (record._isMilestone) {
+        if (record._isMilestoneRecord) {
             data.isMilestone = true;
+        }
+
+        // Resource / Assignee
+        const resourceField = archInfo.resourceField;
+        if (resourceField && record[resourceField]) {
+            const resVal = record[resourceField];
+            data.resource = Array.isArray(resVal) ? resVal[1] : resVal;
+        }
+
+        // Predecessor count
+        if (this.props.getPredecessorCount) {
+            const count = this.props.getPredecessorCount(record.id);
+            if (count > 0) {
+                data.predecessorCount = count;
+            }
         }
 
         return data;

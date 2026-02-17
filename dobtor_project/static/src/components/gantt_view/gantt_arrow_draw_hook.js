@@ -19,6 +19,8 @@ export function useGanttArrowDraw(params) {
     let svgLine = null;  // Temporary SVG line element
     let startX = 0;
     let startY = 0;
+    let lastHighlightedBar = null; // Fallback for target detection on pointerup
+    let pendingDeleteMenuTimeout = null;
 
     function onPointerDown(ev) {
         const connector = ev.target.closest(".o_gantt_connector");
@@ -26,6 +28,9 @@ export function useGanttArrowDraw(params) {
 
         const bar = connector.closest(".o_gantt_bar");
         if (!bar) return;
+
+        // Milestones cannot initiate arrow connections
+        if (bar.classList.contains("o_gantt_milestone")) return;
 
         const rid = parseInt(bar.dataset.recordId, 10);
         if (!rid) return;
@@ -81,8 +86,8 @@ export function useGanttArrowDraw(params) {
             return;
         }
 
-        // Find the target bar under the cursor
-        const targetBar = _getTargetBar(ev);
+        // Find the target bar under the cursor (with fallback to last highlighted)
+        const targetBar = _getTargetBar(ev) || lastHighlightedBar;
 
         _removeTempLine();
         _clearHighlights();
@@ -90,20 +95,21 @@ export function useGanttArrowDraw(params) {
         if (targetBar) {
             const toId = parseInt(targetBar.dataset.recordId, 10);
             if (toId && toId !== fromRecordId) {
-                // Determine link type based on connector sides
-                // fromSide=end, toSide=start → FS (most common)
-                const toConnector = ev.target.closest(".o_gantt_connector");
-                let toSide = "start"; // default
-                if (toConnector) {
-                    toSide = toConnector.classList.contains("o_gantt_connector_right") ? "end" : "start";
-                }
-
+                // Auto-detect target side based on cursor position relative to bar center
+                const toSide = _detectTargetSide(targetBar, ev);
                 const type = _determineLinkType(fromSide, toSide);
                 params.onLinkCreated(fromRecordId, toId, type);
             }
         }
 
         _cleanup();
+    }
+
+    function _detectTargetSide(bar, ev) {
+        if (!bar) return "start";
+        const rect = bar.getBoundingClientRect();
+        const midX = rect.left + rect.width / 2;
+        return ev.clientX > midX ? "end" : "start";
     }
 
     function _determineLinkType(from, to) {
@@ -117,20 +123,27 @@ export function useGanttArrowDraw(params) {
     }
 
     function _getTargetBar(ev) {
-        // Hide the temp SVG so elementFromPoint can find the bar underneath
-        const svgContainer = svgLine?.closest("svg");
-        if (svgContainer) svgContainer.style.pointerEvents = "none";
+        // Hide ALL SVG overlays (draw SVG + main arrow container) so
+        // elementFromPoint can find the bar underneath
+        const timelineEl = params.getTimelineEl();
+        const svgs = timelineEl ? timelineEl.querySelectorAll("svg") : [];
+        svgs.forEach(s => s.style.pointerEvents = "none");
 
         const el = document.elementFromPoint(ev.clientX, ev.clientY);
 
-        if (svgContainer) svgContainer.style.pointerEvents = "";
+        svgs.forEach(s => s.style.pointerEvents = "");
 
-        if (!el) return null;
-        const bar = el.closest(".o_gantt_bar");
-        if (!bar) return null;
-        const rid = parseInt(bar.dataset.recordId, 10);
-        if (!rid || rid === fromRecordId) return null;
-        return bar;
+        if (el) {
+            const bar = el.closest(".o_gantt_bar");
+            if (bar) {
+                const rid = parseInt(bar.dataset.recordId, 10);
+                if (rid && rid !== fromRecordId) return bar;
+            }
+        }
+
+        // Fallback: bounding-rect scan for bars that clip-path may hide
+        // from elementFromPoint (e.g. summary/parent bars with bracket shape)
+        return _findBarByRect(ev, timelineEl);
     }
 
     function _createTempLine(container) {
@@ -139,7 +152,10 @@ export function useGanttArrowDraw(params) {
         if (!svg) {
             svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
             svg.classList.add("o_gantt_arrow_draw_svg");
-            svg.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:50;";
+            // Use scrollHeight so the SVG covers the full content area
+            // (flex:1 + min-height:0 on the container means CSS box < content height)
+            const h = Math.max(container.scrollHeight, container.offsetHeight);
+            svg.style.cssText = `position:absolute;top:0;left:0;width:100%;height:${h}px;pointer-events:none;z-index:50;overflow:visible;`;
             container.appendChild(svg);
         }
 
@@ -154,11 +170,11 @@ export function useGanttArrowDraw(params) {
 
     function _removeTempLine() {
         if (svgLine && svgLine.parentNode) {
-            svgLine.parentNode.removeChild(svgLine);
-            // Clean up empty SVG container
-            const svg = svgLine.closest ? null : svgLine.parentNode;
-            if (svg && svg.classList?.contains("o_gantt_arrow_draw_svg") && !svg.children.length) {
-                svg.parentNode?.removeChild(svg);
+            const parentSvg = svgLine.parentNode;
+            parentSvg.removeChild(svgLine);
+            // Clean up empty draw SVG container
+            if (parentSvg.classList.contains("o_gantt_arrow_draw_svg") && !parentSvg.children.length) {
+                parentSvg.parentNode.removeChild(parentSvg);
             }
         }
         svgLine = null;
@@ -167,22 +183,44 @@ export function useGanttArrowDraw(params) {
     function _highlightTarget(ev) {
         _clearHighlights();
         const bar = _peekTargetBar(ev);
+        lastHighlightedBar = bar;
         if (bar) {
             bar.classList.add("o_gantt_connector_drop_target");
         }
     }
 
     function _peekTargetBar(ev) {
-        const svgContainer = svgLine?.parentNode;
-        if (svgContainer) svgContainer.style.pointerEvents = "none";
+        // Hide ALL SVG overlays to find bars underneath
+        const timelineEl = params.getTimelineEl();
+        const svgs = timelineEl ? timelineEl.querySelectorAll("svg") : [];
+        svgs.forEach(s => s.style.pointerEvents = "none");
         const el = document.elementFromPoint(ev.clientX, ev.clientY);
-        if (svgContainer) svgContainer.style.pointerEvents = "";
-        if (!el) return null;
-        const bar = el.closest(".o_gantt_bar");
-        if (!bar) return null;
-        const rid = parseInt(bar.dataset.recordId, 10);
-        if (!rid || rid === fromRecordId) return null;
-        return bar;
+        svgs.forEach(s => s.style.pointerEvents = "");
+        if (el) {
+            const bar = el.closest(".o_gantt_bar");
+            if (bar) {
+                const rid = parseInt(bar.dataset.recordId, 10);
+                if (rid && rid !== fromRecordId) return bar;
+            }
+        }
+        // Fallback: bounding-rect scan (clip-path may prevent elementFromPoint
+        // from finding summary/parent bars)
+        return _findBarByRect(ev, timelineEl);
+    }
+
+    function _findBarByRect(ev, timelineEl) {
+        if (!timelineEl) return null;
+        const bars = timelineEl.querySelectorAll(".o_gantt_bar");
+        for (const bar of bars) {
+            const rid = parseInt(bar.dataset.recordId, 10);
+            if (!rid || rid === fromRecordId) continue;
+            const r = bar.getBoundingClientRect();
+            if (ev.clientX >= r.left && ev.clientX <= r.right &&
+                ev.clientY >= r.top && ev.clientY <= r.bottom) {
+                return bar;
+            }
+        }
+        return null;
     }
 
     function _clearHighlights() {
@@ -202,6 +240,7 @@ export function useGanttArrowDraw(params) {
         isDrawing = false;
         fromRecordId = null;
         fromSide = null;
+        lastHighlightedBar = null;
         _removeTempLine();
         _clearHighlights();
     }
@@ -259,8 +298,9 @@ export function useGanttArrowDraw(params) {
             }
         });
 
-        // Close on click outside
-        setTimeout(() => {
+        // Close on click outside (track timeout for cleanup)
+        pendingDeleteMenuTimeout = setTimeout(() => {
+            pendingDeleteMenuTimeout = null;
             document.addEventListener("click", _removeDeleteMenu, { once: true });
         }, 0);
 
@@ -297,6 +337,10 @@ export function useGanttArrowDraw(params) {
             arrowSvg.removeEventListener("contextmenu", onArrowContextMenu);
         }
         document.removeEventListener("pointermove", onPointerMove);
+        if (pendingDeleteMenuTimeout) {
+            clearTimeout(pendingDeleteMenuTimeout);
+            pendingDeleteMenuTimeout = null;
+        }
         _removeDeleteMenu();
         _cleanup();
     });

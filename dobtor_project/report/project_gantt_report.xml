@@ -1,49 +1,163 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo>
+    <!-- Landscape paper format for gantt reports -->
+    <!--
+        Landscape A4 paper format for gantt reports.
+
+        wkhtmltopdf header layout:
+          margin_top and header_spacing are ADDITIVE.
+          Content starts at: max(margin_top, header_height + header_spacing)
+          Odoo 18 default A4: margin_top=40, header_spacing=35 (proven values).
+          We use the same values — the header HTML is identical regardless of
+          orientation, so the same spacing works for landscape.
+    -->
+    <record id="paperformat_gantt_landscape" model="report.paperformat">
+        <field name="name">Gantt Chart Landscape</field>
+        <field name="default" eval="False"/>
+        <field name="format">A4</field>
+        <field name="orientation">Landscape</field>
+        <field name="margin_top">40</field>
+        <field name="margin_bottom">20</field>
+        <field name="margin_left">7</field>
+        <field name="margin_right">7</field>
+        <field name="header_line" eval="False"/>
+        <field name="header_spacing">35</field>
+    </record>
+
     <template id="gantt_report">
         <t t-call="web.html_container">
             <t t-call="web.external_layout">
                 <div class="page">
-                    <h2><t t-esc="project.name"/> — Gantt Report</h2>
-                    <p>Generated: <t t-esc="context_timestamp.strftime('%Y-%m-%d %H:%M')"/></p>
+                    <style>
+                        .gantt-rpt {
+                            width: 100%;
+                            border-collapse: collapse;
+                            /* auto layout: text columns shrink to content */
+                        }
+                        .gantt-rpt th,
+                        .gantt-rpt td {
+                            border: 1px solid #dee2e6;
+                            padding: 1px 5px;
+                            vertical-align: middle;
+                            font-size: 8pt;
+                            line-height: 1.2;
+                            white-space: nowrap;
+                            width: 1px; /* force shrink-to-content with nowrap */
+                        }
+                        .gantt-rpt thead th {
+                            background: #f8f9fa;
+                            text-align: center;
+                            font-weight: 600;
+                            font-size: 7.5pt;
+                        }
+                        .gantt-rpt .col-wbs {
+                            min-width: 3em;
+                        }
+                        .gantt-rpt .col-name {
+                            white-space: normal;
+                            word-wrap: break-word;
+                        }
+                        .gantt-rpt .row-parent td {
+                            font-weight: 600;
+                            background: #fafafa;
+                        }
+                        .gantt-rpt .row-milestone td {
+                            font-style: italic;
+                            color: #666;
+                            background: #fffcf5;
+                        }
+                        .gantt-rpt .cell-gantt {
+                            width: 100%;
+                            padding: 0 !important;
+                        }
+                        .gantt-rpt .gantt-wrap {
+                            position: relative;
+                            height: 14px;
+                            overflow: visible;
+                        }
+                        .gantt-rpt .gantt-marker {
+                            position: absolute;
+                            top: 0;
+                            bottom: 0;
+                            border-left: 1px dashed #ccc;
+                            z-index: 0;
+                        }
+                        thead { display: table-header-group; }
+                        tr { page-break-inside: avoid; }
+                    </style>
 
-                    <table class="table table-sm table-bordered">
+                    <!-- Main table (title row integrated into thead for consistent borders) -->
+                    <table class="gantt-rpt">
                         <thead>
+                            <!-- Title row: left spans text columns, right spans only gantt -->
                             <tr>
-                                <th style="width:5%">#</th>
-                                <th style="width:25%">Task</th>
-                                <th style="width:12%">Start</th>
-                                <th style="width:12%">End</th>
-                                <th style="width:10%">Duration</th>
-                                <th style="width:8%">Progress</th>
-                                <th style="width:8%">Mode</th>
-                                <th style="width:20%">Predecessors</th>
+                                <th colspan="5" style="text-align:center; font-size:13pt;">
+                                    <t t-esc="project.name"/>
+                                </th>
+                                <th style="text-align:right; font-weight:normal; font-size:7pt; color:#666;">
+                                    <t t-esc="project_start_str"/> ~ <t t-esc="project_end_str"/>
+                                    ｜產出：<t t-esc="generated_str"/>
+                                </th>
+                            </tr>
+                            <!-- Column headers -->
+                            <tr>
+                                <th class="col-wbs" style="text-align:right;">編號</th>
+                                <th style="text-align:left;">任務</th>
+                                <th>開始</th>
+                                <th>結束</th>
+                                <th style="text-align:right;">工期</th>
+                                <th class="cell-gantt" style="text-align:left;">
+                                    <div style="position:relative; height:22px; overflow:hidden;">
+                                        <t t-foreach="month_markers" t-as="m">
+                                            <span t-attf-style="position:absolute; bottom:1px; left:#{m['left_pct']}%; transform:translateX(-50%); font-size:6pt; color:#999; white-space:nowrap;">
+                                                <t t-esc="m['label']"/>
+                                            </span>
+                                        </t>
+                                    </div>
+                                </th>
                             </tr>
                         </thead>
                         <tbody>
-                            <t t-foreach="tasks" t-as="task">
-                                <tr t-att-style="'background:#fff3f3;' if task.critical_path else ''">
-                                    <td><t t-esc="task_index + 1"/></td>
-                                    <td>
-                                        <span t-att-style="'padding-left:%dpx;' % (task.sorting_level * 16)"/>
-                                        <t t-if="task.is_milestone">&#9670; </t>
-                                        <t t-esc="task.name"/>
+                            <t t-foreach="rows_data" t-as="row">
+                                <tr t-att-class="'row-milestone' if row['is_milestone'] else ('row-parent' if row['is_parent'] else '')">
+                                    <td class="col-wbs" style="text-align:right; font-size:7pt;">
+                                        <t t-esc="row['wbs']"/>
                                     </td>
-                                    <td><t t-esc="task.date_start" t-options="{'widget': 'date'}"/></td>
-                                    <td><t t-esc="task.date_end" t-options="{'widget': 'date'}"/></td>
-                                    <td>
-                                        <t t-if="task.duration">
-                                            <t t-esc="'%.1fd' % (task.duration / 86400)"/>
-                                        </t>
-                                        <t t-else="">—</t>
+                                    <td class="col-name" t-attf-style="padding-left:#{row['indent_px'] + 3}px;">
+                                        <t t-esc="row['name']"/>
                                     </td>
-                                    <td><t t-esc="'%d%%' % task.progress"/></td>
-                                    <td><t t-esc="task.schedule_mode"/></td>
-                                    <td>
-                                        <t t-foreach="task.predecessor_ids" t-as="pred">
-                                            <span><t t-esc="pred.parent_task_id.name"/> (<t t-esc="pred.type"/>)</span>
-                                            <t t-if="not pred_last">, </t>
-                                        </t>
+                                    <td style="text-align:center; font-size:7pt;">
+                                        <t t-esc="row['start']"/>
+                                    </td>
+                                    <td style="text-align:center; font-size:7pt;">
+                                        <t t-esc="row['end']"/>
+                                    </td>
+                                    <td style="text-align:right; font-size:7pt;">
+                                        <t t-esc="row['duration_label']"/>
+                                    </td>
+                                    <td class="cell-gantt">
+                                        <div class="gantt-wrap">
+                                            <t t-foreach="month_markers" t-as="m">
+                                                <div class="gantt-marker" t-attf-style="left:#{m['left_pct']}%;"/>
+                                            </t>
+                                            <t t-if="row['bar_style']">
+                                                <div t-att-style="row['bar_style']"/>
+                                            </t>
+                                            <t t-if="row.get('ms_upper')">
+                                                <div t-att-style="row['ms_upper']"/>
+                                                <div t-att-style="row['ms_lower']"/>
+                                            </t>
+                                            <t t-if="row.get('left_cap')">
+                                                <div t-att-style="row['left_cap']"/>
+                                                <div t-att-style="row['right_cap']"/>
+                                            </t>
+                                            <!-- Dependency lines: horizontal then vertical -->
+                                            <t t-foreach="row.get('dep_lines', [])" t-as="dep">
+                                                <div t-attf-style="position:absolute;left:#{dep['h_left']}%;top:#{dep['h_y']}px;width:#{dep['h_width']}%;height:0;border-top:1px solid #999;z-index:2;"/>
+                                                <div t-attf-style="position:absolute;left:#{dep['v_x']}%;top:#{dep['v_top']}px;width:0;height:#{dep['v_height']}px;border-left:1px solid #999;z-index:2;"/>
+                                                <div t-att-style="dep['arrow_css']"/>
+                                            </t>
+                                        </div>
                                     </td>
                                 </tr>
                             </t>
@@ -63,19 +177,6 @@
         <field name="print_report_name">'Gantt_%s' % object.name</field>
         <field name="binding_model_id" ref="project.model_project_project"/>
         <field name="binding_type">report</field>
-    </record>
-
-    <!-- Landscape paper format for gantt reports -->
-    <record id="paperformat_gantt_landscape" model="report.paperformat">
-        <field name="name">Gantt Chart Landscape</field>
-        <field name="default" eval="False"/>
-        <field name="format">A4</field>
-        <field name="orientation">Landscape</field>
-        <field name="margin_top">20</field>
-        <field name="margin_bottom">15</field>
-        <field name="margin_left">7</field>
-        <field name="margin_right">7</field>
-        <field name="header_line" eval="False"/>
-        <field name="header_spacing">15</field>
+        <field name="paperformat_id" ref="paperformat_gantt_landscape"/>
     </record>
 </odoo>

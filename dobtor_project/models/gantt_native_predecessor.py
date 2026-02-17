@@ -9,33 +9,17 @@ class GanttNativePredecessor(models.AbstractModel):
     @api.model
     def _get_link_type(self):
         return [
-            ('FS', _('Finish to Start (FS)')),
-            ('SS', _('Start to Start (SS)')),
-            ('FF', _('Finish to Finish (FF)')),
-            ('SF', _('Start to Finish (SF)')),
+            ('FS', _('完成到開始 (FS)')),
+            ('SS', _('開始到開始 (SS)')),
+            ('FF', _('完成到完成 (FF)')),
+            ('SF', _('開始到完成 (SF)')),
         ]
 
     type = fields.Selection(
         selection='_get_link_type',
-        string='Type',
+        string='類型',
         required=True,
         default='FS'
     )
 
-    @api.model
-    def _get_lag_type(self):
-        return [
-            ('minute', _('minute')),
-            ('hour', _('hour')),
-            ('day', _('day')),
-            ('percent', _('percent')),
-        ]
-
-    lag_type = fields.Selection(
-        selection='_get_lag_type',
-        string='Lag type',
-        required=True,
-        default='day'
-    )
-
-    lag_qty = fields.Integer(string='Lag', default=0)
+    lag_hours = fields.Float(string='延遲(小時)', default=0.0)

@@ -9,9 +9,9 @@
             <field name="arch" type="xml">
                 <xpath expr="//sheet" position="inside">
                     <notebook>
-                        <page string="Task Assignments" name="task_assignments">
+                        <page string="任務指派" name="task_assignments">
                             <field name="resource_task_ids" nolabel="1">
-                                <list string="Task Assignments" editable="bottom">
+                                <list editable="bottom">
                                     <field name="task_id"/>
                                     <field name="project_id"/>
                                     <field name="load_factor"/>

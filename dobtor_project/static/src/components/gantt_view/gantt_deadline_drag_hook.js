@@ -126,7 +126,7 @@ export function useGanttDeadlineDrag(params) {
 
         if (record && record._dateDeadline) {
             const newDeadline = record._dateDeadline.plus({ days: cellsDelta });
-            hintEl.textContent = `Deadline: ${newDeadline.toFormat("MMM d, yyyy")}`;
+            hintEl.textContent = `\u622A\u6B62\u65E5: ${newDeadline.toFormat("M/d")}`;
         }
 
         const rect = marker.getBoundingClientRect();

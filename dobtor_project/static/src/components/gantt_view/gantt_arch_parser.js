@@ -35,7 +35,6 @@ export class GanttArchParser {
         archInfo.predecessorType = archInfo.predecessorType || "";
 
         // Other configurations
-        archInfo.isMilestone = archInfo.isMilestone || "is_milestone";
         archInfo.scheduleMode = archInfo.scheduleMode || "schedule_mode";
         archInfo.constrainType = archInfo.constrainType || "constrain_type";
         archInfo.constrainDate = archInfo.constrainDate || "constrain_date";
@@ -52,7 +51,6 @@ export class GanttArchParser {
         archInfo.summaryDateEnd = archInfo.summaryDateEnd || "";
 
         // Color
-        archInfo.colorGanttSet = archInfo.colorGanttSet || "";
         archInfo.colorGantt = archInfo.colorGantt || "";
 
         // Sorting
@@ -119,6 +117,12 @@ export class GanttArchParser {
         // Resource intersection
         archInfo.resourceField = archInfo.resourceField || "";
         archInfo.resourceModel = archInfo.resourceModel || "";
+
+        // Planning mode
+        archInfo.planOffset = archInfo.planOffset || "plan_offset";
+
+        // Milestone
+        archInfo.milestoneId = archInfo.milestoneId || "";
 
         return archInfo;
     }

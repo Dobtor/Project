@@ -8,5 +8,5 @@ class ResourceAps(models.Model):
     resource_task_ids = fields.One2many(
         'project.task.resource.link',
         'resource_id',
-        string='Resources'
+        string='資源'
     )

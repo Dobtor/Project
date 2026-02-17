@@ -1,66 +1,68 @@
 /** @odoo-module **/
 
 import { Component } from "@odoo/owl";
+import { humanizeHours } from "./gantt_utils";
 
 /**
  * OWL component that renders predecessor arrows as SVG paths.
  *
- * Props:
- *   predecessors: Array of { task_id, parent_task_id, type }
- *   records: Array of all records
- *   flattenedRows: Array of visible rows (groups + records)
- *   timeStart: Luxon DateTime for timeline start
- *   cellWidth: number (px per day)
- *   rowHeight: number (px per row, default 44)
- *   selectedRowId: number | null
- *   criticalField: string (field name for critical path boolean)
+ * Arrow routing — all arrowheads are vertical (↓ or ↑):
+ *
+ *   Tight (target within chamfer distance):
+ *     M source → 45° chamfer to targetX → vertical ↓/↑
+ *
+ *   Non-tight (target beyond chamfer distance):
+ *     M source → 45° chamfer → horizontal to targetX → vertical ↓/↑
  */
 export class GanttArrows extends Component {
     static template = "dobtor_project.GanttArrows";
 
     static props = {
         predecessors: { type: Array, optional: true },
+        milestoneLinks: { type: Array, optional: true },
         records: { type: Array, optional: true },
         flattenedRows: { type: Array, optional: true },
         timeStart: { optional: true },
         cellWidth: Number,
         rowHeight: { type: Number, optional: true },
+        barTopOffset: { type: Number, optional: true },
+        barHeight: { type: Number, optional: true },
         selectedRowId: { optional: true },
         criticalField: { type: String, optional: true },
     };
 
     static defaultProps = {
         predecessors: [],
+        milestoneLinks: [],
         records: [],
         flattenedRows: [],
         rowHeight: 44,
+        barTopOffset: 8,
+        barHeight: 28,
         selectedRowId: null,
         criticalField: "",
     };
 
     get arrowPaths() {
+        const paths = [];
+        paths.push(...this._buildPredecessorPaths());
+        paths.push(...this._buildMilestonePaths());
+        return paths;
+    }
+
+    /**
+     * Build predecessor arrows (existing logic).
+     */
+    _buildPredecessorPaths() {
         const { predecessors, flattenedRows, timeStart, cellWidth, rowHeight } = this.props;
         if (!predecessors || !predecessors.length || !flattenedRows || !timeStart) {
             return [];
         }
 
-        // Build record lookup: id → record
-        const recordMap = new Map();
-        for (const row of flattenedRows) {
-            if (!row._isGroup && row.id) {
-                recordMap.set(row.id, row);
-            }
-        }
+        const chamferD = this.props.barHeight / 4;
+        const barEdge = this.props.barHeight / 2;
 
-        // Build row index map: recordId → visual row index
-        const rowIndexMap = new Map();
-        let idx = 0;
-        for (const row of flattenedRows) {
-            if (!row._isGroup) {
-                rowIndexMap.set(row.id, idx);
-            }
-            idx++;
-        }
+        const { recordMap, rowIndexMap } = this._buildLookups();
 
         const paths = [];
 
@@ -69,20 +71,24 @@ export class GanttArrows extends Component {
             const childRecord = recordMap.get(pred.task_id);
 
             if (!parentRecord || !childRecord) continue;
-            if (!parentRecord._dateStart || !childRecord._dateStart) continue;
+            // Use summary dates for parent tasks
+            const pStart = (parentRecord._hasChildren && parentRecord._summaryDateStart) || parentRecord._dateStart;
+            const pEnd = (parentRecord._hasChildren && parentRecord._summaryDateEnd) || parentRecord._dateEnd;
+            const cStart = (childRecord._hasChildren && childRecord._summaryDateStart) || childRecord._dateStart;
+            const cEnd = (childRecord._hasChildren && childRecord._summaryDateEnd) || childRecord._dateEnd;
+            if (!pStart || !cStart) continue;
 
             const parentIdx = rowIndexMap.get(pred.parent_task_id);
             const childIdx = rowIndexMap.get(pred.task_id);
             if (parentIdx === undefined || childIdx === undefined) continue;
 
-            // Calculate bar positions
-            const parentStartDays = parentRecord._dateStart.diff(timeStart, "days").days;
-            const parentEndDays = parentRecord._dateEnd
-                ? parentRecord._dateEnd.diff(timeStart, "days").days
+            const parentStartDays = pStart.diff(timeStart, "days").days;
+            const parentEndDays = pEnd
+                ? pEnd.diff(timeStart, "days").days
                 : parentStartDays + 1;
-            const childStartDays = childRecord._dateStart.diff(timeStart, "days").days;
-            const childEndDays = childRecord._dateEnd
-                ? childRecord._dateEnd.diff(timeStart, "days").days
+            const childStartDays = cStart.diff(timeStart, "days").days;
+            const childEndDays = cEnd
+                ? cEnd.diff(timeStart, "days").days
                 : childStartDays + 1;
 
             const parentLeft = parentStartDays * cellWidth;
@@ -93,51 +99,39 @@ export class GanttArrows extends Component {
             const parentCenterY = parentIdx * rowHeight + rowHeight / 2;
             const childCenterY = childIdx * rowHeight + rowHeight / 2;
 
-            // Determine connection points based on type (default FS)
             const type = (pred.type || "FS").toUpperCase();
             let fromX, fromY, toX, toY;
 
             switch (type) {
-                case "SS": // Start-to-Start
-                    fromX = parentLeft;
-                    fromY = parentCenterY;
-                    toX = childLeft;
-                    toY = childCenterY;
+                case "SS":
+                    fromX = parentLeft; fromY = parentCenterY;
+                    toX = childLeft; toY = childCenterY;
                     break;
-                case "FF": // Finish-to-Finish
-                    fromX = parentRight;
-                    fromY = parentCenterY;
-                    toX = childRight;
-                    toY = childCenterY;
+                case "FF":
+                    fromX = parentRight; fromY = parentCenterY;
+                    toX = childRight; toY = childCenterY;
                     break;
-                case "SF": // Start-to-Finish
-                    fromX = parentLeft;
-                    fromY = parentCenterY;
-                    toX = childRight;
-                    toY = childCenterY;
+                case "SF":
+                    fromX = parentLeft; fromY = parentCenterY;
+                    toX = childRight; toY = childCenterY;
                     break;
-                case "FS": // Finish-to-Start (default)
+                case "FS":
                 default:
-                    fromX = parentRight;
-                    fromY = parentCenterY;
-                    toX = childLeft;
-                    toY = childCenterY;
+                    fromX = parentRight; fromY = parentCenterY;
+                    toX = childLeft; toY = childCenterY;
                     break;
             }
 
-            // Generate SVG path
-            const path = this._buildPath(fromX, fromY, toX, toY, type);
+            const result = this._buildPath(
+                fromX, fromY, toX, toY, type,
+                childLeft, childRight, chamferD, barEdge
+            );
 
-            // Determine CSS classes
             let pathClass = "o_gantt_arrow";
             let markerClass = "";
             const criticalField = this.props.criticalField;
 
-            if (
-                criticalField &&
-                parentRecord[criticalField] &&
-                childRecord[criticalField]
-            ) {
+            if (criticalField && parentRecord[criticalField] && childRecord[criticalField]) {
                 pathClass += " o_gantt_arrow_critical";
                 markerClass = "critical";
             } else if (
@@ -149,25 +143,63 @@ export class GanttArrows extends Component {
                 markerClass = "highlight";
             }
 
-            // Compute lag label and position
             let lagLabel = "";
-            let lagX = (fromX + toX) / 2;
-            let lagY = (fromY + toY) / 2 - 8;
+            if (pred.lag_hours && Math.abs(pred.lag_hours) > 0.001) {
+                const sign = pred.lag_hours > 0 ? "+" : "";
+                lagLabel = `${sign}${humanizeHours(pred.lag_hours)}`;
+            }
 
-            if (pred.lag_qty && pred.lag_qty !== 0) {
-                const sign = pred.lag_qty > 0 ? "+" : "";
-                const unit = (pred.lag_type || "day").charAt(0);
-                lagLabel = `${sign}${pred.lag_qty}${unit}`;
+            // Lag label position at the turn point (horizontal→vertical
+            // or diagonal→vertical junction).
+            //
+            // Non-tight (has horizontal segment):
+            //   Default: LEFT of vertical line, text right-edge aligned (anchor=end)
+            //   Collision: flip to RIGHT of vertical, left-edge aligned (anchor=start)
+            // Tight (diagonal → vertical):
+            //   Always RIGHT of vertical, left-edge aligned (anchor=start)
+            const LABEL_GAP = 3;
+            const FONT_SIZE = 10;
+            const vertDir = toY > fromY ? 1 : -1;
+            let lagX, lagY, lagAnchor;
+            if (result.isSameRow) {
+                lagX = result.turnX;
+                lagY = result.turnY - LABEL_GAP;
+                lagAnchor = "middle";
+            } else if (result.isTight) {
+                // Diagonal → vertical: right of vertical line
+                lagAnchor = "start";
+                lagX = result.turnX + LABEL_GAP;
+                lagY = vertDir > 0
+                    ? result.turnY + FONT_SIZE  // down: not higher than turn
+                    : result.turnY;             // up: not lower than turn
+            } else {
+                // Horizontal → vertical: check if label collides with target bar
+                const availSpace = vertDir > 0
+                    ? (toY - barEdge) - result.turnY
+                    : result.turnY - (toY + barEdge);
+                const collides = availSpace < FONT_SIZE + LABEL_GAP * 2;
+
+                if (collides) {
+                    lagAnchor = "start";
+                    lagX = result.turnX + LABEL_GAP;
+                } else {
+                    lagAnchor = "end";
+                    lagX = result.turnX - LABEL_GAP;
+                }
+                lagY = vertDir > 0
+                    ? result.turnY + FONT_SIZE + LABEL_GAP  // below horizontal
+                    : result.turnY - LABEL_GAP;              // above horizontal
             }
 
             paths.push({
                 id: `arrow_${pred.parent_task_id}_${pred.task_id}`,
-                d: path,
+                d: result.d,
                 pathClass,
                 markerClass,
                 lagLabel,
                 lagX,
                 lagY,
+                lagAnchor,
             });
         }
 
@@ -175,61 +207,208 @@ export class GanttArrows extends Component {
     }
 
     /**
-     * Build an SVG path string connecting two points.
-     * Uses a multi-segment approach: horizontal out → vertical → horizontal in
-     * with quadratic bezier corners for smooth routing.
+     * Build milestone arrows (task → milestone).
+     * Same visual style and chamfer D as task-to-task arrows.
+     * All arrows converge on diamond visual center; arrowhead at vertex.
      */
-    _buildPath(fromX, fromY, toX, toY, type) {
-        const OFFSET = 12; // horizontal clearance before turning
-        const RADIUS = 6; // corner rounding
-
-        // For FS/SF, determine which side we exit/enter
-        const exitRight = type === "FS" || type === "FF";
-        const enterLeft = type === "FS" || type === "SS";
-
-        const exitX = exitRight ? fromX + OFFSET : fromX - OFFSET;
-        const enterX = enterLeft ? toX - OFFSET : toX + OFFSET;
-
-        // Simple case: direct horizontal connection is possible
-        if (Math.abs(fromY - toY) < 2) {
-            return `M ${fromX} ${fromY} L ${toX} ${toY}`;
+    _buildMilestonePaths() {
+        const { milestoneLinks, flattenedRows, timeStart, cellWidth, rowHeight } = this.props;
+        if (!milestoneLinks || !milestoneLinks.length || !flattenedRows || !timeStart) {
+            return [];
         }
 
-        // Determine if we need an S-curve (tasks overlap horizontally)
-        const goingRight = exitX < enterX;
-        const needsSCurve =
-            (exitRight && enterLeft && fromX > toX - OFFSET * 2) ||
-            (!exitRight && !enterLeft && fromX < toX + OFFSET * 2);
+        // Diamond: 18px CSS box rotated 45°
+        const DIAMOND_SIZE = 18;
+        const diamondHalf = Math.ceil(DIAMOND_SIZE * Math.SQRT2 / 2); // ≈13 visual half-diagonal
+        const halfBox = DIAMOND_SIZE / 2; // 9px CSS box center offset
 
-        if (needsSCurve) {
-            // S-curve: go out, drop halfway vertically, come back
-            const midY = (fromY + toY) / 2;
-            return (
-                `M ${fromX} ${fromY}` +
-                ` L ${exitX} ${fromY}` +
-                ` Q ${exitX} ${fromY + _sign(toY - fromY) * RADIUS} ${exitX} ${midY > fromY ? fromY + RADIUS : fromY - RADIUS}` +
-                ` L ${exitX} ${midY}` +
-                ` L ${enterX} ${midY}` +
-                ` L ${enterX} ${midY > toY ? toY + RADIUS : toY - RADIUS}` +
-                ` Q ${enterX} ${toY} ${enterX + _sign(toX - enterX) * RADIUS} ${toY}` +
-                ` L ${toX} ${toY}`
-            );
+        // Same chamfer distance as task-to-task arrows
+        const chamferD = this.props.barHeight / 4;
+
+        const { recordMap, rowIndexMap } = this._buildLookups();
+
+        const paths = [];
+
+        for (const link of milestoneLinks) {
+            const taskRecord = recordMap.get(link.task_id);
+            const msRecord = recordMap.get(link.milestone_id); // negative ID
+
+            if (!taskRecord || !msRecord) continue;
+            if (!taskRecord._dateStart || !msRecord._dateStart) continue;
+
+            const taskIdx = rowIndexMap.get(link.task_id);
+            const msIdx = rowIndexMap.get(link.milestone_id);
+            if (taskIdx === undefined || msIdx === undefined) continue;
+
+            // Task: from right edge (FS style)
+            const taskEndDays = taskRecord._dateEnd
+                ? taskRecord._dateEnd.diff(timeStart, "days").days
+                : taskRecord._dateStart.diff(timeStart, "days").days + 1;
+            const fromX = taskEndDays * cellWidth;
+            const fromY = taskIdx * rowHeight + rowHeight / 2;
+
+            // Milestone: diamond visual center = CSS left + half box
+            const msDays = msRecord._dateStart.diff(timeStart, "days").days;
+            const msCenterX = msDays * cellWidth + halfBox;
+            const toY = msIdx * rowHeight + rowHeight / 2;
+
+            const vertDir = toY > fromY ? 1 : -1;
+            const vertDist = Math.abs(toY - fromY);
+            const D = Math.min(chamferD, vertDist * 0.3);
+
+            // Arrowhead target: diamond top/bottom vertex
+            const endY = toY - diamondHalf * vertDir;
+
+            // Gap from task end to diamond visual center
+            const gap = Math.abs(msCenterX - fromX);
+
+            // 45° chamfer direction: toward diamond
+            const hDir = msCenterX >= fromX ? 1 : -1;
+            const cx = fromX + D * hDir;
+            const cy = fromY + D * vertDir;
+
+            let path;
+            if (Math.abs(fromY - toY) < 2) {
+                // Same row: straight horizontal
+                path = `M ${fromX} ${fromY} L ${msCenterX} ${toY}`;
+            } else if (gap <= D) {
+                // Tight: 45° chamfer to msCenterX → vertical to vertex
+                const chamferY = fromY + gap * vertDir;
+                path = `M ${fromX} ${fromY} L ${msCenterX} ${chamferY} L ${msCenterX} ${endY}`;
+            } else {
+                // Non-tight: full 45° chamfer → horizontal to msCenterX → vertical
+                path = `M ${fromX} ${fromY} L ${cx} ${cy} L ${msCenterX} ${cy} L ${msCenterX} ${endY}`;
+            }
+
+            paths.push({
+                id: `ms_arrow_${link.task_id}_${link.milestone_id}`,
+                d: path,
+                pathClass: "o_gantt_arrow",
+                markerClass: "",
+                lagLabel: "",
+                lagX: 0,
+                lagY: 0,
+            });
         }
 
-        // Standard L-shaped path with rounded corners
-        const vertDir = toY > fromY ? 1 : -1;
-
-        return (
-            `M ${fromX} ${fromY}` +
-            ` L ${exitX - RADIUS * (exitRight ? 1 : -1)} ${fromY}` +
-            ` Q ${exitX} ${fromY} ${exitX} ${fromY + RADIUS * vertDir}` +
-            ` L ${exitX} ${toY - RADIUS * vertDir}` +
-            ` Q ${exitX} ${toY} ${exitX + RADIUS * (enterX > exitX ? 1 : -1)} ${toY}` +
-            ` L ${toX} ${toY}`
-        );
+        return paths;
     }
-}
 
-function _sign(v) {
-    return v >= 0 ? 1 : -1;
+    /**
+     * Build shared lookup maps from flattenedRows.
+     */
+    _buildLookups() {
+        const { flattenedRows } = this.props;
+        const recordMap = new Map();
+        const rowIndexMap = new Map();
+        let idx = 0;
+        for (const row of flattenedRows) {
+            if (!row._isGroup && row.id != null) {
+                recordMap.set(row.id, row);
+                rowIndexMap.set(row.id, idx);
+            }
+            idx++;
+        }
+        return { recordMap, rowIndexMap };
+    }
+
+    /**
+     * Build arrow path with vertical arrowhead.
+     *
+     * Arrowhead always lands D pixels *inward* from the target bar edge:
+     *   - Target left  (FS/SS): vertX = targetLeft  + D
+     *   - Target right (FF/SF): vertX = targetRight - D
+     * This ensures symmetric offset whether connecting to start or end side.
+     *
+     * Tight (chamfer endpoint ≈ vertX):
+     *   M source → 45° chamfer (full D) → vertical ↓/↑ at cx
+     *
+     * Non-tight:
+     *   M source → 45° chamfer (full D) → horizontal to vertX → vertical ↓/↑
+     *
+     * @param {number} fromX - source connection X
+     * @param {number} fromY - source connection Y (bar center)
+     * @param {number} toX - target connection X
+     * @param {number} toY - target connection Y (bar center)
+     * @param {string} type - link type: FS, SS, FF, SF
+     * @param {number} targetLeft - target bar left edge X
+     * @param {number} targetRight - target bar right edge X
+     * @param {number} chamferD - chamfer diagonal distance
+     * @param {number} barEdge - actual half bar height (center to edge)
+     */
+    _buildPath(fromX, fromY, toX, toY, type, targetLeft, targetRight, chamferD, barEdge) {
+        // Same row: straight horizontal line
+        if (Math.abs(fromY - toY) < 2) {
+            return {
+                d: `M ${fromX} ${fromY} L ${toX} ${toY}`,
+                turnX: (fromX + toX) / 2,
+                turnY: fromY,
+                isTight: false,
+                isSameRow: true,
+            };
+        }
+
+        const vertDist = Math.abs(toY - fromY);
+        const D = Math.min(chamferD, vertDist * 0.3); // clamp for very close rows
+        const vertDir = toY > fromY ? 1 : -1; // 1=down, -1=up
+
+        // Exit direction: FS/FF exit right, SS/SF exit left
+        const exitRight = (type === "FS" || type === "FF");
+        const exitSign = exitRight ? 1 : -1;
+
+        // Determine horizontal target X based on link type
+        let hTargetX;
+        switch ((type || "FS").toUpperCase()) {
+            case "SS":
+                hTargetX = targetLeft;
+                break;
+            case "FF":
+                hTargetX = targetRight;
+                break;
+            case "SF":
+                hTargetX = targetRight;
+                break;
+            case "FS":
+            default:
+                hTargetX = targetLeft;
+                break;
+        }
+
+        // Arrow endpoint: bar top/bottom edge (not center)
+        const endY = toY - barEdge * vertDir;
+
+        // Always draw full 45° chamfer
+        const cx = fromX + D * exitSign;
+        const cy = fromY + D * vertDir;
+
+        // Entry sign: +1 for target-left (FS/SS), -1 for target-right (FF/SF)
+        // Ensures arrowhead lands D pixels *inward* from the target bar edge,
+        // symmetric for both start-side and end-side connections.
+        const entrySign = (type === "FS" || type === "SS") ? 1 : -1;
+
+        // Vertical line X: D pixels inward from target connection edge
+        const vertX = hTargetX + D * entrySign;
+
+        // If chamfer endpoint and vertical line converge, draw tight 2-segment path
+        const hDist = Math.abs(cx - vertX);
+        if (hDist < 1) {
+            // Tight: full chamfer → straight vertical at cx
+            return {
+                d: `M ${fromX} ${fromY} L ${cx} ${cy} L ${cx} ${endY}`,
+                turnX: cx,
+                turnY: cy,
+                isTight: true,
+                isSameRow: false,
+            };
+        }
+
+        // Non-tight: full chamfer → horizontal to vertX → vertical
+        return {
+            d: `M ${fromX} ${fromY} L ${cx} ${cy} L ${vertX} ${cy} L ${vertX} ${endY}`,
+            turnX: vertX,
+            turnY: cy,
+            isTight: false,
+            isSameRow: false,
+        };
+    }
 }

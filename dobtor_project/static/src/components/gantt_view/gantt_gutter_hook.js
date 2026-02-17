@@ -5,18 +5,24 @@ import { useThrottleForAnimation } from "@web/core/utils/timing";
 
 /**
  * Custom OWL hook for gutter (column resizer) drag interaction.
- * Attaches pointer events to the gutter element to resize the left panel.
+ * Attaches pointer events to the gutter element to resize a panel.
  *
- * @param {Object} state - reactive state with `gutterWidth` property
+ * @param {Object} state - reactive state object
  * @param {Object} [options]
  * @param {number} [options.min=200] - minimum width in px
  * @param {number} [options.max=500] - maximum width in px
+ * @param {string} [options.refName="gutter"] - t-ref name for the gutter element
+ * @param {string} [options.stateKey="gutterWidth"] - key in state to read/write width
+ * @param {string} [options.storageKey="gantt_gutter_width"] - localStorage key for persistence
  * @returns {{ gutterRef: Ref }}
  */
 export function useGanttGutter(state, options = {}) {
     const min = options.min ?? 200;
     const max = options.max ?? 500;
-    const gutterRef = useRef("gutter");
+    const refName = options.refName ?? "gutter";
+    const stateKey = options.stateKey ?? "gutterWidth";
+    const storageKey = options.storageKey ?? "gantt_gutter_width";
+    const gutterRef = useRef(refName);
 
     let startX = 0;
     let startWidth = 0;
@@ -26,14 +32,14 @@ export function useGanttGutter(state, options = {}) {
         if (!isDragging) return;
         const delta = ev.clientX - startX;
         const newWidth = Math.min(max, Math.max(min, startWidth + delta));
-        state.gutterWidth = newWidth;
+        state[stateKey] = newWidth;
     });
 
     function onPointerDown(ev) {
         ev.preventDefault();
         isDragging = true;
         startX = ev.clientX;
-        startWidth = state.gutterWidth;
+        startWidth = state[stateKey];
 
         document.addEventListener("pointermove", onMove);
         document.addEventListener("pointerup", onPointerUp, { once: true });
@@ -49,7 +55,7 @@ export function useGanttGutter(state, options = {}) {
 
         // Persist gutter width to localStorage
         try {
-            localStorage.setItem("gantt_gutter_width", String(state.gutterWidth));
+            localStorage.setItem(storageKey, String(state[stateKey]));
         } catch (_e) {
             // localStorage not available
         }

@@ -113,7 +113,9 @@ export function useGanttTreeDrag(params) {
         dropIndicator.style.cssText =
             "position:absolute;left:0;right:0;height:2px;background:var(--gantt-accent-blue);" +
             "z-index:100;pointer-events:none;display:none;" +
-            "box-shadow:0 0 4px var(--gantt-accent-blue);";
+            "box-shadow:0 0 4px var(--gantt-accent-blue);" +
+            "transition:top 0.1s ease, height 0.1s ease, background 0.1s ease;" +
+            "border-radius:1px;";
 
         const listEl = params.getListEl();
         if (listEl) {
@@ -125,6 +127,11 @@ export function useGanttTreeDrag(params) {
     function _updateDropTarget(ev) {
         const listEl = params.getListEl();
         if (!listEl || !dropIndicator) return;
+
+        // Clear previous row highlights
+        listEl.querySelectorAll(".o_gantt_tree_drop_child_target").forEach(
+            el => el.classList.remove("o_gantt_tree_drop_child_target")
+        );
 
         const rows = listEl.querySelectorAll(".o_gantt_list_row:not(.o_gantt_group_row)");
         let closestRow = null;
@@ -151,7 +158,7 @@ export function useGanttTreeDrag(params) {
                 dropTarget = { recordId: rid, el: closestRow };
                 dropPosition = isAbove ? "before" : "after";
 
-                // Check if dropping as child (indent zone: mouse in left 30% of row, and target has no children or is a parent)
+                // Check if dropping as child (right 40% of row)
                 const rect = closestRow.getBoundingClientRect();
                 const relX = ev.clientX - rect.left;
                 if (relX > rect.width * 0.6) {
@@ -163,17 +170,31 @@ export function useGanttTreeDrag(params) {
                 const rowRect = closestRow.getBoundingClientRect();
                 dropIndicator.style.display = "block";
 
+                // Get indent of target row for visual alignment
+                const targetRecord = params.getRecord(rid);
+                const indent = targetRecord?._indent || 0;
+                const indentPx = indent * 20 + 40; // match tree indent + handle width
+
                 if (dropPosition === "before") {
                     dropIndicator.style.top = `${rowRect.top - listRect.top + listEl.scrollTop}px`;
+                    dropIndicator.style.left = `${indentPx}px`;
+                    dropIndicator.style.right = "0";
                     dropIndicator.style.height = "2px";
+                    dropIndicator.style.background = "var(--gantt-accent-blue)";
                 } else if (dropPosition === "after") {
                     dropIndicator.style.top = `${rowRect.bottom - listRect.top + listEl.scrollTop}px`;
+                    dropIndicator.style.left = `${indentPx}px`;
+                    dropIndicator.style.right = "0";
                     dropIndicator.style.height = "2px";
+                    dropIndicator.style.background = "var(--gantt-accent-blue)";
                 } else {
-                    // "child" — highlight the whole row
+                    // "child" — highlight the row with indented indicator
                     dropIndicator.style.top = `${rowRect.top - listRect.top + listEl.scrollTop}px`;
+                    dropIndicator.style.left = `${indentPx + 20}px`; // one level deeper
+                    dropIndicator.style.right = "0";
                     dropIndicator.style.height = `${rowRect.height}px`;
                     dropIndicator.style.background = "rgba(0, 122, 255, 0.08)";
+                    closestRow.classList.add("o_gantt_tree_drop_child_target");
                 }
             }
         }
@@ -188,6 +209,13 @@ export function useGanttTreeDrag(params) {
         }
         if (dropIndicator && dropIndicator.parentNode) {
             dropIndicator.parentNode.removeChild(dropIndicator);
+        }
+        // Clear child-target highlights
+        const listEl = params.getListEl();
+        if (listEl) {
+            listEl.querySelectorAll(".o_gantt_tree_drop_child_target").forEach(
+                el => el.classList.remove("o_gantt_tree_drop_child_target")
+            );
         }
 
         isDragging = false;

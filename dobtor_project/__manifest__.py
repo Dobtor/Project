@@ -28,7 +28,7 @@ Migrated from Odoo 12 modules:
 - project_native_report
     """,
     "category": "Project",
-    "version": "18.0.1.0.3",
+    "version": "18.0.1.0.4",
     "author": "Dobtor SI",
     "license": "LGPL-3",
     "website": "https://www.dobtor.com",
@@ -55,6 +55,7 @@ Migrated from Odoo 12 modules:
             "dobtor_project/static/src/scss/**/*.scss",
         ],
     },
+    "post_init_hook": "_migrate_lag_to_hours",
     "installable": True,
     "auto_install": False,
     "application": False,

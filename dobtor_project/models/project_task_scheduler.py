@@ -38,26 +38,16 @@ class ProjectTaskNativeScheduler(models.Model):
 
         # Build predecessors_ap list from batch query result
         predecessors_ap = []
-        predecessor_data = all_predecessors.read(['id', 'type', 'lag_qty', 'lag_type', 'parent_task_id', 'task_id'])
+        predecessor_data = all_predecessors.read(['id', 'type', 'lag_hours', 'parent_task_id', 'task_id'])
         for pred in predecessor_data:
             predecessors_ap.append({
                 "id": pred['id'],
                 "type": pred['type'],
-                "lag_qty": pred['lag_qty'],
-                "lag_type": pred['lag_type'],
+                "lag_hours": pred['lag_hours'] or 0.0,
                 "parent_task_id": pred['parent_task_id'][0] if pred['parent_task_id'] else False,
                 "task_id": pred['task_id'][0] if pred['task_id'] else False,
             })
 
-        # Remove duplicates using dict with tuple key
-        seen = set()
-        unique_predecessors = []
-        for p in predecessors_ap:
-            key = (p['id'],)
-            if key not in seen:
-                seen.add(key)
-                unique_predecessors.append(p)
-        predecessors_ap = unique_predecessors
         t_params["predecessors_ap"] = predecessors_ap
 
         # Batch delete all detail plans
@@ -398,14 +388,14 @@ class ProjectTaskNativeScheduler(models.Model):
             if plan_duration == 0:
                 new_date_end = new_date_start
             else:
-                new_date_end = date_input + timedelta(seconds=plan_duration)
+                new_date_end = date_input + timedelta(hours=plan_duration)
 
         if date_type == "date_end":
             new_date_end = date_input
             if plan_duration == 0:
                 new_date_start = new_date_end
             else:
-                new_date_start = date_input - timedelta(seconds=plan_duration)
+                new_date_start = date_input - timedelta(hours=plan_duration)
 
         return new_date_start, new_date_end
 
@@ -541,10 +531,10 @@ class ProjectTaskNativeScheduler(models.Model):
             if parent_task and parent_date_field_1 and parent_task[parent_date_field_1]:
                 parent_date = parent_task[parent_date_field_1]
 
-                if date_obj["lag_qty"] != 0 and parent_date and parent_task[parent_date_field_2]:
+                if date_obj["lag_hours"] != 0 and parent_date and parent_task[parent_date_field_2]:
                     parent_date_two = parent_task[parent_date_field_2]
                     parent_date = self._predecessor_lag_timedelta(
-                        parent_date, date_obj["lag_qty"], date_obj["lag_type"], parent_date_two
+                        parent_date, date_obj["lag_hours"], parent_date_two
                     )
                 date_list.append(parent_date)
 
@@ -610,32 +600,12 @@ class ProjectTaskNativeScheduler(models.Model):
 
         return vals, calendar_level
 
-    def _predecessor_lag_timedelta(self, parent_date, lag_qty, lag_type, parent_date_two, plan_type='forward'):
-        diff = timedelta(days=0)
-
+    def _predecessor_lag_timedelta(self, parent_date, lag_hours, parent_date_two, plan_type='forward'):
         if plan_type == 'backward':
-            lag_qty = lag_qty * -1
+            lag_hours = lag_hours * -1
 
-        if lag_type == "day":
-            diff = timedelta(days=lag_qty)
-            return parent_date + diff
-
-        if lag_type == "hour":
-            diff = timedelta(seconds=lag_qty * 3600)
-
-        if lag_type == "minute":
-            diff = timedelta(seconds=lag_qty * 60)
-
-        if lag_type == "percent":
-            diff = parent_date - parent_date_two
-            duration = diff.total_seconds()
-            percent_second = (duration * abs(lag_qty)) / 100
-            diff = timedelta(seconds=percent_second)
-
-        if lag_qty > 0:
-            return parent_date + diff
-        else:
-            return parent_date - diff
+        diff = timedelta(hours=lag_hours)
+        return parent_date + diff
 
     def _scheduler_work_constrain(self, task_obj, vals, calendar_level, scheduling_type, t_params):
         if scheduling_type == "forward":

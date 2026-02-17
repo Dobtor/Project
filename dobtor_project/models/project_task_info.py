@@ -6,29 +6,29 @@ class ProjectTaskInfo(models.Model):
     _name = 'project.task.info'
     _description = "Project Task Info"
 
-    name = fields.Char(string="Name")
+    name = fields.Char(string="名稱")
     task_id = fields.Many2one(
         'project.task',
-        string='Task',
+        string='任務',
         ondelete='cascade'
     )
-    start = fields.Char(string="Start")
-    end = fields.Char(string="End")
-    left_up = fields.Char(string="Left Up")
-    left_down = fields.Char(string="Left Down")
-    right_up = fields.Char(string="Right Up")
-    right_down = fields.Char(string="Right Down")
-    show = fields.Boolean(string="Show", default=False)
+    start = fields.Char(string="開始")
+    end = fields.Char(string="結束")
+    left_up = fields.Char(string="左上")
+    left_down = fields.Char(string="左下")
+    right_up = fields.Char(string="右上")
+    right_down = fields.Char(string="右下")
+    show = fields.Boolean(string="顯示", default=False)
 
 
 class ProjectTaskInfoMixin(models.Model):
     _inherit = 'project.task'
 
-    info = fields.Integer(string='Info', default=False)
+    info = fields.Integer(string='資訊', default=0)
     info_ids = fields.One2many(
         'project.task.info',
         'task_id',
-        string='Info Value'
+        string='資訊值'
     )
 
     def _task_info_add(self, task, vals, info_name):

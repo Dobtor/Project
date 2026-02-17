@@ -9,9 +9,9 @@
             <field name="priority">24</field>
             <field name="arch" type="xml">
                 <xpath expr="//notebook" position="inside">
-                    <page string="Gantt View" name="gantt_settings">
+                    <page string="甘特圖" name="gantt_settings">
                         <group>
-                            <group string="Tasks in Auto Mode">
+                            <group string="自動排程任務">
                                 <field name="scheduling_type"/>
                                 <field name="schedule_start" invisible="scheduling_type == 'backward'"/>
                                 <field name="schedule_end" invisible="scheduling_type == 'forward'"/>
@@ -20,20 +20,25 @@
                                 <field name="tz_offset" invisible="1"/>
                             </group>
 
-                            <group string="Default for Task">
+                            <group string="任務預設值">
                                 <field name="task_default_duration" widget="float_time"/>
                                 <field name="task_default_start" widget="float_time"/>
+                                <field name="task_default_schedule_mode"/>
+                                <field name="task_default_constrain_type"/>
+                                <field name="task_default_fixed_calc_type"/>
+                                <field name="task_default_color_gantt" widget="color_picker"/>
+                                <field name="task_default_on_gantt"/>
                                 <field name="detail_plan"/>
                             </group>
 
                             <field name="task_default_start_end"/>
 
-                            <group name="duration_scale" string="Duration Scale">
+                            <group name="duration_scale" string="工期顯示格式">
                                 <field name="duration_scale"/>
                                 <field name="duration_picker"/>
                             </group>
 
-                            <group name="critical_path" string="Critical Path">
+                            <group name="critical_path" string="關鍵路徑">
                                 <field name="cp_shows"/>
                                 <field name="cp_detail"/>
                             </group>
