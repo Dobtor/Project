@@ -13,6 +13,9 @@ import { humanizeHours } from "./gantt_utils";
  *
  *   Non-tight (target beyond chamfer distance):
  *     M source → 45° chamfer → horizontal to targetX → vertical ↓/↑
+ *
+ * Position calculation uses the renderer's dateToPx() callback to ensure
+ * arrow endpoints always match bar positions across all scale levels.
  */
 export class GanttArrows extends Component {
     static template = "dobtor_project.GanttArrows";
@@ -22,13 +25,14 @@ export class GanttArrows extends Component {
         milestoneLinks: { type: Array, optional: true },
         records: { type: Array, optional: true },
         flattenedRows: { type: Array, optional: true },
-        timeStart: { optional: true },
-        cellWidth: Number,
+        dateToPx: Function,
         rowHeight: { type: Number, optional: true },
         barTopOffset: { type: Number, optional: true },
         barHeight: { type: Number, optional: true },
         selectedRowId: { optional: true },
         criticalField: { type: String, optional: true },
+        hpd: { type: Number, optional: true },
+        dpw: { type: Number, optional: true },
     };
 
     static defaultProps = {
@@ -54,8 +58,8 @@ export class GanttArrows extends Component {
      * Build predecessor arrows (existing logic).
      */
     _buildPredecessorPaths() {
-        const { predecessors, flattenedRows, timeStart, cellWidth, rowHeight } = this.props;
-        if (!predecessors || !predecessors.length || !flattenedRows || !timeStart) {
+        const { predecessors, flattenedRows, dateToPx, rowHeight } = this.props;
+        if (!predecessors || !predecessors.length || !flattenedRows || !dateToPx) {
             return [];
         }
 
@@ -82,19 +86,11 @@ export class GanttArrows extends Component {
             const childIdx = rowIndexMap.get(pred.task_id);
             if (parentIdx === undefined || childIdx === undefined) continue;
 
-            const parentStartDays = pStart.diff(timeStart, "days").days;
-            const parentEndDays = pEnd
-                ? pEnd.diff(timeStart, "days").days
-                : parentStartDays + 1;
-            const childStartDays = cStart.diff(timeStart, "days").days;
-            const childEndDays = cEnd
-                ? cEnd.diff(timeStart, "days").days
-                : childStartDays + 1;
-
-            const parentLeft = parentStartDays * cellWidth;
-            const parentRight = parentEndDays * cellWidth;
-            const childLeft = childStartDays * cellWidth;
-            const childRight = childEndDays * cellWidth;
+            // Use renderer's dateToPx for scale-aware coordinate mapping
+            const parentLeft = dateToPx(pStart);
+            const parentRight = pEnd ? dateToPx(pEnd) : parentLeft + 20;
+            const childLeft = dateToPx(cStart);
+            const childRight = cEnd ? dateToPx(cEnd) : childLeft + 20;
 
             const parentCenterY = parentIdx * rowHeight + rowHeight / 2;
             const childCenterY = childIdx * rowHeight + rowHeight / 2;
@@ -146,15 +142,15 @@ export class GanttArrows extends Component {
             let lagLabel = "";
             if (pred.lag_hours && Math.abs(pred.lag_hours) > 0.001) {
                 const sign = pred.lag_hours > 0 ? "+" : "";
-                lagLabel = `${sign}${humanizeHours(pred.lag_hours)}`;
+                lagLabel = `${sign}${humanizeHours(pred.lag_hours, this.props.hpd || 24, this.props.dpw || 7)}`;
             }
 
             // Lag label position at the turn point (horizontal→vertical
             // or diagonal→vertical junction).
             //
             // Non-tight (has horizontal segment):
-            //   Default: LEFT of vertical line, text right-edge aligned (anchor=end)
-            //   Collision: flip to RIGHT of vertical, left-edge aligned (anchor=start)
+            //   Default: RIGHT of vertical line, left-edge aligned (anchor=start)
+            //   Collision: flip to LEFT of vertical, right-edge aligned (anchor=end)
             // Tight (diagonal → vertical):
             //   Always RIGHT of vertical, left-edge aligned (anchor=start)
             const LABEL_GAP = 3;
@@ -180,11 +176,11 @@ export class GanttArrows extends Component {
                 const collides = availSpace < FONT_SIZE + LABEL_GAP * 2;
 
                 if (collides) {
-                    lagAnchor = "start";
-                    lagX = result.turnX + LABEL_GAP;
-                } else {
                     lagAnchor = "end";
                     lagX = result.turnX - LABEL_GAP;
+                } else {
+                    lagAnchor = "start";
+                    lagX = result.turnX + LABEL_GAP;
                 }
                 lagY = vertDir > 0
                     ? result.turnY + FONT_SIZE + LABEL_GAP  // below horizontal
@@ -212,8 +208,8 @@ export class GanttArrows extends Component {
      * All arrows converge on diamond visual center; arrowhead at vertex.
      */
     _buildMilestonePaths() {
-        const { milestoneLinks, flattenedRows, timeStart, cellWidth, rowHeight } = this.props;
-        if (!milestoneLinks || !milestoneLinks.length || !flattenedRows || !timeStart) {
+        const { milestoneLinks, flattenedRows, dateToPx, rowHeight } = this.props;
+        if (!milestoneLinks || !milestoneLinks.length || !flattenedRows || !dateToPx) {
             return [];
         }
 
@@ -240,16 +236,14 @@ export class GanttArrows extends Component {
             const msIdx = rowIndexMap.get(link.milestone_id);
             if (taskIdx === undefined || msIdx === undefined) continue;
 
-            // Task: from right edge (FS style)
-            const taskEndDays = taskRecord._dateEnd
-                ? taskRecord._dateEnd.diff(timeStart, "days").days
-                : taskRecord._dateStart.diff(timeStart, "days").days + 1;
-            const fromX = taskEndDays * cellWidth;
+            // Task: from right edge (FS style) — use dateToPx
+            const fromX = taskRecord._dateEnd
+                ? dateToPx(taskRecord._dateEnd)
+                : dateToPx(taskRecord._dateStart) + 20;
             const fromY = taskIdx * rowHeight + rowHeight / 2;
 
-            // Milestone: diamond visual center = CSS left + half box
-            const msDays = msRecord._dateStart.diff(timeStart, "days").days;
-            const msCenterX = msDays * cellWidth + halfBox;
+            // Milestone: diamond visual center = dateToPx(start) + half box
+            const msCenterX = dateToPx(msRecord._dateStart) + halfBox;
             const toY = msIdx * rowHeight + rowHeight / 2;
 
             const vertDir = toY > fromY ? 1 : -1;
