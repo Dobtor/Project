@@ -40,6 +40,7 @@ export class GanttArchParser {
         archInfo.constrainDate = archInfo.constrainDate || "constrain_date";
         archInfo.duration = archInfo.duration || "duration";
         archInfo.planDuration = archInfo.planDuration || "plan_duration";
+        archInfo.workingDuration = archInfo.workingDuration || "working_duration";
         archInfo.fixedCalcType = archInfo.fixedCalcType || "";
 
         // Dates

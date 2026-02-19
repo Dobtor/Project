@@ -3,6 +3,9 @@
 import { _t } from "@web/core/l10n/translation";
 import { useBus, useService, useOwnedDialogs } from "@web/core/utils/hooks";
 import { Layout } from "@web/search/layout";
+import { SearchBar } from "@web/search/search_bar/search_bar";
+import { useSearchBarToggler } from "@web/search/search_bar/search_bar_toggler";
+import { CogMenu } from "@web/search/cog_menu/cog_menu";
 import { useModel } from "@web/model/model";
 import { standardViewProps } from "@web/views/standard_view_props";
 import { FormViewDialog } from "@web/views/view_dialogs/form_view_dialog";
@@ -12,7 +15,7 @@ import { Component, useState, onWillUnmount } from "@odoo/owl";
 
 export class GanttController extends Component {
     static template = "dobtor_project.GanttController";
-    static components = { Layout };
+    static components = { Layout, SearchBar, CogMenu };
 
     static props = {
         ...standardViewProps,
@@ -40,6 +43,9 @@ export class GanttController extends Component {
         // so in-place mutations (toggleGroup, toggleTaskFold, rename, etc.) trigger re-render.
         useBus(this.model.bus, "update", () => this.render(true));
 
+        // SearchBar toggler for responsive search
+        this.searchBarToggler = useSearchBarToggler();
+
         // Restore persisted toolbar state from localStorage
         const savedScale = localStorage.getItem("gantt_scale") || "day";
         const savedSort = localStorage.getItem("gantt_sort_mode") || "seq";
@@ -47,6 +53,7 @@ export class GanttController extends Component {
 
         // Restore intersection toggle from localStorage
         const savedIntersection = localStorage.getItem("gantt_intersection") === "true";
+        const savedHideNonWorking = localStorage.getItem("gantt_hide_non_working") === "true";
 
         this.state = useState({
             scale: savedScale,
@@ -56,8 +63,9 @@ export class GanttController extends Component {
             weekType: savedWeekType,   // "iso" (Mon start) | "us" (Sun start)
             showListDetail: false,
             showIntersection: savedIntersection,
-            // More menu dropdown (Phase 1)
-            showMoreMenu: false,
+            // Scale & Baseline dropdown menus
+            showScaleMenu: false,
+            showBaselineMenu: false,
             // Violation panel (Phase 2)
             showViolationPanel: false,
             violations: [],
@@ -72,6 +80,8 @@ export class GanttController extends Component {
             filterCriticalPath: false,
             filterOverdue: false,
             filterUnlinked: false,
+            // Calendar: hide non-working days
+            hideNonWorkingDays: savedHideNonWorking,
         });
 
         // Scale options — 8 zoom levels matching old module
@@ -83,17 +93,19 @@ export class GanttController extends Component {
             { value: "day", label: _t("\u65E5") },
             { value: "week", label: _t("\u9031") },
             { value: "month", label: _t("\u6708") },
-            { value: "quarter", label: _t("\u5B63") },
         ];
 
         // Keyboard handler for Delete/Escape/Enter/Arrow navigation
         this._onKeyDown = this._onKeyDown.bind(this);
         document.addEventListener("keydown", this._onKeyDown);
 
-        // Close More menu on click outside
+        // Close dropdown menus on click outside
         this._onClickOutside = (ev) => {
-            if (this.state.showMoreMenu && !ev.target.closest(".o_gantt_more_menu_wrapper")) {
-                this.state.showMoreMenu = false;
+            if (this.state.showScaleMenu && !ev.target.closest(".o_gantt_tb_scale_dropdown")) {
+                this.state.showScaleMenu = false;
+            }
+            if (this.state.showBaselineMenu && !ev.target.closest(".o_gantt_tb_baseline_dropdown")) {
+                this.state.showBaselineMenu = false;
             }
         };
         document.addEventListener("click", this._onClickOutside, true);
@@ -137,17 +149,27 @@ export class GanttController extends Component {
             filterUnlinked: this.state.filterUnlinked,
             // PDF report
             onReportClick: this.onReportClick.bind(this),
+            // Calendar
+            hideNonWorkingDays: this.state.hideNonWorkingDays,
         };
     }
 
     get display() {
         return {
-            controlPanel: {},
+            ...this.props.display,
+            controlPanel: {
+                ...this.props.display?.controlPanel,
+            },
         };
     }
 
     get isLoading() {
         return this.state.isLoading;
+    }
+
+    get isPlanningMode() {
+        const groups = this.model.data?.groups || [];
+        return groups.length > 0 && groups.every(g => g._isPlanningMode);
     }
 
     get pagerText() {
@@ -351,6 +373,11 @@ export class GanttController extends Component {
         return labels[this.state.sortMode] || "\u5E8F\u865F";
     }
 
+    get currentScaleLabel() {
+        const found = this.scales.find(s => s.value === this.state.scale);
+        return found ? found.label : this.state.scale;
+    }
+
     onWeekTypeToggle() {
         this.state.weekType = this.state.weekType === "iso" ? "us" : "iso";
         localStorage.setItem("gantt_week_type", this.state.weekType);
@@ -369,16 +396,22 @@ export class GanttController extends Component {
         localStorage.setItem("gantt_intersection", this.state.showIntersection);
     }
 
-    // "More" dropdown menu toggle
-    async onMoreMenuToggle() {
-        this.state.showMoreMenu = !this.state.showMoreMenu;
-        if (this.state.showMoreMenu) {
-            await this.loadBaselines();
-        }
+    onHideNonWorkingDaysToggle() {
+        this.state.hideNonWorkingDays = !this.state.hideNonWorkingDays;
+        localStorage.setItem("gantt_hide_non_working", this.state.hideNonWorkingDays);
     }
 
-    onMoreMenuClose() {
-        this.state.showMoreMenu = false;
+    onScaleMenuToggle() {
+        this.state.showScaleMenu = !this.state.showScaleMenu;
+        this.state.showBaselineMenu = false;
+    }
+
+    async onBaselineMenuToggle() {
+        this.state.showBaselineMenu = !this.state.showBaselineMenu;
+        this.state.showScaleMenu = false;
+        if (this.state.showBaselineMenu) {
+            await this.loadBaselines();
+        }
     }
 
     // -------------------------------------------------------------------------

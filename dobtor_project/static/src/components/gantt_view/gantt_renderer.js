@@ -13,7 +13,7 @@ import { useGanttDeadlineDrag } from "./gantt_deadline_drag_hook";
 import { useGanttTreeDrag } from "./gantt_tree_drag_hook";
 import { useGanttArrowDraw } from "./gantt_arrow_draw_hook";
 import { useGanttProgressDrag } from "./gantt_progress_drag_hook";
-import { cellsDeltaToDuration } from "./gantt_utils";
+import { cellsDeltaToDuration, toOdooDatetime } from "./gantt_utils";
 import { GanttArrows } from "./gantt_arrows";
 import { GanttTooltip } from "./gantt_tooltip";
 import { GanttContextMenu } from "./gantt_context_menu";
@@ -59,6 +59,8 @@ export class GanttRenderer extends Component {
         filterUnlinked: { type: Boolean, optional: true },
         // PDF report
         onReportClick: { type: Function, optional: true },
+        // Calendar
+        hideNonWorkingDays: { type: Boolean, optional: true },
     };
 
     setup() {
@@ -141,7 +143,6 @@ export class GanttRenderer extends Component {
             day: 40,        // px per day column
             week: 120,      // px per week column
             month: 180,     // px per month column
-            quarter: 180,   // px per month-within-quarter column
         };
 
         // --- Hook: Gutter resize (Task List ↔ Duration) ---
@@ -167,6 +168,8 @@ export class GanttRenderer extends Component {
             getScale: () => this.props.scale,
             getTimeStart: () => this.props.model.data?.timeStart,
             getRecord: (id) => this.props.model.data?.records.find(r => r.id === id),
+            getCalHpd: () => this._calHpd,
+            getCalDpw: () => this._calDpw,
             getMinStart: (id) => {
                 const rec = this.props.model.data?.records.find(r => r.id === id);
                 if (rec && rec._hasChildren) {
@@ -187,23 +190,44 @@ export class GanttRenderer extends Component {
                 const record = this.props.model.data?.records.find(r => r.id === recordId);
                 if (!record) return;
 
+                const useWorkingMove = this._isHidingNonWorking();
                 const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
 
                 // --- Parent task: move with all descendants ---
                 if (record._hasChildren) {
                     const summaryStart = record._summaryDateStart || record._dateStart;
                     if (!summaryStart) return;
-                    let newStart = summaryStart.plus(shiftDur);
+                    let newStart = useWorkingMove
+                        ? this._addWorkingUnits(summaryStart, cellsDelta)
+                        : summaryStart.plus(shiftDur);
                     // Clamp to FS predecessor constraints (own + all descendants)
                     const minStart = this.props.model.getMinStartForParentDrag(recordId);
+                    let wasClamped = false;
                     if (minStart && newStart < minStart) {
                         newStart = minStart;
+                        wasClamped = true;
                     }
                     const shiftHours = newStart.diff(summaryStart, "hours").hours;
                     if (Math.abs(shiftHours) < 0.01) return;
-                    await this.props.model.moveRecordWithChildren(recordId, shiftHours);
+                    const moveOpts = wasClamped ? { context: { skip_date_snap: true } } : {};
+                    await this.props.model.moveRecordWithChildren(recordId, shiftHours, moveOpts);
                     await this.props.model._pushFSSuccessors(recordId);
+                    await this.props.model._pushAncestorFSSuccessors(recordId);
                     await this.props.model._recalcAndUpdateLags(recordId);
+                    if (this.props.onReload) await this.props.onReload();
+                    return;
+                }
+
+                // --- Milestone: update deadline_datetime ---
+                if (record._isMilestoneRecord) {
+                    let newDate = useWorkingMove && record._dateStart
+                        ? this._addWorkingUnits(record._dateStart, cellsDelta)
+                        : (record._dateStart ? record._dateStart.plus(shiftDur) : null);
+                    if (newDate) {
+                        await this.props.model.updateRecord(recordId, {
+                            deadline_datetime: newDate.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"),
+                        });
+                    }
                     if (this.props.onReload) await this.props.onReload();
                     return;
                 }
@@ -211,6 +235,7 @@ export class GanttRenderer extends Component {
                 // --- Leaf task: existing logic ---
                 // Clamp: start never before predecessor's end or parent's start
                 const minStart = this.props.model.getMinStartForRecord(recordId);
+                let wasClamped = false;
 
                 if (record._isVirtualDates) {
                     // Planning mode: update plan_offset (hours)
@@ -225,7 +250,9 @@ export class GanttRenderer extends Component {
                     await this.props.model.updatePlanOffset(recordId, newOffset);
                 } else if (record._scheduleMode === "auto") {
                     // Auto mode: convert drag to SNET constraint instead of overwriting dates
-                    let newStart = record._dateStart ? record._dateStart.plus(shiftDur) : null;
+                    let newStart = useWorkingMove && record._dateStart
+                        ? this._addWorkingUnits(record._dateStart, cellsDelta)
+                        : (record._dateStart ? record._dateStart.plus(shiftDur) : null);
                     if (minStart && newStart && newStart < minStart) {
                         newStart = minStart;
                     }
@@ -234,7 +261,7 @@ export class GanttRenderer extends Component {
                         const constrainDateField = this.props.archInfo.constrainDate || "constrain_date";
                         await this.props.model.updateRecord(recordId, {
                             [constrainTypeField]: "snet",
-                            [constrainDateField]: newStart.toFormat("yyyy-MM-dd HH:mm:ss"),
+                            [constrainDateField]: newStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"),
                         });
                     }
                 } else {
@@ -248,23 +275,28 @@ export class GanttRenderer extends Component {
                         );
                         return;
                     }
-                    let newStart = record._dateStart ? record._dateStart.plus(shiftDur) : null;
+                    let newStart = useWorkingMove && record._dateStart
+                        ? this._addWorkingUnits(record._dateStart, cellsDelta)
+                        : (record._dateStart ? record._dateStart.plus(shiftDur) : null);
                     // Clamp to FS predecessor end
                     if (minStart && newStart && newStart < minStart) {
                         newStart = minStart;
+                        wasClamped = true;
                     }
                     const values = {};
                     if (newStart) {
-                        values[dateStartField] = newStart.toFormat("yyyy-MM-dd HH:mm:ss");
+                        values[dateStartField] = newStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                     }
                     if (record._dateEnd && record._dateStart) {
                         const duration = record._dateEnd.diff(record._dateStart);
-                        values[dateStopField] = (newStart || record._dateStart).plus(duration).toFormat("yyyy-MM-dd HH:mm:ss");
+                        values[dateStopField] = (newStart || record._dateStart).plus(duration).setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                     }
-                    await this.props.model.updateRecord(recordId, values);
+                    const writeOpts = wasClamped ? { context: { skip_date_snap: true } } : {};
+                    await this.props.model.updateRecord(recordId, values, writeOpts);
                 }
                 // Push FS successors if this task's end moved forward
                 await this.props.model._pushFSSuccessors(recordId);
+                await this.props.model._pushAncestorFSSuccessors(recordId);
                 await this.props.model._recalcAndUpdateLags(recordId);
                 // Full reload to refresh server-computed fields
                 if (this.props.onReload) await this.props.onReload();
@@ -284,6 +316,8 @@ export class GanttRenderer extends Component {
             getCellWidth: () => this.cellWidth,
             getScale: () => this.props.scale,
             getRecord: (id) => this.props.model.data?.records.find(r => r.id === id),
+            getCalHpd: () => this._calHpd,
+            getCalDpw: () => this._calDpw,
             onResizeEnd: async (recordId, side, cellsDelta) => {
                 const record = this.props.model.data?.records.find(r => r.id === recordId);
                 if (!record) return;
@@ -332,20 +366,34 @@ export class GanttRenderer extends Component {
                         );
                         return;
                     }
+                    const useWorkingMove = this._isHidingNonWorking();
                     const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
                     const values = {};
+                    let wasClamped = false;
                     if (side === "left" && record._dateStart) {
-                        let newStart = record._dateStart.plus(shiftDur);
+                        let newStart = useWorkingMove
+                            ? this._addWorkingUnits(record._dateStart, cellsDelta)
+                            : record._dateStart.plus(shiftDur);
                         // Clamp to FS predecessor end
-                        if (minStart && newStart < minStart) newStart = minStart;
-                        values[dateStartField] = newStart.toFormat("yyyy-MM-dd HH:mm:ss");
+                        if (minStart && newStart < minStart) {
+                            newStart = minStart;
+                            wasClamped = true;
+                        }
+                        values[dateStartField] = newStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                     } else if (side === "right" && record._dateEnd) {
-                        values[dateStopField] = record._dateEnd.plus(shiftDur).toFormat("yyyy-MM-dd HH:mm:ss");
+                        const newEnd = useWorkingMove
+                            ? this._addWorkingUnits(record._dateEnd, cellsDelta)
+                            : record._dateEnd.plus(shiftDur);
+                        values[dateStopField] = newEnd.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                     }
-                    await this.props.model.updateRecord(recordId, values);
+                    // Only skip snap when clamped to FS boundary; otherwise let
+                    // Python directional snap handle non-work-hour positions.
+                    const resizeOpts = wasClamped ? { context: { skip_date_snap: true } } : {};
+                    await this.props.model.updateRecord(recordId, values, resizeOpts);
                 }
                 // Push FS successors if this task's end moved forward
                 await this.props.model._pushFSSuccessors(recordId);
+                await this.props.model._pushAncestorFSSuccessors(recordId);
                 await this.props.model._recalcAndUpdateLags(recordId);
                 if (this.props.onReload) await this.props.onReload();
             },
@@ -378,8 +426,10 @@ export class GanttRenderer extends Component {
                     );
                     return;
                 }
-                const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
-                const newDeadline = record._dateDeadline.plus(shiftDur);
+                const useWorkingMove = this._isHidingNonWorking();
+                const newDeadline = useWorkingMove
+                    ? this._addWorkingUnits(record._dateDeadline, cellsDelta)
+                    : record._dateDeadline.plus(cellsDeltaToDuration(cellsDelta, this.props.scale));
                 await this.props.model.updateRecord(recordId, {
                     [deadlineField]: newDeadline.toFormat("yyyy-MM-dd"),
                 });
@@ -554,7 +604,7 @@ export class GanttRenderer extends Component {
         return groups.length > 0 && groups.every(g => g._isPlanningMode);
     }
 
-    get timelineColumns() {
+    get _allColumns() {
         const data = this.props.model.data;
         if (!data?.timeStart || !data?.timeEnd ||
             !data.timeStart.isValid || !data.timeEnd.isValid) {
@@ -570,6 +620,40 @@ export class GanttRenderer extends Component {
         return this._generateColumns(extStart, extEnd);
     }
 
+    get timelineColumns() {
+        const cols = this._allColumns;
+        if (this.props.hideNonWorkingDays && this.props.model.data?.calendarInfo
+            && !this.isPlanningMode) {
+            const scale = this.props.scale;
+            if (scale === "day") {
+                const filtered = cols.filter(c => !c.isNonWorking);
+                this._rebuildWorkingDayIndex(filtered);
+                this._workingHourIndex = null;
+                this._workingHourCols = null;
+                this._coarseColumns = null;
+                return filtered;
+            }
+            if (scale === "1h" || scale === "2h" || scale === "4h" || scale === "8h") {
+                const filtered = cols.filter(c => !c.isNonWorking);
+                this._rebuildWorkingHourIndex(filtered);
+                this._workingDayIndex = null;
+                this._coarseColumns = null;
+                return filtered;
+            }
+        }
+        this._workingDayIndex = null;
+        this._workingHourIndex = null;
+        this._workingHourCols = null;
+        // Cache for week/month column-index-based _dateToPx
+        const scale = this.props.scale;
+        if (scale === "week" || scale === "month") {
+            this._coarseColumns = cols;
+        } else {
+            this._coarseColumns = null;
+        }
+        return cols;
+    }
+
     _generateColumns(start, end) {
         // Guard: if start or end are invalid, fall back to current month
         if (!start || !start.isValid || !end || !end.isValid) {
@@ -580,6 +664,8 @@ export class GanttRenderer extends Component {
         const columns = [];
         const scale = this.props.scale;
         const now = DateTime.now();
+        // Helper: format planning mode label with correct sign (T+1, T0, T-1)
+        const _pl = (prefix, n) => `${prefix}${n > 0 ? "+" : ""}${n}`;
 
         if (scale === "1h" || scale === "2h" || scale === "4h" || scale === "8h") {
             const hours = parseInt(scale);
@@ -587,16 +673,49 @@ export class GanttRenderer extends Component {
             // Align to hour boundary
             const h = current.hour;
             current = current.set({ hour: h - (h % hours) });
+            const inPlanningMode = this.isPlanningMode;
+            const T0 = PLANNING_T0;
             while (current <= end) {
-                columns.push({
-                    date: current,
-                    label: current.toFormat("HH:mm"),
-                    weekday: current.toFormat("M/d"),
-                    month: current.toFormat("yyyy/M/d"),
-                    isWeekend: current.weekday === 6 || current.weekday === 7,
-                    isToday: current.hasSame(now, "hour") ||
-                        (now >= current && now < current.plus({ hours })),
-                });
+                if (inPlanningMode) {
+                    const hourOffset = Math.round(current.diff(T0, "hours").hours);
+                    const dayOffset = Math.round(current.diff(T0, "days").days);
+                    columns.push({
+                        date: current,
+                        label: _pl("H", hourOffset),
+                        weekday: _pl("T", dayOffset),
+                        month: "T-hour",
+                        isWeekend: false,
+                        isToday: false,
+                    });
+                } else {
+                    // Calendar-aware: check if this hour column is non-working
+                    const calendarInfo = this.props.model.data?.calendarInfo;
+                    const weekdayMap = calendarInfo?._weekdayMap;
+                    const leaveDays = calendarInfo?._leaveDays;
+                    // Luxon weekday 1=Mon → calendar dayofweek '0'=Mon
+                    const calDow = String(current.weekday - 1);
+                    const dayAtts = weekdayMap?.[calDow] || [];
+                    const colStart = current.hour + current.minute / 60;
+                    const colEnd = colStart + hours;
+                    // Column overlaps with any work interval?
+                    const isInWorkHour = dayAtts.some(
+                        att => colStart < att.to && colEnd > att.from
+                    );
+                    const isLeaveDay = leaveDays?.has(current.toISODate());
+                    const isNonWorking = weekdayMap
+                        ? (!isInWorkHour || isLeaveDay)
+                        : false;
+                    columns.push({
+                        date: current,
+                        label: current.toFormat("HH:mm"),
+                        weekday: current.toFormat("M/d"),
+                        month: current.toFormat("M/d (EEE)"),
+                        isWeekend: current.weekday === 6 || current.weekday === 7,
+                        isNonWorking,
+                        isToday: current.hasSame(now, "hour") ||
+                            (now >= current && now < current.plus({ hours })),
+                    });
+                }
                 current = current.plus({ hours });
             }
         } else if (scale === "day") {
@@ -610,7 +729,7 @@ export class GanttRenderer extends Component {
                     const dayOffset = Math.round(current.diff(T0, "days").days);
                     columns.push({
                         date: current,
-                        label: `T+${dayOffset}`,
+                        label: _pl("T", dayOffset),
                         weekday: "",
                         month: "T-day",
                         isWeekend: false,
@@ -619,77 +738,103 @@ export class GanttRenderer extends Component {
                 } else {
                     // Luxon weekday: 1=Mon..7=Sun
                     const isWeekend = current.weekday === 6 || current.weekday === 7;
+                    // Calendar-aware: check if this day is a non-working day
+                    const calendarInfo = this.props.model.data?.calendarInfo;
+                    const workingWeekdays = calendarInfo?._workingWeekdays;
+                    const leaveDays = calendarInfo?._leaveDays;
+                    const isNonWorking = workingWeekdays
+                        ? (!workingWeekdays.has(current.weekday) || (leaveDays && leaveDays.has(current.toISODate())))
+                        : false;
                     columns.push({
                         date: current,
                         label: current.toFormat("d"),
                         weekday: current.toFormat("EEE"),
                         month: current.toFormat("yyyy\u5E74M\u6708"),
                         isWeekend,
+                        isNonWorking,
                         isToday: current.hasSame(now, "day"),
                     });
                 }
                 current = current.plus({ days: 1 });
             }
         } else if (scale === "week") {
-            const weekType = this.props.weekType || "iso";
-            // For US weeks (Sun start), shift to Sunday; for ISO (Mon start) use default
-            if (weekType === "us") {
-                // Luxon .startOf("week") always gives Monday (ISO).
-                // For US Sunday-start: go to Monday then subtract 1 day.
-                let current = start.startOf("week").minus({ days: 1 });
-                if (current > start) current = current.minus({ weeks: 1 });
+            const inPlanningMode = this.isPlanningMode;
+            const T0 = PLANNING_T0;
+            if (inPlanningMode) {
+                let current = start.startOf("week");
                 while (current <= end) {
-                    const weekEnd = current.plus({ days: 6 });
+                    const weekOffset = Math.round(current.diff(T0, "weeks").weeks);
                     columns.push({
                         date: current,
-                        label: `W${current.plus({ days: 1 }).weekNumber}`,
-                        weekday: `${current.toFormat("M/d")} - ${weekEnd.toFormat("M/d")}`,
-                        month: current.toFormat("yyyy\u5E74M\u6708"),
+                        label: _pl("W", weekOffset),
+                        weekday: "",
+                        month: "T-week",
                         isWeekend: false,
-                        isToday: now >= current && now <= weekEnd,
+                        isToday: false,
                     });
                     current = current.plus({ weeks: 1 });
                 }
             } else {
-                let current = start.startOf("week");
-                while (current <= end) {
-                    const weekEnd = current.endOf("week");
-                    columns.push({
-                        date: current,
-                        label: `W${current.weekNumber}`,
-                        weekday: `${current.toFormat("M/d")} - ${weekEnd.toFormat("M/d")}`,
-                        month: current.toFormat("yyyy\u5E74M\u6708"),
-                        isWeekend: false,
-                        isToday: now >= current && now <= weekEnd,
-                    });
-                    current = current.plus({ weeks: 1 });
+                const weekType = this.props.weekType || "iso";
+                // For US weeks (Sun start), shift to Sunday; for ISO (Mon start) use default
+                if (weekType === "us") {
+                    // Luxon .startOf("week") always gives Monday (ISO).
+                    // For US Sunday-start: go to Monday then subtract 1 day.
+                    let current = start.startOf("week").minus({ days: 1 });
+                    if (current > start) current = current.minus({ weeks: 1 });
+                    while (current <= end) {
+                        const weekEnd = current.plus({ days: 6 });
+                        columns.push({
+                            date: current,
+                            label: `W${current.plus({ days: 1 }).weekNumber}`,
+                            weekday: `${current.toFormat("M/d")} - ${weekEnd.toFormat("M/d")}`,
+                            month: current.toFormat("yyyy\u5E74M\u6708"),
+                            isWeekend: false,
+                            isToday: now >= current && now <= weekEnd,
+                        });
+                        current = current.plus({ weeks: 1 });
+                    }
+                } else {
+                    let current = start.startOf("week");
+                    while (current <= end) {
+                        const weekEnd = current.endOf("week");
+                        columns.push({
+                            date: current,
+                            label: `W${current.weekNumber}`,
+                            weekday: `${current.toFormat("M/d")} - ${weekEnd.toFormat("M/d")}`,
+                            month: current.toFormat("yyyy\u5E74M\u6708"),
+                            isWeekend: false,
+                            isToday: now >= current && now <= weekEnd,
+                        });
+                        current = current.plus({ weeks: 1 });
+                    }
                 }
             }
         } else if (scale === "month") {
+            const inPlanningMode = this.isPlanningMode;
+            const T0 = PLANNING_T0;
             let current = start.startOf("month");
             while (current <= end) {
-                columns.push({
-                    date: current,
-                    label: `${current.month}\u6708`,
-                    weekday: current.toFormat("yyyy"),
-                    month: current.toFormat("yyyy"),
-                    isWeekend: false,
-                    isToday: current.hasSame(now, "month"),
-                });
-                current = current.plus({ months: 1 });
-            }
-        } else if (scale === "quarter") {
-            let current = start.startOf("month");
-            while (current <= end) {
-                const q = Math.ceil(current.month / 3);
-                columns.push({
-                    date: current,
-                    label: `${current.month}\u6708`,
-                    weekday: `Q${q}`,
-                    month: `Q${q} ${current.toFormat("yyyy")}`,
-                    isWeekend: false,
-                    isToday: current.hasSame(now, "month"),
-                });
+                if (inPlanningMode) {
+                    const monthOffset = (current.year - T0.year) * 12 + (current.month - T0.month);
+                    columns.push({
+                        date: current,
+                        label: _pl("M", monthOffset),
+                        weekday: "",
+                        month: "T-month",
+                        isWeekend: false,
+                        isToday: false,
+                    });
+                } else {
+                    columns.push({
+                        date: current,
+                        label: `${current.month}\u6708`,
+                        weekday: current.toFormat("yyyy"),
+                        month: current.toFormat("yyyy"),
+                        isWeekend: false,
+                        isToday: current.hasSame(now, "month"),
+                    });
+                }
                 current = current.plus({ months: 1 });
             }
         }
@@ -699,7 +844,9 @@ export class GanttRenderer extends Component {
 
     /**
      * Convert a DateTime to pixel position relative to timeline start.
-     * Uses uniform px/ms for sub-day scales, px/day for day and above.
+     * - Sub-day: uniform px/ms (or working-hour index when hiding non-working).
+     * - Day: px/day (or working-day index when hiding non-working).
+     * - Week/month: column-index-based (variable column widths).
      */
     _dateToPx(dt) {
         const data = this.props.model.data;
@@ -714,11 +861,236 @@ export class GanttRenderer extends Component {
         if (scale === "1h" || scale === "2h" || scale === "4h" || scale === "8h") {
             const hours = parseInt(scale);
             const msPerCol = hours * 3600 * 1000;
+
+            // When hiding non-working hours, use index-based mapping
+            if (this._workingHourIndex && this.props.hideNonWorkingDays) {
+                // Align dt to column boundary
+                const dtHour = dt.hour + dt.minute / 60;
+                const aligned = dt.startOf("hour").set({ hour: Math.floor(dtHour) - (Math.floor(dtHour) % hours) });
+                const key = aligned.toISO();
+                const idx = this._workingHourIndex.get(key);
+                if (idx !== undefined) {
+                    const frac = (dt.toMillis() - aligned.toMillis()) / msPerCol;
+                    return (idx + frac) * cw;
+                }
+                return this._dateToPxHourFallback(dt, cw);
+            }
+
             const diffMs = dt.toMillis() - start.toMillis();
             return (diffMs / msPerCol) * cw;
         }
-        // Day and above: use days diff
+
+        // When hiding non-working days, use index-based mapping
+        if (this._workingDayIndex && this.props.hideNonWorkingDays) {
+            const dayKey = dt.startOf("day").toISODate();
+            const idx = this._workingDayIndex.get(dayKey);
+            if (idx !== undefined) {
+                // Day fraction: portion of the day elapsed
+                const dayFrac = (dt.hour + dt.minute / 60) / 24;
+                return (idx + dayFrac) * cw;
+            }
+            // dt is on a non-working day: find nearest working day boundary
+            return this._dateToPxFallback(dt, cw);
+        }
+
+        // Week, month: column-index-based mapping
+        // Each column spans a variable duration (weeks=7d, months=28-31d),
+        // so we find which column dt falls into and compute fractional position.
+        if (scale === "week" || scale === "month") {
+            const cols = this._coarseColumns;
+            if (cols && cols.length > 0) {
+                const step = scale === "week" ? { weeks: 1 } : { months: 1 };
+                const dtMs = dt.toMillis();
+                for (let i = 0; i < cols.length; i++) {
+                    const colStartMs = cols[i].date.toMillis();
+                    const colEndMs = (i + 1 < cols.length)
+                        ? cols[i + 1].date.toMillis()
+                        : cols[i].date.plus(step).toMillis();
+                    if (dtMs >= colStartMs && dtMs < colEndMs) {
+                        const totalMs = colEndMs - colStartMs;
+                        const frac = totalMs > 0 ? (dtMs - colStartMs) / totalMs : 0;
+                        return (i + frac) * cw;
+                    }
+                }
+                // Extrapolate: dt is outside column range
+                const firstMs = cols[0].date.toMillis();
+                if (dtMs < firstMs) {
+                    const colEndMs = cols.length > 1
+                        ? cols[1].date.toMillis()
+                        : cols[0].date.plus(step).toMillis();
+                    const totalMs = colEndMs - firstMs;
+                    const frac = totalMs > 0 ? (dtMs - firstMs) / totalMs : 0;
+                    return frac * cw;
+                }
+                const lastIdx = cols.length - 1;
+                const lastMs = cols[lastIdx].date.toMillis();
+                const lastEndMs = cols[lastIdx].date.plus(step).toMillis();
+                const totalMs = lastEndMs - lastMs;
+                const frac = totalMs > 0 ? (dtMs - lastMs) / totalMs : 0;
+                return (lastIdx + frac) * cw;
+            }
+        }
+
+        // Day: use days diff (cw = px per day, start is midnight-aligned)
         return dt.diff(start, "days").days * cw;
+    }
+
+    /**
+     * Build a Map from ISO date string → column index for working days.
+     */
+    _rebuildWorkingDayIndex(cols) {
+        this._workingDayIndex = new Map();
+        for (let i = 0; i < cols.length; i++) {
+            this._workingDayIndex.set(cols[i].date.toISODate(), i);
+        }
+    }
+
+    /**
+     * Build a Map from ISO datetime string → column index for working hours.
+     * Also stores the column array reference for _addWorkingColumns lookup.
+     */
+    _rebuildWorkingHourIndex(cols) {
+        this._workingHourIndex = new Map();
+        this._workingHourCols = cols;
+        for (let i = 0; i < cols.length; i++) {
+            this._workingHourIndex.set(cols[i].date.toISO(), i);
+        }
+    }
+
+    /**
+     * Fallback for _dateToPx when dt falls on a non-working hour.
+     * Scans backward through visible columns to find the nearest edge.
+     */
+    _dateToPxHourFallback(dt, cw) {
+        const cols = this._workingHourCols;
+        if (!cols || !cols.length) return 0;
+        // Find nearest preceding working column
+        let bestIdx = -1;
+        for (let i = cols.length - 1; i >= 0; i--) {
+            if (cols[i].date <= dt) {
+                bestIdx = i;
+                break;
+            }
+        }
+        if (bestIdx >= 0) {
+            return (bestIdx + 1) * cw; // right edge of that column
+        }
+        // dt is before all visible columns
+        return 0;
+    }
+
+    /**
+     * Fallback for _dateToPx when dt falls on a non-working day.
+     * Returns the right edge (end) of the nearest preceding working day.
+     */
+    _dateToPxFallback(dt, cw) {
+        const cols = this.timelineColumns;
+        if (!cols.length) return 0;
+        let cursor = dt.startOf("day").minus({ days: 1 });
+        const earliest = cols[0]?.date;
+        while (cursor >= earliest) {
+            const key = cursor.toISODate();
+            const idx = this._workingDayIndex.get(key);
+            if (idx !== undefined) {
+                return (idx + 1) * cw; // right edge of that working day
+            }
+            cursor = cursor.minus({ days: 1 });
+        }
+        return 0;
+    }
+
+    /**
+     * Add working days to a DateTime, skipping non-working days.
+     * Used by drag/resize when hideNonWorkingDays is active.
+     */
+    _addWorkingDays(dt, days) {
+        const calendarInfo = this.props.model.data?.calendarInfo;
+        if (!calendarInfo) return dt.plus({ days });
+        const workingWeekdays = calendarInfo._workingWeekdays;
+        const leaveDays = calendarInfo._leaveDays;
+        let cursor = dt;
+        let remaining = Math.abs(days);
+        const direction = days >= 0 ? 1 : -1;
+        while (remaining > 0) {
+            cursor = cursor.plus({ days: direction });
+            if (workingWeekdays.has(cursor.weekday) && !(leaveDays && leaveDays.has(cursor.toISODate()))) {
+                remaining--;
+            }
+        }
+        return cursor;
+    }
+
+    /**
+     * Check if currently hiding non-working periods (days or hours).
+     */
+    _isHidingNonWorking() {
+        if (!this.props.hideNonWorkingDays || !this.props.model.data?.calendarInfo
+            || this.isPlanningMode) {
+            return false;
+        }
+        const scale = this.props.scale;
+        if (scale === "day") return !!this._workingDayIndex;
+        if (scale === "1h" || scale === "2h" || scale === "4h" || scale === "8h") {
+            return !!this._workingHourIndex;
+        }
+        return false;
+    }
+
+    /**
+     * Add working time units (days or hour-columns) to a datetime,
+     * skipping non-working periods. Dispatches to day or hour logic.
+     */
+    _addWorkingUnits(dt, cellsDelta) {
+        const scale = this.props.scale;
+        if (scale === "day") {
+            return this._addWorkingDays(dt, cellsDelta);
+        }
+        return this._addWorkingColumns(dt, cellsDelta);
+    }
+
+    /**
+     * Add working-hour columns to a datetime using column-index lookup.
+     * Finds dt's position in the visible (filtered) column array, offsets
+     * by cellsDelta columns, and returns the target datetime preserving
+     * the fractional position within the column.
+     */
+    _addWorkingColumns(dt, cellsDelta) {
+        const cols = this._workingHourCols;
+        if (!cols || !cols.length) {
+            return dt.plus(cellsDeltaToDuration(cellsDelta, this.props.scale));
+        }
+
+        const hours = parseInt(this.props.scale);
+        const msPerCol = hours * 3600 * 1000;
+
+        // Find the column whose time range contains dt
+        let srcIdx = -1;
+        for (let i = 0; i < cols.length; i++) {
+            const colMs = cols[i].date.toMillis();
+            if (dt.toMillis() >= colMs && dt.toMillis() < colMs + msPerCol) {
+                srcIdx = i;
+                break;
+            }
+        }
+        if (srcIdx < 0) {
+            // dt outside visible range — find nearest column
+            let bestDist = Infinity;
+            for (let i = 0; i < cols.length; i++) {
+                const d = Math.abs(dt.toMillis() - cols[i].date.toMillis());
+                if (d < bestDist) { bestDist = d; srcIdx = i; }
+            }
+        }
+
+        // Fractional offset within source column (ms)
+        const fracMs = dt.toMillis() - cols[srcIdx].date.toMillis();
+
+        // Target column = source + rounded delta
+        const delta = Math.round(cellsDelta);
+        const targetIdx = Math.max(0, Math.min(cols.length - 1, srcIdx + delta));
+
+        // Reconstruct: target column date + same fractional offset (clamped)
+        const clampedFrac = Math.max(0, Math.min(msPerCol - 1, fracMs));
+        return cols[targetIdx].date.plus({ milliseconds: clampedFrac });
     }
 
     /**
@@ -734,8 +1106,7 @@ export class GanttRenderer extends Component {
         }
         if (scale === "day") return cw;
         if (scale === "week") return cw / 7;
-        // month / quarter: approximate — cellWidth is per-month
-        if (scale === "month" || scale === "quarter") return cw / 30;
+        if (scale === "month") return cw / 30;
         return cw;
     }
 
@@ -813,7 +1184,7 @@ export class GanttRenderer extends Component {
         }
         if (scale === "day") return date.plus({ days: n });
         if (scale === "week") return date.plus({ weeks: n });
-        return date.plus({ months: n }); // month & quarter
+        return date.plus({ months: n }); // month
     }
 
     get todayPosition() {
@@ -833,6 +1204,17 @@ export class GanttRenderer extends Component {
     // Arrow component props
     // -------------------------------------------------------------------------
 
+    /** Hours per working day from the project's calendar (default 24). */
+    get _calHpd() {
+        return this.props.model.data?.calendarInfo?.hours_per_day || 24;
+    }
+
+    /** Working days per week from the project's calendar (default 7). */
+    get _calDpw() {
+        const ws = this.props.model.data?.calendarInfo?._workingWeekdays;
+        return (ws && ws.size > 0) ? ws.size : 7;
+    }
+
     get arrowProps() {
         const data = this.props.model.data;
         return {
@@ -840,11 +1222,12 @@ export class GanttRenderer extends Component {
             milestoneLinks: data?.milestoneLinks || [],
             records: data?.records || [],
             flattenedRows: this.flattenedRows,
-            timeStart: this._extendedTimeStart || data?.timeStart,
-            cellWidth: this.cellWidth,
+            dateToPx: (dt) => this._dateToPx(dt),
             rowHeight: 44,
             selectedRowId: this.state.selectedRowId,
             criticalField: this.props.archInfo.criticalPath || "",
+            hpd: this._calHpd,
+            dpw: this._calDpw,
         };
     }
 
@@ -1725,6 +2108,9 @@ export class GanttRenderer extends Component {
         if (column.isWeekend) {
             classes.push("o_gantt_weekend");
         }
+        if (column.isNonWorking) {
+            classes.push("o_gantt_nonworking");
+        }
         if (column.isToday) {
             classes.push("o_gantt_today");
         }
@@ -1776,7 +2162,7 @@ export class GanttRenderer extends Component {
         const row = ev.target.closest(".o_gantt_timeline_row");
         const defaults = {};
         const dateStartField = this.props.archInfo.dateStart || "date_start";
-        defaults[`default_${dateStartField}`] = clickDate.toFormat("yyyy-MM-dd HH:mm:ss");
+        defaults[`default_${dateStartField}`] = clickDate.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
 
         if (this.props.onAddTask) {
             this.props.onAddTask(defaults);
@@ -1887,37 +2273,65 @@ export class GanttRenderer extends Component {
     // -------------------------------------------------------------------------
 
     onFocusClick(record) {
-        if (!record._dateStart) return;
+        // Use summary dates for parent tasks (same as getBarStyle)
+        let dateStart = record._dateStart;
+        if (record._hasChildren) {
+            dateStart = record._summaryDateStart || dateStart;
+        }
+        if (!this._isValidDt(dateStart)) return;
 
-        const timeline = this.timelineRef.el;
-        if (!timeline) return;
-
-        // Horizontal scroll: center the bar in the visible area
-        // (viewport minus inspector panel width)
-        const barLeftPx = this._dateToPx(record._dateStart);
-        const barRightPx = record._dateEnd ? this._dateToPx(record._dateEnd) : barLeftPx;
-        const barCenter = (barLeftPx + barRightPx) / 2;
-        const inspectorWidth = 320;
-        const visibleWidth = timeline.clientWidth - inspectorWidth;
-        timeline.scrollLeft = barCenter - visibleWidth / 2;
-
-        // Vertical scroll: find the row in the timeline
-        const timelineData = this.timelineDataRef.el;
-        if (timelineData) {
-            const barEl = timelineData.querySelector(`[data-record-id="${record.id}"]`);
-            if (barEl) {
-                const rowEl = barEl.closest(".o_gantt_timeline_row");
-                if (rowEl) {
-                    timeline.scrollTop = rowEl.offsetTop - timeline.clientHeight / 2;
-                }
+        // Select row + open inspector first (state change triggers re-render)
+        this.state.selectedRowId = record.id;
+        if (this.props.onInspectorOpen) {
+            if (!this.props.showInspectorPanel || this.props.inspectorRecordId !== record.id) {
+                this.props.onInspectorOpen(record.id);
             }
         }
 
-        // Select + open inspector
-        this.state.selectedRowId = record.id;
-        if (this.props.onInspectorOpen) {
-            this.props.onInspectorOpen(record.id);
-        }
+        // Defer scroll to next frame so inspector panel is rendered and
+        // timeline dimensions are stable.
+        requestAnimationFrame(() => {
+            const timeline = this.timelineRef.el;
+            if (!timeline) return;
+
+            // Bar start pixel = the anchor point to center in visible area
+            const barStartPx = this._dateToPx(dateStart);
+
+            // Inspector panel (320px) overlays the right side of the timeline,
+            // so the effective visible width is reduced.
+            const inspectorW = this.props.showInspectorPanel ? 320 : 0;
+            const visibleW = Math.max(timeline.clientWidth - inspectorW, 200);
+
+            const targetLeft = Math.max(0, barStartPx - visibleW / 2);
+
+            // Vertical target: center row in viewport
+            let targetTop = timeline.scrollTop;
+            const timelineData = this.timelineDataRef.el;
+            const barEl = timelineData?.querySelector(`[data-record-id="${record.id}"]`);
+            if (barEl) {
+                const rowEl = barEl.closest(".o_gantt_timeline_row");
+                if (rowEl) {
+                    targetTop = Math.max(0, rowEl.offsetTop - timeline.clientHeight / 2 + 22);
+                }
+            }
+
+            // Smooth animated scroll
+            timeline.scrollTo({
+                left: targetLeft,
+                top: targetTop,
+                behavior: "smooth",
+            });
+
+            // Highlight the bar with a pulse
+            if (barEl) {
+                barEl.classList.remove("o_gantt_bar_focus_pulse");
+                void barEl.offsetWidth;
+                barEl.classList.add("o_gantt_bar_focus_pulse");
+                barEl.addEventListener("animationend", () => {
+                    barEl.classList.remove("o_gantt_bar_focus_pulse");
+                }, { once: true });
+            }
+        });
     }
 
     // -------------------------------------------------------------------------
@@ -1979,17 +2393,31 @@ export class GanttRenderer extends Component {
     }
 
     getInfoDuration(record) {
-        // Use summary dates for parent tasks
+        const hpd = this._calHpd;
+        const dpw = this._calDpw;
+
+        // 1. Server-calculated working hours (most accurate with calendar)
+        const wdField = this.props.archInfo.workingDuration || "working_duration";
+        const workingHours = record[wdField];
+        if (workingHours && workingHours > 0 && !record._hasChildren) {
+            return this.formatDurationChinese(workingHours, hpd);
+        }
+
+        // 2. plan_duration (user-specified working hours)
+        if (record._planDuration && record._planDuration > 0 && !record._hasChildren) {
+            return this.formatDurationChinese(record._planDuration, hpd);
+        }
+
+        // 3. Parent tasks: use summary date span
         const dateStart = (record._hasChildren && record._summaryDateStart) || record._dateStart;
         const dateEnd = (record._hasChildren && record._summaryDateEnd) || record._dateEnd;
         if (this._isValidDt(dateStart) && this._isValidDt(dateEnd)
             && !record._isVirtualDates) {
-            const days = dateEnd.diff(dateStart, "days").days;
-            if (Number.isFinite(days)) return this._humanizeDuration(days);
-        }
-        // Fallback: plan_duration (planning mode or no actual dates)
-        if (record._planDuration && record._planDuration > 0) {
-            return this.formatDurationChinese(record._planDuration);
+            const calendarDays = dateEnd.diff(dateStart, "days").days;
+            if (Number.isFinite(calendarDays)) {
+                const workingDays = calendarDays * (dpw / 7);
+                return this._humanizeDuration(workingDays, dpw);
+            }
         }
         return "";
     }
@@ -2017,34 +2445,31 @@ export class GanttRenderer extends Component {
         return dt.toFormat("M/d");
     }
 
-    _humanizeDuration(days) {
+    _humanizeDuration(days, dpw = 7) {
         if (!Number.isFinite(days) || days <= 0) return "0\u5929";
         if (days < 1) {
-            const hours = Math.round(days * 24);
+            const hours = Math.round(days * (this._calHpd || 24));
             return `${hours}\u6642`;
         }
-        if (days < 7) {
+        if (days < dpw) {
             return `${Math.round(days * 10) / 10}\u5929`;
         }
-        if (days < 30) {
-            const weeks = Math.floor(days / 7);
-            const remain = Math.round(days % 7);
-            return remain > 0 ? `${weeks}\u9031${remain}\u5929` : `${weeks}\u9031`;
-        }
-        const months = Math.floor(days / 30);
-        const remainDays = Math.round(days % 30);
-        return remainDays > 0 ? `${months}\u6708${remainDays}\u5929` : `${months}\u6708`;
+        const weeks = Math.floor(days / dpw);
+        const remain = Math.round(days % dpw);
+        return remain > 0 ? `${weeks}\u9031${remain}\u5929` : `${weeks}\u9031`;
     }
 
     // -------------------------------------------------------------------------
     // Planning Mode: Duration formatting & editing
     // -------------------------------------------------------------------------
 
-    formatDurationChinese(hours) {
+    formatDurationChinese(hours, hpd) {
         if (!hours || hours <= 0) return "";
-        const d = Math.floor(hours / 24);
-        const h = Math.floor(hours % 24);
-        const m = Math.round((hours % 1) * 60) % 60;
+        hpd = hpd || this._calHpd || 24;
+        const d = Math.floor(hours / hpd);
+        const remainH = hours - d * hpd;
+        const h = Math.floor(remainH);
+        const m = Math.round((remainH % 1) * 60) % 60;
         const parts = [];
         if (d > 0) parts.push(`${d}\u5929`);
         if (h > 0) parts.push(`${h}\u5c0f\u6642`);
@@ -2054,9 +2479,11 @@ export class GanttRenderer extends Component {
 
     _hoursToInputFormat(hours) {
         if (!hours) return "";
-        const d = Math.floor(hours / 24);
-        const h = Math.floor(hours % 24);
-        const m = Math.round((hours % 1) * 60) % 60;
+        const hpd = this._calHpd || 24;
+        const d = Math.floor(hours / hpd);
+        const remainH = hours - d * hpd;
+        const h = Math.floor(remainH);
+        const m = Math.round((remainH % 1) * 60) % 60;
         const parts = [];
         if (d > 0) parts.push(`${d}d`);
         if (h > 0) parts.push(`${h}h`);
@@ -2065,13 +2492,16 @@ export class GanttRenderer extends Component {
     }
 
     parseDurationInput(text) {
-        const regex = /(\d+(?:\.\d+)?)\s*(d|h|m|s)/gi;
+        const hpd = this._calHpd || 24;
+        const dpw = this._calDpw || 7;
+        const regex = /(\d+(?:\.\d+)?)\s*(w|d|h|m|s)/gi;
         let totalHours = 0;
         let match;
         while ((match = regex.exec(text)) !== null) {
             const val = parseFloat(match[1]);
             switch (match[2].toLowerCase()) {
-                case "d": totalHours += val * 24; break;
+                case "w": totalHours += val * dpw * hpd; break;
+                case "d": totalHours += val * hpd; break;
                 case "h": totalHours += val; break;
                 case "m": totalHours += val / 60; break;
                 case "s": totalHours += val / 3600; break;
@@ -2187,7 +2617,7 @@ export class GanttRenderer extends Component {
             const end = column.date.endOf("week");
             return `${column.date.toFormat("M/d")} - ${end.toFormat("M/d")}`;
         }
-        if (scale === "month" || scale === "quarter") {
+        if (scale === "month") {
             return column.date.toFormat("yyyy\u5E74M\u6708");
         }
         // Sub-day scales
@@ -2462,12 +2892,32 @@ export class GanttRenderer extends Component {
     }
 
     scrollToRecord(recordId) {
-        const bar = this.timelineDataRef.el?.querySelector(
-            `.o_gantt_bar[data-record-id="${recordId}"]`
-        );
-        if (bar) {
-            bar.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+        const record = this.props.model.data?.records?.find(r => r.id === recordId);
+        if (record) {
+            this.onFocusClick(record);
+            return;
         }
+        // Fallback: direct bar scroll if record not found in data
+        this.state.selectedRowId = recordId;
+        if (this.props.onInspectorOpen) {
+            if (!this.props.showInspectorPanel || this.props.inspectorRecordId !== recordId) {
+                this.props.onInspectorOpen(recordId);
+            }
+        }
+        requestAnimationFrame(() => {
+            const bar = this.timelineDataRef.el?.querySelector(
+                `.o_gantt_bar[data-record-id="${recordId}"]`
+            );
+            if (bar) {
+                bar.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+                bar.classList.remove("o_gantt_bar_focus_pulse");
+                void bar.offsetWidth;
+                bar.classList.add("o_gantt_bar_focus_pulse");
+                bar.addEventListener("animationend", () => {
+                    bar.classList.remove("o_gantt_bar_focus_pulse");
+                }, { once: true });
+            }
+        });
     }
 
     saveScroll() {

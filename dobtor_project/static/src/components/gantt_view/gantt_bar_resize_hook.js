@@ -124,8 +124,8 @@ export function useGanttBarResize(params) {
                 const targetDate = side === "left"
                     ? record._dateStart.plus(shiftDur)
                     : record._dateEnd.plus(shiftDur);
-                // Odoo Datetime field expects "yyyy-MM-dd HH:mm:ss" string format
-                params.onConstraintSet(recordId, constrainType, targetDate.toFormat("yyyy-MM-dd HH:mm:ss"));
+                // Odoo Datetime field expects UTC "yyyy-MM-dd HH:mm:ss" string format
+                params.onConstraintSet(recordId, constrainType, targetDate.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"));
             }
         } else if (Math.abs(cellsDelta) > 0.01) {
             // Normal resize mode
@@ -193,6 +193,8 @@ export function useGanttBarResize(params) {
                 `${targetDate.toFormat("M/d HH:mm")}` +
                 `</div>`;
         } else if (record && record._dateStart && record._dateEnd) {
+            const hpd = params.getCalHpd ? params.getCalHpd() : 24;
+            const dpw = params.getCalDpw ? params.getCalDpw() : 7;
             const newStart = side === "left"
                 ? record._dateStart.plus(shiftDur)
                 : record._dateStart;
@@ -200,11 +202,12 @@ export function useGanttBarResize(params) {
                 ? record._dateEnd.plus(shiftDur)
                 : record._dateEnd;
 
-            const durationDays = Math.round(newEnd.diff(newStart, "days").days * 10) / 10;
-            const durationStr = humanizeDays(durationDays);
+            const calDays = Math.round(newEnd.diff(newStart, "days").days * 10) / 10;
+            const workDays = Math.round(calDays * (dpw / 7) * 10) / 10;
+            const durationStr = humanizeDays(workDays, dpw);
 
             const sideLabel = side === "left" ? "\u958B\u59CB" : "\u7D50\u675F";
-            const deltaLabel = formatDeltaLabel(cellsDelta, _scale);
+            const deltaLabel = formatDeltaLabel(cellsDelta, _scale, hpd);
 
             const lines = [];
             lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">\u958B\u59CB:</span> ${newStart.toFormat("M/d HH:mm")}</div>`);
@@ -213,7 +216,8 @@ export function useGanttBarResize(params) {
             lines.push(`<div class="o_gantt_hint_delta">${sideLabel} ${deltaLabel}</div>`);
             hintEl.innerHTML = lines.join("");
         } else {
-            hintEl.textContent = formatDeltaLabel(cellsDelta, _scale);
+            const hpd = params.getCalHpd ? params.getCalHpd() : 24;
+            hintEl.textContent = formatDeltaLabel(cellsDelta, _scale, hpd);
         }
 
         // Position near the resize handle

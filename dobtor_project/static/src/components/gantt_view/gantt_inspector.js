@@ -54,6 +54,7 @@ export class GanttInspector extends Component {
         onUpdatePredecessor: { type: Function, optional: true },
         milestoneLinkedTasks: { type: Array, optional: true },
         onRemoveMilestoneLink: { type: Function, optional: true },
+        calendarInfo: { optional: true },
     };
 
     static defaultProps = {
@@ -229,6 +230,21 @@ export class GanttInspector extends Component {
         return this.props.record && this.props.record._isMilestoneRecord;
     }
 
+    get calendarActive() {
+        return !!this.props.calendarInfo;
+    }
+
+    get workingDurationLabel() {
+        if (!this.props.record || !this.props.calendarInfo) return "";
+        const field = this.props.archInfo.workingDuration || "working_duration";
+        const hours = this.props.record[field];
+        if (!hours) return "";
+        const hpd = this.props.calendarInfo.hours_per_day || 8;
+        const ws = this.props.calendarInfo._workingWeekdays;
+        const dpw = (ws && ws.size > 0) ? ws.size : 7;
+        return humanizeHours(hours, hpd, dpw);
+    }
+
     formatDateLocal(dt) {
         if (!dt) return "";
         if (typeof dt === "string") return dt.slice(0, 10);
@@ -253,11 +269,15 @@ export class GanttInspector extends Component {
     }
 
     lagDisplayLabel(pred) {
-        return humanizeHours(pred.lag_hours);
+        const hpd = this.props.calendarInfo?.hours_per_day || 24;
+        const ws = this.props.calendarInfo?._workingWeekdays;
+        const dpw = (ws && ws.size > 0) ? ws.size : 7;
+        return humanizeHours(pred.lag_hours, hpd, dpw);
     }
 
     lagInputValue(pred) {
-        return hoursToInputFormat(pred.lag_hours);
+        const hpd = this.props.calendarInfo?.hours_per_day || 24;
+        return hoursToInputFormat(pred.lag_hours, hpd);
     }
 
     isEditingLag(pred) {
@@ -276,7 +296,10 @@ export class GanttInspector extends Component {
     onLagInputBlur(pred, ev) {
         this.state.editingLagPredId = null;
         if (!this.props.onUpdatePredecessor) return;
-        const hours = parseLagInput(ev.target.value);
+        const hpd = this.props.calendarInfo?.hours_per_day || 24;
+        const ws = this.props.calendarInfo?._workingWeekdays;
+        const dpw = (ws && ws.size > 0) ? ws.size : 7;
+        const hours = parseLagInput(ev.target.value, hpd, dpw);
         if (hours !== (pred.lag_hours || 0)) {
             this.props.onUpdatePredecessor(pred._predIdentifier, { lag_hours: hours });
         }

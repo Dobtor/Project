@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 from odoo import models, fields, api, _
 from datetime import timedelta
+from dateutil.relativedelta import relativedelta
 from odoo.exceptions import UserError
+import pytz
 
 
 class ProjectTaskNative(models.Model):
@@ -163,6 +165,13 @@ class ProjectTaskNative(models.Model):
         compute='_compute_duration',
         readonly=True,
         store=True
+    )
+
+    working_duration = fields.Float(
+        string='工作工期',
+        compute='_compute_working_duration',
+        store=True,
+        help="使用專案行事曆計算的工作時數"
     )
 
     # Scheduler
@@ -456,7 +465,7 @@ class ProjectTaskNative(models.Model):
                     diff = date_end - date_start
                     var_data["plan_duration"] = diff.total_seconds() / 3600.0
 
-                task.write(var_data)
+                task.with_context(skip_date_snap=True).write(var_data)
 
     @api.depends("predecessor_ids.task_id", "predecessor_ids.type", "constrain_type", "constrain_date", "plan_duration",
                  "duration", "project_id.scheduling_type")
@@ -467,6 +476,25 @@ class ProjectTaskNative(models.Model):
             else:
                 task.plan_action = False
 
+    def _is_in_work_interval(self, calendar, dt_tz):
+        """Check if a timezone-aware datetime falls within a work interval.
+
+        Uses the calendar's attendance/leave data to determine if dt_tz
+        is inside any work period. Boundaries are inclusive.
+
+        :param calendar: resource.calendar record
+        :param dt_tz: timezone-aware datetime
+        :returns: True if dt_tz is within a work interval
+        """
+        day_start = dt_tz.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        resource = self.env['resource.resource']
+        intervals = calendar._work_intervals_batch(day_start, day_end, resource)[resource.id]
+        for start, stop, _meta in intervals:
+            if start <= dt_tz <= stop:
+                return True
+        return False
+
     def write(self, vals):
         """Propagate date changes to ancestors.
         After date changes, ancestor parent tasks auto-extend to span children.
@@ -474,6 +502,44 @@ class ProjectTaskNative(models.Model):
         auto-adjust via _update_ancestor_dates().
         """
         date_changed = 'date_start' in vals or 'date_end' in vals
+        # Date snap: snap to work time when calendar active.
+        # Rules:
+        #   skip_date_snap context  → skip entirely (FS push/clamp)
+        #   both date_start & date_end in vals → skip (drag: preserve duration)
+        #   within work interval    → no snap (respect user intent)
+        #   outside work hours      → date_start snaps FORWARD, date_end snaps BACKWARD
+        both_dates = 'date_start' in vals and 'date_end' in vals
+        if date_changed and not self.env.context.get('skip_date_snap') and not both_dates:
+            for task in self:
+                cal = task.project_id.resource_calendar_id
+                if not cal or not task.project_id.use_calendar:
+                    continue
+                tz = pytz.timezone(task.project_id.tz or 'UTC')
+                if 'date_start' in vals and vals['date_start']:
+                    dt = fields.Datetime.to_datetime(vals['date_start'])
+                    dt_tz = pytz.UTC.localize(dt).astimezone(tz)
+                    if not self._is_in_work_interval(cal, dt_tz):
+                        # Snap forward: only search future work starts
+                        forward_range = [
+                            dt_tz,
+                            dt_tz + relativedelta(days=7, hour=0, minute=0, second=0),
+                        ]
+                        snapped = cal._get_closest_work_time(dt_tz, search_range=forward_range)
+                        if snapped:
+                            vals['date_start'] = snapped.astimezone(pytz.UTC).replace(tzinfo=None)
+                if 'date_end' in vals and vals['date_end']:
+                    dt = fields.Datetime.to_datetime(vals['date_end'])
+                    dt_tz = pytz.UTC.localize(dt).astimezone(tz)
+                    if not self._is_in_work_interval(cal, dt_tz):
+                        # Snap backward: only search past work ends
+                        backward_range = [
+                            dt_tz + relativedelta(days=-7, hour=0, minute=0, second=0),
+                            dt_tz,
+                        ]
+                        snapped = cal._get_closest_work_time(dt_tz, match_end=True, search_range=backward_range)
+                        if snapped:
+                            vals['date_end'] = snapped.astimezone(pytz.UTC).replace(tzinfo=None)
+                break  # All tasks in batch share project
         result = super().write(vals)
         if result and date_changed:
             self._update_ancestor_dates()
@@ -520,12 +586,19 @@ class ProjectTaskNative(models.Model):
             effective_start = new_start or parent.date_start
             effective_end = new_end or parent.date_end
             if effective_start and effective_end:
-                new_plan_dur = (effective_end - effective_start).total_seconds() / 3600.0
+                calendar = parent.project_id.resource_calendar_id
+                if calendar and parent.project_id.use_calendar:
+                    tz = pytz.timezone(parent.project_id.tz or 'UTC')
+                    start_tz = pytz.UTC.localize(effective_start).astimezone(tz)
+                    end_tz = pytz.UTC.localize(effective_end).astimezone(tz)
+                    new_plan_dur = calendar.get_work_hours_count(start_tz, end_tz)
+                else:
+                    new_plan_dur = (effective_end - effective_start).total_seconds() / 3600.0
                 if abs(new_plan_dur - (parent.plan_duration or 0)) > 0.01:
                     update_vals['plan_duration'] = new_plan_dur
 
             if update_vals:
-                parent.write(update_vals)  # recursive — triggers grandparent
+                parent.with_context(skip_date_snap=True).write(update_vals)  # recursive — triggers grandparent
 
     def action_move_with_descendants(self, shift_hours):
         """Move this task and all descendants by shift_hours (float).
@@ -572,6 +645,21 @@ class ProjectTaskNative(models.Model):
                 task.duration = diff.total_seconds() / 3600.0
             else:
                 task.duration = 0
+
+    @api.depends('date_start', 'date_end', 'project_id.resource_calendar_id', 'project_id.use_calendar')
+    def _compute_working_duration(self):
+        for task in self:
+            if not task.date_start or not task.date_end:
+                task.working_duration = 0
+                continue
+            calendar = task.project_id.resource_calendar_id
+            if not calendar or not task.project_id.use_calendar:
+                task.working_duration = task.duration  # fallback to elapsed
+                continue
+            tz = pytz.timezone(task.project_id.tz or 'UTC')
+            start_tz = pytz.UTC.localize(task.date_start).astimezone(tz)
+            end_tz = pytz.UTC.localize(task.date_end).astimezone(tz)
+            task.working_duration = calendar.get_work_hours_count(start_tz, end_tz)
 
     @api.depends('state', 'date_last_stage_update')
     def _compute_date_finished(self):

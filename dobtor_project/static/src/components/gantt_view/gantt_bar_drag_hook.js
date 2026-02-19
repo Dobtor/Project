@@ -231,6 +231,8 @@ export function useGanttBarDrag(params) {
         // Convert fractional cell delta to a Luxon-compatible duration
         const shiftDur = cellsDeltaToDuration(cellsDelta, scale);
 
+        const hpd = params.getCalHpd ? params.getCalHpd() : 24;
+        const dpw = params.getCalDpw ? params.getCalDpw() : 7;
         const ds = record && ((record._hasChildren && record._summaryDateStart) || record._dateStart);
         const de = record && ((record._hasChildren && record._summaryDateEnd) || record._dateEnd);
         if (record && ds) {
@@ -239,8 +241,9 @@ export function useGanttBarDrag(params) {
 
             let durationStr = "";
             if (newEnd) {
-                const days = Math.round(newEnd.diff(newStart, "days").days * 10) / 10;
-                durationStr = humanizeDays(days);
+                const calDays = Math.round(newEnd.diff(newStart, "days").days * 10) / 10;
+                const workDays = Math.round(calDays * (dpw / 7) * 10) / 10;
+                durationStr = humanizeDays(workDays, dpw);
             }
 
             const lines = [];
@@ -251,11 +254,11 @@ export function useGanttBarDrag(params) {
             if (durationStr) {
                 lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">\u5DE5\u671F:</span> ${durationStr}</div>`);
             }
-            const deltaLabel = formatDeltaLabel(cellsDelta, scale);
+            const deltaLabel = formatDeltaLabel(cellsDelta, scale, hpd);
             lines.push(`<div class="o_gantt_hint_delta">${deltaLabel}</div>`);
             hintEl.innerHTML = lines.join("");
         } else {
-            const deltaLabel = formatDeltaLabel(cellsDelta, scale);
+            const deltaLabel = formatDeltaLabel(cellsDelta, scale, hpd);
             hintEl.textContent = deltaLabel;
         }
 

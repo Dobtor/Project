@@ -1,7 +1,7 @@
 /** @odoo-module **/
 
 import { Model } from "@web/model/model";
-import { lagToDuration, durationToLag } from "./gantt_utils";
+import { lagToDuration, durationToLag, toOdooDatetime } from "./gantt_utils";
 
 const { DateTime } = luxon;
 
@@ -21,12 +21,14 @@ export class GanttModel extends Model {
     static parseOdooDate(value) {
         if (!value) return null;
         if (typeof value !== "string") return null;
-        // Odoo datetime: "2026-02-10 08:00:00" → fromSQL
-        let dt = DateTime.fromSQL(value);
-        if (dt.isValid) return dt;
+        // Odoo ORM returns datetimes as UTC strings: "2026-02-10 08:00:00"
+        // Parse as UTC, then convert to user's local timezone (matches Odoo's
+        // deserializeDateTime behavior in @web/core/l10n/dates).
+        let dt = DateTime.fromSQL(value, { zone: "utc" });
+        if (dt.isValid) return dt.setZone("default");
         // Fallback: ISO 8601 "2026-02-10T08:00:00" or date-only "2026-02-10"
-        dt = DateTime.fromISO(value);
-        return dt.isValid ? dt : null;
+        dt = DateTime.fromISO(value, { zone: "utc" });
+        return dt.isValid ? dt.setZone("default") : null;
     }
 
     setup(params, services) {
@@ -90,6 +92,7 @@ export class GanttModel extends Model {
 
             this._calculateTimeRange();
             this._groupRecords();
+            await this._loadCalendarInfo();
             await this._loadMilestones();
             this._computeMilestonePositions();
             this._expandTimeRange(this.data.milestones);
@@ -151,6 +154,8 @@ export class GanttModel extends Model {
             "planOffset",
             // Milestone
             "milestoneId",
+            // Calendar
+            "workingDuration",
         ];
 
         for (const key of optionalFields) {
@@ -1192,6 +1197,58 @@ export class GanttModel extends Model {
     }
 
     // -------------------------------------------------------------------------
+    // Calendar Info
+    // -------------------------------------------------------------------------
+
+    async _loadCalendarInfo() {
+        const projectId = this._lastLoadProps?.context?.default_project_id
+            || this.data.records[0]?.[this.archInfo.mainGroupIdName || "project_id"]?.[0];
+        if (!projectId) {
+            this.data.calendarInfo = null;
+            return;
+        }
+        try {
+            const timeStart = this.data.timeStart?.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
+            const timeEnd = this.data.timeEnd?.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
+            const info = await this.orm.call("project.project", "get_calendar_info",
+                [[projectId]], { date_from: timeStart, date_to: timeEnd });
+            if (info.active) {
+                this.data.calendarInfo = info;
+                // Pre-compute working weekdays: {'0': [{from, to}, ...], '1': [...]}
+                const weekdayMap = {};
+                for (const att of info.attendances) {
+                    if (!weekdayMap[att.dayofweek]) weekdayMap[att.dayofweek] = [];
+                    weekdayMap[att.dayofweek].push({ from: att.hour_from, to: att.hour_to });
+                }
+                this.data.calendarInfo._weekdayMap = weekdayMap;
+                // Set of working weekday numbers: Luxon 1=Mon..7=Sun ← calendar '0'=Mon..'6'=Sun
+                this.data.calendarInfo._workingWeekdays = new Set(
+                    Object.keys(weekdayMap).map(d => parseInt(d) + 1)
+                );
+                // Pre-parse leave dates to Luxon DateTime
+                this.data.calendarInfo._leaveDays = new Set();
+                for (const leave of info.leaves) {
+                    const from = DateTime.fromSQL(leave.date_from);
+                    const to = DateTime.fromSQL(leave.date_to);
+                    if (from.isValid && to.isValid) {
+                        let cursor = from.startOf("day");
+                        const end = to.startOf("day");
+                        while (cursor <= end) {
+                            this.data.calendarInfo._leaveDays.add(cursor.toISODate());
+                            cursor = cursor.plus({ days: 1 });
+                        }
+                    }
+                }
+            } else {
+                this.data.calendarInfo = null;
+            }
+        } catch (e) {
+            console.warn("Failed to load calendar info:", e);
+            this.data.calendarInfo = null;
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Milestones
     // -------------------------------------------------------------------------
 
@@ -1217,8 +1274,8 @@ export class GanttModel extends Model {
 
         try {
             const fields = [
-                "name", "project_id", "deadline", "is_reached",
-                "sorting_seq", "task_count", "color_gantt",
+                "name", "project_id", "deadline", "deadline_datetime",
+                "is_reached", "sorting_seq", "task_count", "color_gantt",
             ];
             const rawMilestones = await this.orm.searchRead(
                 "project.milestone",
@@ -1241,8 +1298,11 @@ export class GanttModel extends Model {
      */
     _processMilestoneRecord(ms) {
         let posDate = null;
-        if (ms.deadline) {
-            // Deadline is a date field (YYYY-MM-DD) — place at 17:00
+        if (ms.deadline_datetime) {
+            // Use full datetime for precise positioning
+            posDate = GanttModel.parseOdooDate(ms.deadline_datetime);
+        } else if (ms.deadline) {
+            // Fallback: date-only field — place at 17:00
             const raw = typeof ms.deadline === "string" && ms.deadline.length === 10
                 ? ms.deadline + " 17:00:00"
                 : ms.deadline;
@@ -1475,8 +1535,8 @@ export class GanttModel extends Model {
 
             // Read back and process
             const raw = await this.orm.read("project.milestone", ids, [
-                "name", "project_id", "deadline", "is_reached",
-                "sorting_seq", "task_count",
+                "name", "project_id", "deadline", "deadline_datetime",
+                "is_reached", "sorting_seq", "task_count", "color_gantt",
             ]);
             if (raw && raw.length) {
                 const processed = this._processMilestoneRecord(raw[0]);
@@ -2039,6 +2099,7 @@ export class GanttModel extends Model {
             const linkType = (type || "FS").toUpperCase();
             if (linkType === "FS") {
                 await this._pushFSSuccessors(parentTaskId);
+                await this._pushAncestorFSSuccessors(parentTaskId);
                 await this._recalcAndUpdateLags(parentTaskId);
             }
 
@@ -2103,10 +2164,11 @@ export class GanttModel extends Model {
             if (targetStart >= sourceEnd) continue;
 
             // Push target to exactly sourceEnd (lag will be recalculated to 0)
+            const _skipSnap = { context: { skip_date_snap: true } };
             if (target._hasChildren) {
                 const shiftHours = sourceEnd.diff(targetStart, "hours").hours;
                 if (Math.abs(shiftHours) > 0.01) {
-                    await this.moveRecordWithChildren(target.id, shiftHours);
+                    await this.moveRecordWithChildren(target.id, shiftHours, _skipSnap);
                 }
             } else if (target._isVirtualDates) {
                 const newOffset = (source._planOffset || 0) + (source._planDuration || 0);
@@ -2117,17 +2179,42 @@ export class GanttModel extends Model {
                 const dateStopField = this.archInfo.dateStop || "date_end";
                 const newStart = sourceEnd;
                 const values = {
-                    [dateStartField]: newStart.toFormat("yyyy-MM-dd HH:mm:ss"),
+                    [dateStartField]: newStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"),
                 };
                 if (target._dateEnd && target._dateStart) {
                     const duration = target._dateEnd.diff(target._dateStart);
-                    values[dateStopField] = newStart.plus(duration).toFormat("yyyy-MM-dd HH:mm:ss");
+                    values[dateStopField] = newStart.plus(duration).setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                 }
-                await this.updateRecord(target.id, values);
+                await this.updateRecord(target.id, values, _skipSnap);
             }
 
             // Cascade: this successor's end moved, check its own successors
             await this._pushFSSuccessors(pred.task_id, visited);
+        }
+    }
+
+    /**
+     * After pushing a record's own FS successors, walk up its parent chain
+     * and push each ancestor's FS successors too.
+     *
+     * When a child task moves/resizes, the parent's _summaryDateEnd may extend.
+     * Without this, the parent's outgoing FS successors would NOT be pushed,
+     * causing overlap and backward horizontal arrows.
+     */
+    async _pushAncestorFSSuccessors(recordId) {
+        const record = this.data.records.find(r => r.id === recordId);
+        if (!record) return;
+
+        let current = record;
+        const visited = new Set();
+        while (current._parentId) {
+            const parent = this.data.records.find(r => r.id === current._parentId);
+            if (!parent || !parent._hasChildren) break;
+            if (visited.has(parent.id)) break;
+            visited.add(parent.id);
+
+            await this._pushFSSuccessors(parent.id);
+            current = parent;
         }
     }
 
@@ -2424,8 +2511,9 @@ export class GanttModel extends Model {
      * Move a parent task and all its descendants by shiftHours,
      * preserving relative positions. Single RPC call to Python.
      */
-    async moveRecordWithChildren(recordId, shiftHours) {
-        await this.orm.call(this.resModel, "action_move_with_descendants", [[recordId], shiftHours]);
+    async moveRecordWithChildren(recordId, shiftHours, options = {}) {
+        const kwargs = options.context ? { context: options.context } : {};
+        await this.orm.call(this.resModel, "action_move_with_descendants", [[recordId], shiftHours], kwargs);
     }
 
     async updatePredecessor(predId, values) {
@@ -2451,26 +2539,28 @@ export class GanttModel extends Model {
                         const effectiveEnd = this._getEffectiveSourceEnd(source, pred);
                         const targetStart = (target._hasChildren && target._summaryDateStart) || target._dateStart;
                         if (effectiveEnd && targetStart && Math.abs(effectiveEnd.toMillis() - targetStart.toMillis()) > 60000) {
+                            const _skipSnap = { context: { skip_date_snap: true } };
                             if (target._hasChildren) {
                                 const shiftHours = effectiveEnd.diff(targetStart, "hours").hours;
                                 if (Math.abs(shiftHours) > 0.01) {
-                                    await this.moveRecordWithChildren(target.id, shiftHours);
+                                    await this.moveRecordWithChildren(target.id, shiftHours, _skipSnap);
                                 }
                             } else {
                                 const dateStartField = this.archInfo.dateStart || "date_start";
                                 const dateStopField = this.archInfo.dateStop || "date_end";
                                 const newStart = effectiveEnd;
                                 const vals = {
-                                    [dateStartField]: newStart.toFormat("yyyy-MM-dd HH:mm:ss"),
+                                    [dateStartField]: newStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"),
                                 };
                                 if (target._dateEnd && target._dateStart) {
                                     const duration = target._dateEnd.diff(target._dateStart);
-                                    vals[dateStopField] = newStart.plus(duration).toFormat("yyyy-MM-dd HH:mm:ss");
+                                    vals[dateStopField] = newStart.plus(duration).setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                                 }
-                                await this.updateRecord(target.id, vals);
+                                await this.updateRecord(target.id, vals, _skipSnap);
                             }
                             // Cascade to this successor's own successors
                             await this._pushFSSuccessors(pred.task_id);
+                            await this._pushAncestorFSSuccessors(pred.task_id);
                         }
                     }
                 }
@@ -2607,7 +2697,7 @@ export class GanttModel extends Model {
         return await this.orm.call("project.project", "action_save_baseline", [projectId], { name });
     }
 
-    async updateRecord(recordId, values) {
+    async updateRecord(recordId, values, options = {}) {
         try {
             // Milestone records use negative IDs → write to project.milestone
             const record = this.data.records.find(r => r.id === recordId);
@@ -2623,8 +2713,22 @@ export class GanttModel extends Model {
                 if ("is_reached" in values) {
                     record._progress = values.is_reached ? 100 : 0;
                 }
-                // Reparse deadline if changed
-                if ("deadline" in values) {
+                // Reparse deadline_datetime if changed
+                if ("deadline_datetime" in values) {
+                    if (values.deadline_datetime) {
+                        const dt = GanttModel.parseOdooDate(values.deadline_datetime);
+                        if (dt) {
+                            record._dateStart = dt;
+                            record._dateEnd = dt;
+                            // Sync deadline (date part) for local record
+                            record.deadline = dt.toFormat("yyyy-MM-dd");
+                        }
+                    } else {
+                        record.deadline_datetime = false;
+                        record.deadline = false;
+                        this._recomputeMilestonePositions();
+                    }
+                } else if ("deadline" in values) {
                     if (values.deadline) {
                         const dt = GanttModel.parseOdooDate(values.deadline);
                         if (dt) {
@@ -2632,7 +2736,6 @@ export class GanttModel extends Model {
                             record._dateEnd = record._dateStart;
                         }
                     } else {
-                        // Deadline cleared — recompute from linked tasks
                         record.deadline = false;
                         this._recomputeMilestonePositions();
                     }
@@ -2640,7 +2743,8 @@ export class GanttModel extends Model {
                 this.notify();
                 return true;
             }
-            await this.orm.write(this.resModel, [recordId], values);
+            const kwargs = options.context ? { context: options.context } : {};
+            await this.orm.write(this.resModel, [recordId], values, kwargs);
             // Update local record
             if (record) {
                 Object.assign(record, values);
@@ -2706,7 +2810,7 @@ export class GanttModel extends Model {
         if (record && record._dateStart && !record._isVirtualDates) {
             const dateEndField = this.archInfo.dateStop || "date_end";
             const newEnd = record._dateStart.plus({ hours });
-            values[dateEndField] = newEnd.toFormat("yyyy-MM-dd HH:mm:ss");
+            values[dateEndField] = newEnd.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
         }
         return this.updateRecord(recordId, values);
     }

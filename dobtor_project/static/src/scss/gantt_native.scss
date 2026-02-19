@@ -89,6 +89,9 @@
 
     // Weekend
     --gantt-weekend-bg: rgba(255, 149, 0, 0.06);
+
+    // Non-working (calendar holidays, non-working hours)
+    --gantt-nonworking-bg: rgba(120, 120, 128, 0.06);
 }
 
 // Dark Mode Support — disabled (light-only design)
@@ -102,6 +105,8 @@
 .o_gantt_view {
     height: 100%;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
     font-family: var(--gantt-font-family);
     font-size: 14px;
     line-height: 1.47;
@@ -109,6 +114,12 @@
     color: var(--gantt-label-primary);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+}
+
+.o_gantt_content_wrapper {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
 }
 
 .o_gantt_container {
@@ -687,6 +698,11 @@
         background: var(--gantt-weekend-bg);
     }
 
+    &.o_gantt_nonworking {
+        background: var(--gantt-nonworking-bg);
+        color: var(--gantt-label-tertiary);
+    }
+
     &.o_gantt_today {
         background: rgba(255, 59, 48, 0.08);
         color: var(--gantt-error);
@@ -1087,6 +1103,18 @@
     100% { transform: translateX(0); }
 }
 
+// Focus pulse: highlight bar when scrolled to via focus button
+.o_gantt_bar_focus_pulse {
+    animation: gantt-focus-pulse 1s ease-out;
+}
+
+@keyframes gantt-focus-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(0, 122, 255, 0.6); }
+    30%  { box-shadow: 0 0 0 6px rgba(0, 122, 255, 0.3); }
+    60%  { box-shadow: 0 0 0 8px rgba(0, 122, 255, 0.1); }
+    100% { box-shadow: 0 0 0 0 rgba(0, 122, 255, 0); }
+}
+
 // Vertical dragging state (reorder)
 .o_gantt_bar_dragging_vertical {
     cursor: grabbing !important;
@@ -1204,6 +1232,10 @@
 
     &.o_gantt_weekend {
         background: var(--gantt-weekend-bg);
+    }
+
+    &.o_gantt_nonworking {
+        background: var(--gantt-nonworking-bg);
     }
 
     &.o_gantt_grid_today {
@@ -2123,13 +2155,161 @@
 }
 
 // -----------------------------------------------------------------------------
-// Control Panel Buttons (Apple Style)
+// Control panel separator (between Odoo search bar and gantt toolbar)
 // -----------------------------------------------------------------------------
 
-.o_gantt_controls {
+.o_gantt_cp_separator {
+    height: 0;
+    border-bottom: 1px solid var(--gantt-separator-opaque);
+    flex-shrink: 0;
+}
+
+// -----------------------------------------------------------------------------
+// Gantt Toolbar (flat icon buttons below search bar)
+// -----------------------------------------------------------------------------
+
+.o_gantt_toolbar {
     display: flex;
     align-items: center;
-    gap: var(--gantt-space-sm);
+    gap: 1px;
+    padding: 3px 8px;
+    border-bottom: 1px solid var(--gantt-border-color);
+    background: var(--gantt-surface-elevated);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    min-height: 34px;
+}
+
+.o_gantt_tb_btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: var(--gantt-radius-sm);
+    background: transparent;
+    color: var(--gantt-label-secondary);
+    cursor: pointer;
+    font-size: 13px;
+    position: relative;
+    transition: background var(--gantt-transition-fast), color var(--gantt-transition-fast);
+
+    &:hover {
+        background: var(--gantt-fill-secondary);
+        color: var(--gantt-label-primary);
+    }
+
+    &.active {
+        background: var(--gantt-accent-blue);
+        color: #fff;
+    }
+
+    &:disabled {
+        opacity: 0.3;
+        cursor: not-allowed;
+    }
+
+    &.o_gantt_tb_btn_accent {
+        color: var(--gantt-accent-blue);
+        &:hover {
+            background: rgba(var(--gantt-accent-blue-rgb, 0,122,255), 0.12);
+        }
+    }
+}
+
+.o_gantt_tb_sep {
+    width: 1px;
+    height: 18px;
+    background: var(--gantt-border-color);
+    margin: 0 3px;
+    flex-shrink: 0;
+}
+
+.o_gantt_tb_spacer {
+    flex: 1;
+}
+
+.o_gantt_tb_pager {
+    font-size: 11px;
+    color: var(--gantt-label-tertiary);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: var(--gantt-radius-sm);
+    white-space: nowrap;
+    &:hover {
+        background: var(--gantt-fill-secondary);
+        color: var(--gantt-label-primary);
+    }
+}
+
+.o_gantt_tb_badge {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    min-width: 14px;
+    height: 14px;
+    line-height: 14px;
+    font-size: 9px;
+    font-weight: 700;
+    text-align: center;
+    background: var(--gantt-accent-red, #e74c3c);
+    color: #fff;
+    border-radius: 7px;
+    padding: 0 3px;
+    pointer-events: none;
+}
+
+// Toolbar dropdowns (scale, baseline)
+.o_gantt_tb_dropdown {
+    position: relative;
+    display: inline-flex;
+}
+
+.o_gantt_tb_dropdown_menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 1050;
+    min-width: 100px;
+    background: var(--gantt-surface-elevated);
+    border-radius: var(--gantt-radius-md);
+    box-shadow: var(--gantt-shadow-xl);
+    padding: 4px 0;
+    animation: ganttDropdownIn 0.12s ease-out;
+}
+
+@keyframes ganttDropdownIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.o_gantt_tb_dropdown_item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    font-size: 12px;
+    color: var(--gantt-label-primary);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background var(--gantt-transition-fast);
+
+    &:hover {
+        background: var(--gantt-fill-secondary);
+    }
+
+    &.active {
+        color: var(--gantt-accent-blue);
+        font-weight: 600;
+    }
+}
+
+.o_gantt_tb_dropdown_empty {
+    padding: 8px 12px;
+    font-size: 11px;
+    color: var(--gantt-label-tertiary);
+    text-align: center;
 }
 
 // Context menu
@@ -2184,186 +2364,6 @@
             color: var(--gantt-accent-red, #FF3B30);
         }
     }
-}
-
-.o_gantt_pager_info {
-    font-size: 12px;
-    color: var(--gantt-label-secondary);
-    margin-left: var(--gantt-space-sm);
-    white-space: nowrap;
-}
-
-.o_gantt_btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--gantt-space-xs);
-    height: 32px;
-    padding: 0 var(--gantt-space-md);
-    background: var(--gantt-fill-tertiary);
-    border: none;
-    border-radius: var(--gantt-radius-sm);
-    font-family: inherit;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--gantt-accent-blue);
-    cursor: pointer;
-    transition:
-        background var(--gantt-transition-fast),
-        transform var(--gantt-transition-fast);
-
-    &:hover {
-        background: var(--gantt-fill-secondary);
-    }
-
-    &:active {
-        background: var(--gantt-fill-primary);
-        transform: scale(0.98);
-    }
-
-    &.o_gantt_btn_primary {
-        background: var(--gantt-accent-blue);
-        color: #FFFFFF;
-
-        &:hover {
-            filter: brightness(1.1);
-        }
-
-        &:active {
-            filter: brightness(0.9);
-        }
-    }
-
-    &.o_gantt_btn_icon {
-        width: 32px;
-        padding: 0;
-    }
-
-    &.disabled,
-    &:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-        pointer-events: none;
-    }
-}
-
-.o_gantt_btn_separator {
-    width: 1px;
-    height: 20px;
-    background: var(--gantt-separator);
-    margin: 0 var(--gantt-space-xs);
-}
-
-.o_gantt_btn_group {
-    display: flex;
-    background: var(--gantt-fill-tertiary);
-    border-radius: var(--gantt-radius-sm);
-    overflow: hidden;
-
-    .o_gantt_btn {
-        border-radius: 0;
-        background: transparent;
-
-        &:not(:last-child) {
-            border-right: 1px solid var(--gantt-separator);
-        }
-
-        &.active {
-            background: var(--gantt-accent-blue);
-            color: #FFFFFF;
-        }
-    }
-}
-
-// More dropdown menu (Apple-style popover)
-.o_gantt_more_menu_wrapper {
-    position: relative;
-}
-
-.o_gantt_more_menu {
-    position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
-    min-width: 220px;
-    background: var(--gantt-surface-elevated);
-    border-radius: var(--gantt-radius-md);
-    box-shadow: var(--gantt-shadow-xl);
-    padding: var(--gantt-space-xs) 0;
-    z-index: 1000;
-    opacity: 0;
-    pointer-events: none;
-    transform: scale(0.96) translateY(-4px);
-    transform-origin: top right;
-    transition:
-        opacity var(--gantt-transition-fast),
-        transform var(--gantt-transition-fast);
-
-    @supports (backdrop-filter: blur(20px)) {
-        background: var(--gantt-vibrancy-bg);
-        backdrop-filter: blur(var(--gantt-vibrancy-blur));
-        -webkit-backdrop-filter: blur(var(--gantt-vibrancy-blur));
-    }
-
-    &.o_gantt_more_menu_visible {
-        opacity: 1;
-        pointer-events: auto;
-        transform: scale(1) translateY(0);
-    }
-}
-
-.o_gantt_more_menu_section_label {
-    padding: var(--gantt-space-xs) var(--gantt-space-md);
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--gantt-label-tertiary);
-}
-
-.o_gantt_more_menu_divider {
-    height: 1px;
-    background: var(--gantt-separator);
-    margin: var(--gantt-space-xs) 0;
-}
-
-.o_gantt_more_menu_item {
-    display: flex;
-    align-items: center;
-    gap: var(--gantt-space-sm);
-    padding: 6px var(--gantt-space-md);
-    font-size: 13px;
-    color: var(--gantt-label-primary);
-    cursor: pointer;
-    transition: background var(--gantt-transition-fast);
-
-    &:hover {
-        background: var(--gantt-fill-secondary);
-    }
-
-    &:active {
-        background: var(--gantt-fill-primary);
-    }
-
-    > .fa:first-child {
-        width: 16px;
-        text-align: center;
-        color: var(--gantt-label-secondary);
-        font-size: 13px;
-    }
-
-    &.o_gantt_more_menu_item_active {
-        color: var(--gantt-accent-blue);
-
-        > .fa:first-child {
-            color: var(--gantt-accent-blue);
-        }
-    }
-}
-
-.o_gantt_more_menu_check {
-    margin-left: auto;
-    font-size: 11px;
-    color: var(--gantt-accent-blue);
 }
 
 // -----------------------------------------------------------------------------
@@ -2478,19 +2478,6 @@
     flex-shrink: 0;
 }
 
-// Clickable pager
-.o_gantt_pager_clickable {
-    cursor: pointer;
-    border-radius: var(--gantt-radius-sm);
-    padding: 2px 6px;
-    transition: background var(--gantt-transition-fast);
-
-    &:hover {
-        background: var(--gantt-fill-tertiary);
-        color: var(--gantt-accent-blue);
-    }
-}
-
 // -----------------------------------------------------------------------------
 // Intersection Bars (child tasks on group rows)
 // -----------------------------------------------------------------------------
@@ -2598,6 +2585,7 @@
 
     // Hide interactive elements
     .o_control_panel,
+    .o_gantt_toolbar,
     .o_gantt_gutter,
     .o_gantt_duration_panel,
     .o_gantt_scrollmap_container,
@@ -2726,27 +2714,6 @@
 .o_gantt_bar_constraint_mode {
     outline: 2px dashed var(--gantt-accent-orange);
     outline-offset: 2px;
-}
-
-// Feature 9: Violation count badge on toolbar button
-.o_gantt_violation_toggle {
-    position: relative;
-}
-
-.o_gantt_violation_count {
-    position: absolute;
-    top: -4px;
-    right: -4px;
-    min-width: 16px;
-    height: 16px;
-    border-radius: 8px;
-    background: var(--gantt-accent-red);
-    color: #fff;
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 16px;
-    text-align: center;
-    padding: 0 4px;
 }
 
 // Feature 9: Slide-in violation panel
@@ -3270,33 +3237,6 @@
 // Phase 3C: HIG Design Refinement
 // =============================================================================
 
-// Segmented Control for Scale
-.o_gantt_segmented_control {
-    display: inline-flex;
-    background: var(--gantt-fill-tertiary);
-    border-radius: var(--gantt-radius-md);
-    padding: 2px;
-}
-
-.o_gantt_segment {
-    padding: 4px 10px;
-    font-size: 12px;
-    font-weight: 500;
-    border: none;
-    background: transparent;
-    color: var(--gantt-label-secondary);
-    border-radius: calc(var(--gantt-radius-md) - 2px);
-    cursor: pointer;
-    transition: all var(--gantt-transition-fast);
-
-    &.o_gantt_segment_active {
-        background: var(--gantt-surface-elevated);
-        color: var(--gantt-label-primary);
-        font-weight: 600;
-        box-shadow: var(--gantt-shadow-sm);
-    }
-}
-
 // Skeleton Loading
 .o_gantt_skeleton {
     display: flex;
@@ -3365,32 +3305,6 @@
     opacity: 0.15;
     pointer-events: none;
     transition: opacity var(--gantt-transition-normal);
-}
-
-.o_gantt_filter_chips {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    margin-left: 8px;
-}
-
-.o_gantt_filter_chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    font-size: 11px;
-    font-weight: 500;
-    border-radius: 10px;
-    cursor: pointer;
-    transition: all var(--gantt-transition-fast);
-
-    &.active {
-        background: var(--gantt-accent-blue);
-        color: #fff;
-    }
-
-    i.fa-times { font-size: 9px; }
 }
 
 // =============================================================================

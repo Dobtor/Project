@@ -75,6 +75,7 @@ class ProjectTaskNativeScheduler(models.Model):
             tasks_ap.append({
                 "id": task.id,
                 "plan_duration": task.plan_duration,
+                "plan_offset": task.plan_offset,
                 "soon_date_start": soon_date_start,
                 "soon_date_end": soon_date_end,
                 "late_date_start": late_date_start,
@@ -183,7 +184,7 @@ class ProjectTaskNativeScheduler(models.Model):
                     vals["critical_path"] = task_new["critical_path"]
 
                 vals["p_loop"] = task_new["p_loop"]
-                task_obj.write(vals)
+                task_obj.with_context(skip_date_snap=True).write(vals)
 
     def _project_get_date(self, project_ap, tasks_ap, scheduling_type):
         prj_task_date = []
@@ -265,6 +266,11 @@ class ProjectTaskNativeScheduler(models.Model):
                 new_date = project[date_type]
                 if not new_date:
                     return tasks
+
+                # Use plan_offset to preserve relative position from planning mode
+                plan_offset = task_obj.get("plan_offset", 0)
+                if plan_offset:
+                    new_date = new_date + timedelta(hours=plan_offset)
 
                 calendar_level, date_start, date_end = self._ap_calc_period(
                     task_obj=task_obj, direction=direction, new_date=new_date, date_type=date_type, t_params=t_params

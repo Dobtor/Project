@@ -16,6 +16,9 @@
                                 <field name="schedule_start" invisible="scheduling_type == 'backward'"/>
                                 <field name="schedule_end" invisible="scheduling_type == 'forward'"/>
                                 <field name="use_calendar"/>
+                                <field name="resource_calendar_id"
+                                       invisible="not use_calendar"
+                                       options="{'no_create': True}"/>
                                 <field name="tz" widget="timezone_mismatch" options="{'tz_offset_field': 'tz_offset'}"/>
                                 <field name="tz_offset" invisible="1"/>
                             </group>

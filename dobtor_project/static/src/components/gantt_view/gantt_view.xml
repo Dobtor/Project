@@ -4,217 +4,203 @@
     <!-- Gantt Controller Template -->
     <t t-name="dobtor_project.GanttController">
         <Layout display="display" className="'o_gantt_view'">
-            <t t-set-slot="control-panel-bottom-left">
-                <div class="o_gantt_controls">
-                    <!-- Group 1: Navigation -->
-                    <button class="o_gantt_btn" t-on-click="onTodayClick" title="跳至今天">
-                        <i class="fa fa-crosshairs"/> 今天
+            <!-- Search slots -->
+            <t t-set-slot="layout-actions">
+                <SearchBar toggler="searchBarToggler"/>
+            </t>
+            <t t-set-slot="control-panel-navigation-additional">
+                <t t-component="searchBarToggler.component" t-props="searchBarToggler.props"/>
+            </t>
+            <t t-set-slot="control-panel-additional-actions">
+                <CogMenu/>
+            </t>
+
+            <!-- Separator between control panel and toolbar -->
+            <div class="o_gantt_cp_separator"/>
+
+            <!-- Toolbar (rendered in o_content area, below control panel) -->
+            <div class="o_gantt_toolbar">
+
+                <!-- Group 1: Navigation -->
+                <button class="o_gantt_tb_btn" t-on-click="onTodayClick" title="跳至今天"
+                        t-att-disabled="isPlanningMode">
+                    <i class="fa fa-crosshairs"/>
+                </button>
+                <div class="o_gantt_tb_dropdown o_gantt_tb_scale_dropdown">
+                    <button class="o_gantt_tb_btn"
+                            t-on-click.stop="onScaleMenuToggle"
+                            t-att-title="'比例尺: ' + currentScaleLabel">
+                        <i class="fa fa-search-plus"/>
                     </button>
-                    <div class="o_gantt_segmented_control">
-                        <t t-foreach="scales" t-as="scaleOption" t-key="scaleOption.value">
-                            <button t-att-class="'o_gantt_segment' + (state.scale === scaleOption.value ? ' o_gantt_segment_active' : '')"
-                                    t-on-click="() => this.onScaleChange(scaleOption.value)">
-                                <t t-esc="scaleOption.label"/>
-                            </button>
+                    <div class="o_gantt_tb_dropdown_menu" t-if="state.showScaleMenu">
+                        <t t-foreach="scales" t-as="s" t-key="s.value">
+                            <div t-att-class="'o_gantt_tb_dropdown_item' + (state.scale === s.value ? ' active' : '')"
+                                 t-on-click.stop="() => { this.onScaleChange(s.value); this.state.showScaleMenu = false; }">
+                                <t t-esc="s.label"/>
+                            </div>
                         </t>
                     </div>
+                </div>
 
-                    <div class="o_gantt_btn_separator"/>
+                <div class="o_gantt_tb_sep"/>
 
-                    <!-- Group 2: View Controls -->
-                    <button class="o_gantt_btn o_gantt_btn_icon" t-on-click="onExpandAll" title="全部展開">
-                        <i class="fa fa-expand"/>
+                <!-- Group 2: View -->
+                <button class="o_gantt_tb_btn" t-on-click="onExpandAll" title="全部展開">
+                    <i class="fa fa-expand"/>
+                </button>
+                <button class="o_gantt_tb_btn" t-on-click="onCollapseAll" title="全部收合">
+                    <i class="fa fa-compress"/>
+                </button>
+                <button class="o_gantt_tb_btn" t-on-click="onSortToggle"
+                        t-att-title="'排序: ' + sortLabel">
+                    <i class="fa fa-sort-amount-asc"/>
+                </button>
+                <button class="o_gantt_tb_btn" t-on-click="() => this.onWeekTypeToggle()"
+                        t-att-title="'週開始: ' + weekTypeLabel"
+                        t-att-disabled="isPlanningMode">
+                    <i class="fa fa-calendar"/>
+                </button>
+                <button t-att-class="'o_gantt_tb_btn' + (state.showListDetail ? ' active' : '')"
+                        t-on-click="() => this.onListDetailToggle()" title="清單明細">
+                    <i class="fa fa-list-ul"/>
+                </button>
+                <button t-att-class="'o_gantt_tb_btn' + (state.showIntersection ? ' active' : '')"
+                        t-on-click="() => this.onIntersectionToggle()" title="交叉檢視">
+                    <i class="fa fa-align-left"/>
+                </button>
+                <button t-att-class="'o_gantt_tb_btn' + (state.hideNonWorkingDays ? ' active' : '')"
+                        t-on-click="() => this.onHideNonWorkingDaysToggle()" title="隱藏非工作日"
+                        t-att-disabled="isPlanningMode">
+                    <i class="fa fa-calendar-times-o"/>
+                </button>
+
+                <div class="o_gantt_tb_sep"/>
+
+                <!-- Group 3: Schedule -->
+                <button class="o_gantt_tb_btn o_gantt_tb_btn_accent"
+                        t-on-click="onSchedulerClick"
+                        t-att-disabled="isLoading" title="自動排程">
+                    <i t-att-class="'fa ' + (isLoading ? 'fa-spinner fa-spin' : 'fa-magic')"/>
+                </button>
+                <button class="o_gantt_tb_btn" t-on-click="() => this.onCatchUpClick()" title="追趕進度"
+                        t-att-disabled="isPlanningMode">
+                    <i class="fa fa-step-forward"/>
+                </button>
+                <button class="o_gantt_tb_btn" t-on-click="() => this.onRescheduleClick()" title="重新排程未完成"
+                        t-att-disabled="isPlanningMode">
+                    <i class="fa fa-forward"/>
+                </button>
+                <button class="o_gantt_tb_btn" t-on-click="() => this.onLevelResourcesClick()" title="資源平準化">
+                    <i class="fa fa-balance-scale"/>
+                </button>
+
+                <div class="o_gantt_tb_sep"/>
+
+                <!-- Group 4: Data -->
+                <button class="o_gantt_tb_btn" t-on-click="onRefresh" title="重新整理">
+                    <i class="fa fa-refresh"/>
+                </button>
+                <button class="o_gantt_tb_btn" t-on-click="() => this.onExportClick()" title="匯出 XML">
+                    <i class="fa fa-download"/>
+                </button>
+                <button class="o_gantt_tb_btn" t-on-click="() => this.onImportClick()" title="匯入 XML">
+                    <i class="fa fa-upload"/>
+                </button>
+
+                <div class="o_gantt_tb_sep"/>
+
+                <!-- Group 5: Output -->
+                <button class="o_gantt_tb_btn" t-on-click="() => this.onPrintClick()" title="列印">
+                    <i class="fa fa-print"/>
+                </button>
+                <button class="o_gantt_tb_btn" t-on-click="onReportClick" title="PDF 報表">
+                    <i class="fa fa-file-pdf-o"/>
+                </button>
+
+                <div class="o_gantt_tb_sep"/>
+
+                <!-- Group 6: Baseline -->
+                <button class="o_gantt_tb_btn" t-on-click="() => this.onSaveBaselineClick()" title="儲存基線">
+                    <i class="fa fa-camera"/>
+                </button>
+                <div class="o_gantt_tb_dropdown o_gantt_tb_baseline_dropdown">
+                    <button t-att-class="'o_gantt_tb_btn' + (state.selectedBaselineId ? ' active' : '')"
+                            t-on-click.stop="onBaselineMenuToggle" title="選擇基線">
+                        <i class="fa fa-history"/>
                     </button>
-                    <button class="o_gantt_btn o_gantt_btn_icon" t-on-click="onCollapseAll" title="全部收合">
-                        <i class="fa fa-compress"/>
-                    </button>
-                    <button class="o_gantt_btn" t-on-click="onSortToggle"
-                            t-att-title="'排序: ' + sortLabel">
-                        <i class="fa fa-sort-amount-asc"/>
-                        <span t-esc="sortLabel"/>
-                    </button>
-
-                    <div class="o_gantt_btn_separator"/>
-
-                    <!-- Group 3: Actions -->
-                    <button class="o_gantt_btn o_gantt_btn_primary"
-                            t-on-click="onSchedulerClick"
-                            t-att-disabled="isLoading"
-                            title="執行自動排程">
-                        <i t-att-class="'fa ' + (isLoading ? 'fa-spinner fa-spin' : 'fa-magic')"/>
-                        排程
-                    </button>
-                    <button class="o_gantt_btn o_gantt_btn_icon" t-on-click="onRefresh" title="重新整理">
-                        <i class="fa fa-refresh"/>
-                    </button>
-
-                    <div class="o_gantt_btn_separator"/>
-
-                    <!-- Group 4: More menu (secondary actions) -->
-                    <div class="o_gantt_more_menu_wrapper">
-                        <button class="o_gantt_btn" t-on-click="onMoreMenuToggle" title="更多選項">
-                            <i class="fa fa-ellipsis-h"/>
-                        </button>
-                        <div t-att-class="'o_gantt_more_menu' + (state.showMoreMenu ? ' o_gantt_more_menu_visible' : '')">
-                            <!-- 檢視 Section -->
-                            <div class="o_gantt_more_menu_section_label">檢視</div>
-                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onWeekTypeToggle(); }">
-                                <i class="fa fa-calendar"/>
-                                <span>週開始: <b t-esc="weekTypeLabel"/></span>
+                    <div class="o_gantt_tb_dropdown_menu" t-if="state.showBaselineMenu">
+                        <div class="o_gantt_tb_dropdown_item" t-if="state.selectedBaselineId"
+                             t-on-click.stop="() => { this.onBaselineClear(); this.state.showBaselineMenu = false; }">
+                            <i class="fa fa-eye-slash"/> 清除基線
+                        </div>
+                        <t t-foreach="state.baselines" t-as="bl" t-key="bl.id">
+                            <div t-att-class="'o_gantt_tb_dropdown_item' + (state.selectedBaselineId === bl.id ? ' active' : '')"
+                                 t-on-click.stop="() => { this.onBaselineSelect(bl.id); this.state.showBaselineMenu = false; }">
+                                <t t-esc="bl.name"/>
                             </div>
-                            <div t-att-class="'o_gantt_more_menu_item' + (state.showListDetail ? ' o_gantt_more_menu_item_active' : '')"
-                                 t-on-click.stop="() => { this.onListDetailToggle(); }">
-                                <i class="fa fa-list-ul"/>
-                                <span>清單明細</span>
-                                <i class="fa fa-check o_gantt_more_menu_check" t-if="state.showListDetail"/>
-                            </div>
-                            <div t-att-class="'o_gantt_more_menu_item' + (state.showIntersection ? ' o_gantt_more_menu_item_active' : '')"
-                                 t-on-click.stop="() => { this.onIntersectionToggle(); }">
-                                <i class="fa fa-align-left"/>
-                                <span>交叉檢視</span>
-                                <i class="fa fa-check o_gantt_more_menu_check" t-if="state.showIntersection"/>
-                            </div>
-                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onDetailPlanClick(); this.onMoreMenuClose(); }">
-                                <i class="fa fa-tasks"/>
-                                <span>細節計畫</span>
-                            </div>
-
-                            <!-- 排程 Section -->
-                            <div class="o_gantt_more_menu_divider"/>
-                            <div class="o_gantt_more_menu_section_label">排程</div>
-                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onCatchUpClick(); this.onMoreMenuClose(); }">
-                                <i class="fa fa-clock-o"/>
-                                <span>追趕進度</span>
-                            </div>
-                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onRescheduleClick(); this.onMoreMenuClose(); }">
-                                <i class="fa fa-forward"/>
-                                <span>重新排程未完成</span>
-                            </div>
-                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onLevelResourcesClick(); this.onMoreMenuClose(); }">
-                                <i class="fa fa-balance-scale"/>
-                                <span>資源平準化</span>
-                            </div>
-
-                            <!-- 資料 Section -->
-                            <div class="o_gantt_more_menu_divider"/>
-                            <div class="o_gantt_more_menu_section_label">資料</div>
-                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onExportClick(); this.onMoreMenuClose(); }">
-                                <i class="fa fa-download"/>
-                                <span>匯出 XML</span>
-                            </div>
-                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onImportClick(); this.onMoreMenuClose(); }">
-                                <i class="fa fa-upload"/>
-                                <span>匯入 XML</span>
-                            </div>
-
-                            <!-- 輸出 Section -->
-                            <div class="o_gantt_more_menu_divider"/>
-                            <div class="o_gantt_more_menu_section_label">輸出</div>
-                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onPrintClick(); this.onMoreMenuClose(); }">
-                                <i class="fa fa-print"/>
-                                <span>列印</span>
-                            </div>
-                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onReportClick(); this.onMoreMenuClose(); }">
-                                <i class="fa fa-file-pdf-o"/>
-                                <span>PDF 報表</span>
-                            </div>
-
-                            <!-- 基線 Section -->
-                            <div class="o_gantt_more_menu_divider"/>
-                            <div class="o_gantt_more_menu_section_label">基線</div>
-                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onSaveBaselineClick(); this.onMoreMenuClose(); }">
-                                <i class="fa fa-camera"/>
-                                <span>儲存基線</span>
-                            </div>
-                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onBaselineClear(); this.onMoreMenuClose(); }"
-                                 t-if="state.selectedBaselineId">
-                                <i class="fa fa-eye-slash"/>
-                                <span>清除基線</span>
-                            </div>
-                            <t t-foreach="state.baselines" t-as="bl" t-key="bl.id">
-                                <div t-att-class="'o_gantt_more_menu_item' + (state.selectedBaselineId === bl.id ? ' o_gantt_more_menu_item_active' : '')"
-                                     t-on-click.stop="() => { this.onBaselineSelect(bl.id); this.onMoreMenuClose(); }">
-                                    <i class="fa fa-history"/>
-                                    <span t-esc="bl.name"/>
-                                    <i class="fa fa-check o_gantt_more_menu_check" t-if="state.selectedBaselineId === bl.id"/>
-                                </div>
-                            </t>
-
-                            <!-- 篩選 Section -->
-                            <div class="o_gantt_more_menu_divider"/>
-                            <div class="o_gantt_more_menu_section_label">篩選</div>
-                            <div t-att-class="'o_gantt_more_menu_item' + (state.filterCriticalPath ? ' o_gantt_more_menu_item_active' : '')"
-                                 t-on-click.stop="() => this.onFilterToggle('filterCriticalPath')">
-                                <i class="fa fa-fire"/>
-                                <span>關鍵路徑</span>
-                                <i class="fa fa-check o_gantt_more_menu_check" t-if="state.filterCriticalPath"/>
-                            </div>
-                            <div t-att-class="'o_gantt_more_menu_item' + (state.filterOverdue ? ' o_gantt_more_menu_item_active' : '')"
-                                 t-on-click.stop="() => this.onFilterToggle('filterOverdue')">
-                                <i class="fa fa-clock-o"/>
-                                <span>逾期</span>
-                                <i class="fa fa-check o_gantt_more_menu_check" t-if="state.filterOverdue"/>
-                            </div>
-                            <div t-att-class="'o_gantt_more_menu_item' + (state.filterUnlinked ? ' o_gantt_more_menu_item_active' : '')"
-                                 t-on-click.stop="() => this.onFilterToggle('filterUnlinked')">
-                                <i class="fa fa-unlink"/>
-                                <span>未關聯</span>
-                                <i class="fa fa-check o_gantt_more_menu_check" t-if="state.filterUnlinked"/>
-                            </div>
-
-                            <!-- 批次操作 Section -->
-                            <div class="o_gantt_more_menu_divider"/>
-                            <div class="o_gantt_more_menu_section_label">批次操作</div>
-                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onBatchSetAuto(); this.onMoreMenuClose(); }">
-                                <i class="fa fa-bolt"/>
-                                <span>全部設為自動</span>
-                            </div>
-                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onBatchSetManual(); this.onMoreMenuClose(); }">
-                                <i class="fa fa-hand-paper-o"/>
-                                <span>全部設為手動</span>
-                            </div>
-                            <div class="o_gantt_more_menu_item" t-on-click.stop="() => { this.onBatchRemoveConstraints(); this.onMoreMenuClose(); }">
-                                <i class="fa fa-unlock"/>
-                                <span>移除所有限制</span>
-                            </div>
+                        </t>
+                        <div class="o_gantt_tb_dropdown_hint" t-if="!state.baselines.length">
+                            尚無基線
                         </div>
                     </div>
-
-                    <!-- Violation toggle button -->
-                    <button t-att-class="'o_gantt_btn o_gantt_btn_icon o_gantt_violation_toggle' + (state.showViolationPanel ? ' active' : '')"
-                            t-on-click="onViolationToggle"
-                            title="違規">
-                        <i class="fa fa-exclamation-triangle"/>
-                        <span class="o_gantt_violation_count" t-if="state.violationCount > 0"
-                              t-esc="state.violationCount"/>
-                    </button>
-
-                    <!-- Active filter indicators -->
-                    <t t-if="state.filterCriticalPath || state.filterOverdue || state.filterUnlinked">
-                        <div class="o_gantt_filter_chips">
-                            <span class="o_gantt_filter_chip active" t-if="state.filterCriticalPath"
-                                  t-on-click="() => this.onFilterToggle('filterCriticalPath')">
-                                關鍵路徑 <i class="fa fa-times"/>
-                            </span>
-                            <span class="o_gantt_filter_chip active" t-if="state.filterOverdue"
-                                  t-on-click="() => this.onFilterToggle('filterOverdue')">
-                                逾期 <i class="fa fa-times"/>
-                            </span>
-                            <span class="o_gantt_filter_chip active" t-if="state.filterUnlinked"
-                                  t-on-click="() => this.onFilterToggle('filterUnlinked')">
-                                未關聯 <i class="fa fa-times"/>
-                            </span>
-                        </div>
-                    </t>
-
-                    <!-- Pager Info -->
-                    <span class="o_gantt_pager_info o_gantt_pager_clickable" t-if="pagerText"
-                          t-on-click="onPagerClick" title="點擊調整紀錄上限">
-                        <t t-esc="pagerText"/>
-                    </span>
                 </div>
-            </t>
-            <t t-component="props.Renderer" t-props="rendererProps"/>
+
+                <div class="o_gantt_tb_sep"/>
+
+                <!-- Group 7: Filter -->
+                <button t-att-class="'o_gantt_tb_btn' + (state.filterCriticalPath ? ' active' : '')"
+                        t-on-click="() => this.onFilterToggle('filterCriticalPath')" title="關鍵路徑">
+                    <i class="fa fa-fire"/>
+                </button>
+                <button t-att-class="'o_gantt_tb_btn' + (state.filterOverdue ? ' active' : '')"
+                        t-on-click="() => this.onFilterToggle('filterOverdue')" title="逾期"
+                        t-att-disabled="isPlanningMode">
+                    <i class="fa fa-hourglass-end"/>
+                </button>
+                <button t-att-class="'o_gantt_tb_btn' + (state.filterUnlinked ? ' active' : '')"
+                        t-on-click="() => this.onFilterToggle('filterUnlinked')" title="未關聯">
+                    <i class="fa fa-unlink"/>
+                </button>
+
+                <div class="o_gantt_tb_sep"/>
+
+                <!-- Group 8: Batch -->
+                <button class="o_gantt_tb_btn" t-on-click="() => this.onBatchSetAuto()" title="選取任務設為自動">
+                    <i class="fa fa-bolt"/>
+                </button>
+                <button class="o_gantt_tb_btn" t-on-click="() => this.onBatchSetManual()" title="選取任務設為手動">
+                    <i class="fa fa-hand-paper-o"/>
+                </button>
+                <button class="o_gantt_tb_btn" t-on-click="() => this.onBatchRemoveConstraints()" title="移除選取任務限制">
+                    <i class="fa fa-unlock"/>
+                </button>
+
+                <div class="o_gantt_tb_sep"/>
+
+                <!-- Group 9: Misc -->
+                <button class="o_gantt_tb_btn" t-on-click="() => this.onDetailPlanClick()" title="細節計畫">
+                    <i class="fa fa-tasks"/>
+                </button>
+                <button t-att-class="'o_gantt_tb_btn' + (state.showViolationPanel ? ' active' : '')"
+                        t-on-click="onViolationToggle" title="違規">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <span class="o_gantt_tb_badge" t-if="state.violationCount > 0"
+                          t-esc="state.violationCount"/>
+                </button>
+
+                <!-- Spacer pushes pager to right -->
+                <div class="o_gantt_tb_spacer"/>
+
+                <!-- Pager -->
+                <span class="o_gantt_tb_pager" t-if="pagerText"
+                      t-on-click="onPagerClick" title="點擊調整紀錄上限"
+                      t-esc="pagerText"/>
+            </div>
+
+            <!-- Chart content -->
+            <div class="o_gantt_content_wrapper">
+                <t t-component="props.Renderer" t-props="rendererProps"/>
+            </div>
         </Layout>
     </t>
 
@@ -227,11 +213,6 @@
             <!-- Left Panel: Task List -->
             <div class="o_gantt_list" t-att-style="'width: ' + state.gutterWidth + 'px;'">
                 <div class="o_gantt_list_header">
-                    <span class="o_gantt_report_btn" t-on-click="props.onReportClick"
-                          title="列印甘特圖 PDF"
-                          style="color:#e74c3c; cursor:pointer; margin-right:6px; font-size:14px;">
-                        <i class="fa fa-file-pdf-o"/>
-                    </span>
                     <span class="o_gantt_list_header_cell">任務</span>
                     <t t-if="props.showListDetail">
                         <span class="o_gantt_list_header_date">開始</span>
@@ -478,7 +459,7 @@
                     <div class="o_gantt_grid_columns"
                          t-att-style="'height: ' + (flattenedRows.length * 44) + 'px;'">
                         <t t-foreach="timelineColumns" t-as="column" t-key="column_index">
-                            <div t-att-class="'o_gantt_grid_col' + (column.isWeekend ? ' o_gantt_weekend' : '') + (column.isToday ? ' o_gantt_grid_today' : '')"
+                            <div t-att-class="'o_gantt_grid_col' + (column.isWeekend ? ' o_gantt_weekend' : '') + (column.isNonWorking ? ' o_gantt_nonworking' : '') + (column.isToday ? ' o_gantt_grid_today' : '')"
                                  t-att-style="'flex: 0 0 ' + cellWidth + 'px; width: ' + cellWidth + 'px;'"/>
                         </t>
                     </div>
@@ -495,7 +476,8 @@
                     <!-- Tooltip -->
                     <GanttTooltip archInfo="props.archInfo"
                                   getRecord="(id) => this.props.model.data?.records?.find(r => r.id === id)"
-                                  getPredecessorCount="(id) => this.getPredecessorCount(id)"/>
+                                  getPredecessorCount="(id) => this.getPredecessorCount(id)"
+                                  isPlanningMode="isPlanningMode"/>
 
                     <!-- Context Menu -->
                     <GanttContextMenu archInfo="props.archInfo"
@@ -682,6 +664,7 @@
                 onUpdatePredecessor="(predId, vals) => this.onUpdatePredecessor(predId, vals)"
                 milestoneLinkedTasks="inspectorMilestoneLinks"
                 onRemoveMilestoneLink="(taskId) => this.onRemoveMilestoneLink(taskId)"
+                calendarInfo="props.model.data?.calendarInfo"
             />
 
             <!-- Mini-map scroll indicator -->
@@ -810,9 +793,9 @@
                             </div>
                             <div class="o_gantt_inspector_field">
                                 <label>期限</label>
-                                <input type="date"
-                                       t-att-value="this.formatDateLocal(props.record.deadline)"
-                                       t-on-change="(ev) => this.onMilestoneDeadlineChange(ev)"/>
+                                <DateTimeInput type="'datetime'"
+                                               value="props.record._dateStart || undefined"
+                                               onApply="(dt) => this.onDateTimeApply('deadline_datetime', dt)"/>
                             </div>
                             <div class="o_gantt_inspector_field">
                                 <label>已達成</label>
@@ -965,6 +948,10 @@
                                                onApply="(dt) => this.onDateTimeApply(props.archInfo.dateStop || 'date_end', dt)"/>
                             </div>
                         </t>
+                        <div class="o_gantt_inspector_field" t-if="this.calendarActive and this.workingDurationLabel">
+                            <label>工作工期</label>
+                            <span t-esc="this.workingDurationLabel"/>
+                        </div>
                         <div class="o_gantt_inspector_field">
                             <label>進度</label>
                             <t t-if="props.record._hasChildren">
@@ -1114,7 +1101,7 @@
                 <t t-if="arrow.lagLabel">
                     <text t-att-x="arrow.lagX" t-att-y="arrow.lagY"
                           class="o_gantt_arrow_lag_label"
-                          t-att-text-anchor="arrow.lagAnchor or 'end'">
+                          t-att-text-anchor="arrow.lagAnchor or 'start'">
                         <t t-esc="arrow.lagLabel"/>
                     </text>
                 </t>

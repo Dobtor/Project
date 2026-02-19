@@ -33,6 +33,25 @@ class Project(models.Model):
         default=True
     )
 
+    # Override native computed-only field to stored + editable
+    resource_calendar_id = fields.Many2one(
+        'resource.calendar',
+        string='工作行事曆',
+        compute='_compute_resource_calendar_id',
+        store=True,
+        readonly=False,
+    )
+
+    @api.depends('company_id')
+    def _compute_resource_calendar_id(self):
+        """Set default from company; user can override."""
+        for project in self:
+            if not project.resource_calendar_id:
+                project.resource_calendar_id = (
+                    project.company_id.resource_calendar_id
+                    or self.env.company.resource_calendar_id
+                )
+
     scheduling_type = fields.Selection(
         selection='_get_scheduling_type',
         string='排程類型',
@@ -172,25 +191,219 @@ class Project(models.Model):
     )
 
     # -------------------------------------------------------------------------
+    # Calendar Info for Frontend Gantt
+    # -------------------------------------------------------------------------
+
+    def get_calendar_info(self, date_from=None, date_to=None):
+        """Return calendar data for frontend gantt view."""
+        self.ensure_one()
+        calendar = self.resource_calendar_id
+        if not calendar or not self.use_calendar:
+            return {'active': False}
+
+        # Attendance patterns (exclude lunch and resource-specific)
+        attendances = []
+        for att in calendar.attendance_ids:
+            if att.day_period == 'lunch':
+                continue
+            if att.display_type or att.resource_id:
+                continue
+            attendances.append({
+                'dayofweek': att.dayofweek,  # '0'=Mon .. '6'=Sun
+                'hour_from': att.hour_from,
+                'hour_to': att.hour_to,
+            })
+
+        # Global leaves within visible range
+        leaves = []
+        if date_from and date_to:
+            tz = pytz.timezone(self.tz or 'UTC')
+            dt_from = tz.localize(fields.Datetime.from_string(date_from).replace(hour=0))
+            dt_to = tz.localize(fields.Datetime.from_string(date_to).replace(hour=23, minute=59))
+            for leave in calendar.global_leave_ids:
+                leave_start = leave.date_from
+                leave_end = leave.date_to
+                if leave_end >= dt_from.astimezone(pytz.UTC).replace(tzinfo=None) and \
+                   leave_start <= dt_to.astimezone(pytz.UTC).replace(tzinfo=None):
+                    leaves.append({
+                        'date_from': fields.Datetime.to_string(leave_start),
+                        'date_to': fields.Datetime.to_string(leave_end),
+                        'name': leave.name,
+                    })
+
+        return {
+            'active': True,
+            'hours_per_day': calendar.hours_per_day or 8.0,
+            'tz': self.tz or 'UTC',
+            'attendances': attendances,
+            'leaves': leaves,
+        }
+
+    # -------------------------------------------------------------------------
     # Planning Mode: Schedule Start / Clear
     # -------------------------------------------------------------------------
 
     def action_set_schedule_start(self, date_str):
-        """Set schedule_start and trigger forward scheduler."""
+        """Set schedule_start and trigger forward scheduler.
+
+        Before scheduling, manual tasks get real dates computed from
+        plan_offset (scheduler skips manual tasks).
+        """
         self.ensure_one()
         dt = fields.Datetime.from_string(date_str)
         self.write({'schedule_start': dt, 'schedule_end': False})
+
+        # Pre-compute dates for manual tasks (scheduler skips them)
+        self._precompute_manual_task_dates(dt)
+
         self.env['project.task'].scheduler_plan(self.id)
         return True
 
+    def _precompute_manual_task_dates(self, schedule_start):
+        """Assign real dates to manual tasks from plan_offset + plan_duration.
+
+        Manual tasks (schedule_mode='manual') are not processed by the
+        scheduler. This method computes dates before scheduling so that
+        manual tasks appear at their planned positions.
+
+        When the project has a resource calendar enabled, duration is
+        distributed across working hours (skipping weekends / leaves).
+        Otherwise falls back to naive timedelta arithmetic.
+        """
+        manual_tasks = self.env['project.task'].search([
+            ('project_id', '=', self.id),
+            ('schedule_mode', '=', 'manual'),
+            ('child_ids', '=', False),  # leaf tasks only
+        ])
+        if not manual_tasks:
+            return
+
+        # No manual TZ conversion here — _get_calendar_level already
+        # converts date_in via to_tz(date_in, project.tz) internally,
+        # matching the scheduler's behavior for auto tasks.
+
+        use_cal = self.use_calendar and self.resource_calendar_id
+        task_model = self.env['project.task']
+
+        # Calendar params shared across tasks (attendance/leave accumulate)
+        t_params = None
+        if use_cal:
+            t_params = {
+                'leave_ids': [],
+                'attendance_ids': [],
+                'project': self,
+            }
+
+        for task in manual_tasks:
+            if task.date_start and task.date_end:
+                continue  # Already has dates, skip
+
+            offset_hours = task.plan_offset or 0
+            duration_hours = task.plan_duration or 24.0
+            date_start = schedule_start + timedelta(hours=offset_hours)
+
+            if use_cal and t_params is not None:
+                task_resource_ids = task.task_resource_ids
+                cal_id, task_res, t_params = task_model.make_res_cal_leave(
+                    task_resource_ids, t_params, manual_tasks.ids
+                )
+                task_obj = {
+                    "id": task.id,
+                    "name": task.name,
+                    "project_id": self,
+                    "task_resource_ids": task_resource_ids,
+                    "task_res": task_res,
+                    "fixed_calc_type": task.fixed_calc_type,
+                    "plan_duration": duration_hours,
+                }
+
+                calendar_level = task_model._get_calendar_level(
+                    task_obj, date_start, duration_hours, t_params,
+                    direction="normal",
+                )
+
+                if calendar_level:
+                    cal_start = task_model._get_date_from_level(
+                        calendar_level, "date_from", "min"
+                    )
+                    cal_end = task_model._get_date_from_level(
+                        calendar_level, "date_to", "max"
+                    )
+                    if cal_start and cal_end:
+                        date_start = cal_start
+                        date_end = cal_end
+                    else:
+                        date_end = date_start + timedelta(hours=duration_hours)
+                else:
+                    date_end = date_start + timedelta(hours=duration_hours)
+            else:
+                date_end = date_start + timedelta(hours=duration_hours)
+
+            task.write({
+                'date_start': date_start,
+                'date_end': date_end,
+            })
+
     def action_clear_schedule_dates(self, clear_tasks=False):
-        """Clear schedule dates, optionally clear all task dates."""
+        """Clear schedule dates, optionally clear all task dates.
+
+        When clear_tasks=True, computes plan_offset from real dates BEFORE
+        clearing, ensuring reversible transition back to planning mode.
+        """
         self.ensure_one()
+        schedule_start = self.schedule_start
+
+        if clear_tasks and schedule_start:
+            self._save_plan_offsets_from_dates(schedule_start)
+
         self.write({'schedule_start': False, 'schedule_end': False})
+
         if clear_tasks:
             tasks = self.env['project.task'].search([('project_id', '=', self.id)])
-            tasks.write({'date_start': False, 'date_end': False})
+            tasks.with_context(skip_date_snap=True).write({
+                'date_start': False,
+                'date_end': False,
+            })
+            # Also clear milestone dates
+            milestones = self.env['project.milestone'].search([
+                ('project_id', '=', self.id),
+            ])
+            if milestones:
+                milestones.write({
+                    'deadline_datetime': False,
+                    'deadline': False,
+                })
         return True
+
+    def _save_plan_offsets_from_dates(self, schedule_start):
+        """Compute plan_offset and plan_duration from real dates.
+
+        Called before clearing task dates so that planning mode
+        preserves the relative task positions from scheduling.
+        """
+        tasks = self.env['project.task'].search([
+            ('project_id', '=', self.id),
+            ('date_start', '!=', False),
+            ('child_ids', '=', False),  # leaf tasks only
+        ])
+
+        for task in tasks:
+            vals = {}
+
+            # Compute plan_offset (hours from schedule_start)
+            offset = (task.date_start - schedule_start).total_seconds() / 3600.0
+            if abs(offset - (task.plan_offset or 0)) > 0.01:
+                vals['plan_offset'] = offset
+
+            # Compute plan_duration (hours)
+            if task.date_end:
+                duration = (task.date_end - task.date_start).total_seconds() / 3600.0
+                if abs(duration - (task.plan_duration or 0)) > 0.01:
+                    vals['plan_duration'] = duration
+
+            if vals:
+                # Direct super write to avoid date_snap and ancestor propagation
+                super(type(task), task).write(vals)
 
     # -------------------------------------------------------------------------
     # Catch Up / Reschedule Actions

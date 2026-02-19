@@ -4,6 +4,16 @@ import { Component, useState, useRef, onMounted, onWillUnmount } from "@odoo/owl
 
 const { DateTime } = luxon;
 
+const PLANNING_T0 = DateTime.fromObject({ year: 2000, month: 1, day: 1 });
+
+/**
+ * Format a planning-mode relative label.
+ * n > 0 → "T+3", n === 0 → "T0", n < 0 → "T-2"
+ */
+function planningLabel(prefix, n) {
+    return `${prefix}${n > 0 ? "+" : ""}${n}`;
+}
+
 /**
  * Tooltip component that shows task details on bar hover.
  * Positioned near the mouse pointer, auto-adjusts to stay in viewport.
@@ -15,6 +25,11 @@ export class GanttTooltip extends Component {
         archInfo: Object,
         getRecord: Function,
         getPredecessorCount: { type: Function, optional: true },
+        isPlanningMode: { type: Boolean, optional: true },
+    };
+
+    static defaultProps = {
+        isPlanningMode: false,
     };
 
     setup() {
@@ -109,11 +124,22 @@ export class GanttTooltip extends Component {
         this.state.y = y;
     }
 
+    /**
+     * Convert a DateTime to a planning-mode relative day label.
+     * e.g., PLANNING_T0 + 3 days → "T+3"
+     */
+    _toPlanningDay(dt) {
+        if (!dt || !dt.isValid) return "";
+        const dayOffset = Math.round(dt.diff(PLANNING_T0, "days").days);
+        return planningLabel("T", dayOffset);
+    }
+
     get tooltipData() {
         const record = this.state.record;
         if (!record) return null;
 
         const archInfo = this.props.archInfo;
+        const inPlanning = this.props.isPlanningMode;
         const data = {
             name: record.display_name || "",
         };
@@ -122,10 +148,14 @@ export class GanttTooltip extends Component {
         const dateStart = (record._hasChildren && record._summaryDateStart) || record._dateStart;
         const dateEnd = (record._hasChildren && record._summaryDateEnd) || record._dateEnd;
         if (dateStart) {
-            data.dateStart = dateStart.toFormat("yyyy/M/d");
+            data.dateStart = inPlanning
+                ? this._toPlanningDay(dateStart)
+                : dateStart.toFormat("yyyy/M/d");
         }
         if (dateEnd) {
-            data.dateEnd = dateEnd.toFormat("yyyy/M/d");
+            data.dateEnd = inPlanning
+                ? this._toPlanningDay(dateEnd)
+                : dateEnd.toFormat("yyyy/M/d");
         }
 
         // Duration
@@ -155,8 +185,8 @@ export class GanttTooltip extends Component {
             data.fixedCalcType = calcLabels[record[fixedCalcField]] || record[fixedCalcField];
         }
 
-        // Deadline
-        if (record._dateDeadline) {
+        // Deadline — hide in planning mode (no real dates)
+        if (!inPlanning && record._dateDeadline) {
             data.deadline = record._dateDeadline.toFormat("yyyy/M/d");
             // Check if overdue
             if (record._dateEnd && record._dateEnd > record._dateDeadline) {
@@ -164,11 +194,13 @@ export class GanttTooltip extends Component {
             }
         }
 
-        // Constraint
-        const constrainField = archInfo.constrainType;
-        if (constrainField && record[constrainField] &&
-            record[constrainField] !== "asap") {
-            data.constraint = record[constrainField].toUpperCase();
+        // Constraint — hide in planning mode (no real date constraints)
+        if (!inPlanning) {
+            const constrainField = archInfo.constrainType;
+            if (constrainField && record[constrainField] &&
+                record[constrainField] !== "asap") {
+                data.constraint = record[constrainField].toUpperCase();
+            }
         }
 
         // Critical path
