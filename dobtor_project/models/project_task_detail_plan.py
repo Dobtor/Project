@@ -13,7 +13,7 @@ class ProjectTaskDetailPlan(models.Model):
             ('attendance', _('出勤')),
         ]
 
-    @api.depends('resource_id', 'name_att')
+    @api.depends('resource_id', 'resource_id.name', 'name_att')
     def _compute_name(self):
         for rec in self:
             rec.name = "{} - {}".format(rec.name_att or "", rec.resource_id.name or "")

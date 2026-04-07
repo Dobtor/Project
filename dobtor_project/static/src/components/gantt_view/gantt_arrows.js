@@ -25,6 +25,7 @@ export class GanttArrows extends Component {
         milestoneLinks: { type: Array, optional: true },
         records: { type: Array, optional: true },
         flattenedRows: { type: Array, optional: true },
+        visibleRowIds: { type: Set, optional: true },  // For virtual scrolling
         dateToPx: Function,
         rowHeight: { type: Number, optional: true },
         barTopOffset: { type: Number, optional: true },
@@ -33,6 +34,8 @@ export class GanttArrows extends Component {
         criticalField: { type: String, optional: true },
         hpd: { type: Number, optional: true },
         dpw: { type: Number, optional: true },
+        // Drag-time live update: { recordId, deltaX } — shifts dragged bar's arrow endpoints
+        dragState: { type: Object, optional: true },
     };
 
     static defaultProps = {
@@ -48,16 +51,37 @@ export class GanttArrows extends Component {
     };
 
     get arrowPaths() {
+        const lookups = this._buildLookups();
         const paths = [];
-        paths.push(...this._buildPredecessorPaths());
-        paths.push(...this._buildMilestonePaths());
+        paths.push(...this._buildPredecessorPaths(lookups));
+        paths.push(...this._buildMilestonePaths(lookups));
         return paths;
+    }
+
+    /**
+     * Check if an arrow should be rendered based on virtual scroll visibility.
+     * An arrow is visible if either parent or child is in the visible set.
+     */
+    _isArrowVisible(pred) {
+        const { visibleRowIds } = this.props;
+        
+        // If no virtual scroll (visibleRowIds not provided), render all arrows
+        if (!visibleRowIds || visibleRowIds.size === 0) {
+            return true;
+        }
+        
+        // Check if parent or child is visible
+        const parentVisible = visibleRowIds.has(pred.parent_task_id);
+        const childVisible = visibleRowIds.has(pred.task_id);
+        
+        // Render arrow if either task is visible
+        return parentVisible || childVisible;
     }
 
     /**
      * Build predecessor arrows (existing logic).
      */
-    _buildPredecessorPaths() {
+    _buildPredecessorPaths(lookups) {
         const { predecessors, flattenedRows, dateToPx, rowHeight } = this.props;
         if (!predecessors || !predecessors.length || !flattenedRows || !dateToPx) {
             return [];
@@ -66,11 +90,14 @@ export class GanttArrows extends Component {
         const chamferD = this.props.barHeight / 4;
         const barEdge = this.props.barHeight / 2;
 
-        const { recordMap, rowIndexMap } = this._buildLookups();
+        const { recordMap, rowIndexMap } = lookups;
 
         const paths = [];
 
         for (const pred of predecessors) {
+            // Virtual scroll optimization: skip arrows for tasks not in viewport
+            if (!this._isArrowVisible(pred)) continue;
+            
             const parentRecord = recordMap.get(pred.parent_task_id);
             const childRecord = recordMap.get(pred.task_id);
 
@@ -87,10 +114,23 @@ export class GanttArrows extends Component {
             if (parentIdx === undefined || childIdx === undefined) continue;
 
             // Use renderer's dateToPx for scale-aware coordinate mapping
-            const parentLeft = dateToPx(pStart);
-            const parentRight = pEnd ? dateToPx(pEnd) : parentLeft + 20;
-            const childLeft = dateToPx(cStart);
-            const childRight = cEnd ? dateToPx(cEnd) : childLeft + 20;
+            let parentLeft = dateToPx(pStart);
+            let parentRight = pEnd ? dateToPx(pEnd) : parentLeft + 20;
+            let childLeft = dateToPx(cStart);
+            let childRight = cEnd ? dateToPx(cEnd) : childLeft + 20;
+
+            // Drag-time live offset: shift endpoints of the dragged record
+            const drag = this.props.dragState;
+            if (drag && drag.deltaX) {
+                if (pred.parent_task_id === drag.recordId) {
+                    parentLeft += drag.deltaX;
+                    parentRight += drag.deltaX;
+                }
+                if (pred.task_id === drag.recordId) {
+                    childLeft += drag.deltaX;
+                    childRight += drag.deltaX;
+                }
+            }
 
             const parentCenterY = parentIdx * rowHeight + rowHeight / 2;
             const childCenterY = childIdx * rowHeight + rowHeight / 2;
@@ -118,10 +158,38 @@ export class GanttArrows extends Component {
                     break;
             }
 
-            const result = this._buildPath(
-                fromX, fromY, toX, toY, type,
-                childLeft, childRight, chamferD, barEdge
-            );
+            // SS/FF overlap: when target is behind source, draw vertical
+            // from source bar's top/bottom edge to target bar's top/bottom edge,
+            // at the target's offset X (D inward from target connection point).
+            //   SS overlap: childLeft <= parentLeft
+            //   FF overlap: childRight <= parentRight
+            const isOverlap =
+                (type === "SS" && childLeft <= parentLeft) ||
+                (type === "FF" && childRight <= parentRight);
+
+            let result;
+            if (isOverlap && Math.abs(fromY - toY) >= 2) {
+                const D = Math.min(chamferD, Math.abs(toY - fromY) * 0.3);
+                const vertDir = toY > fromY ? 1 : -1;
+                // Offset X: D pixels inward from target connection edge
+                const entrySign = (type === "SS") ? 1 : -1;
+                const vertX = toX + D * entrySign;
+                // Source: bar top/bottom edge; Target: bar top/bottom edge
+                const startY = fromY + barEdge * vertDir;
+                const endY = toY - barEdge * vertDir;
+                result = {
+                    d: `M ${vertX} ${startY} L ${vertX} ${endY}`,
+                    turnX: vertX,
+                    turnY: (startY + endY) / 2,
+                    isTight: true,
+                    isSameRow: false,
+                };
+            } else {
+                result = this._buildPath(
+                    fromX, fromY, toX, toY, type,
+                    childLeft, childRight, chamferD, barEdge
+                );
+            }
 
             let pathClass = "o_gantt_arrow";
             let markerClass = "";
@@ -207,7 +275,7 @@ export class GanttArrows extends Component {
      * Same visual style and chamfer D as task-to-task arrows.
      * All arrows converge on diamond visual center; arrowhead at vertex.
      */
-    _buildMilestonePaths() {
+    _buildMilestonePaths(lookups) {
         const { milestoneLinks, flattenedRows, dateToPx, rowHeight } = this.props;
         if (!milestoneLinks || !milestoneLinks.length || !flattenedRows || !dateToPx) {
             return [];
@@ -221,7 +289,7 @@ export class GanttArrows extends Component {
         // Same chamfer distance as task-to-task arrows
         const chamferD = this.props.barHeight / 4;
 
-        const { recordMap, rowIndexMap } = this._buildLookups();
+        const { recordMap, rowIndexMap } = lookups;
 
         const paths = [];
 
@@ -341,6 +409,7 @@ export class GanttArrows extends Component {
                 isSameRow: true,
             };
         }
+
 
         const vertDist = Math.abs(toY - fromY);
         const D = Math.min(chamferD, vertDist * 0.3); // clamp for very close rows

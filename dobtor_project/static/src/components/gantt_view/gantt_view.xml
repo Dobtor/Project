@@ -26,6 +26,10 @@
                         t-att-disabled="isPlanningMode">
                     <i class="fa fa-crosshairs"/>
                 </button>
+                <!-- 壓縮向左 -->
+                <button class="o_gantt_tb_btn" t-on-click="() => this.onCompactLeftClick()" title="壓縮向左">
+                    <i class="fa fa-angle-double-left"/>
+                </button>
                 <div class="o_gantt_tb_dropdown o_gantt_tb_scale_dropdown">
                     <button class="o_gantt_tb_btn"
                             t-on-click.stop="onScaleMenuToggle"
@@ -92,6 +96,10 @@
                 </button>
                 <button class="o_gantt_tb_btn" t-on-click="() => this.onLevelResourcesClick()" title="資源平準化">
                     <i class="fa fa-balance-scale"/>
+                </button>
+                <button class="o_gantt_tb_btn" t-on-click="() => this.onAlignConstraintsClick()" title="對齊前置限制"
+                        t-att-disabled="isLoading">
+                    <i class="fa fa-indent"/>
                 </button>
 
                 <div class="o_gantt_tb_sep"/>
@@ -220,20 +228,23 @@
                     </t>
                 </div>
                 <div class="o_gantt_list_rows" t-ref="listRows">
-                    <t t-foreach="flattenedRows" t-as="row" t-key="row.id || row_index">
+                  <div t-att-style="_shouldUseVirtualScroll ? (_virtualScrollTotalHeightStyle + _virtualScrollOffsetStyle) : ''">
+                    <t t-foreach="_shouldUseVirtualScroll ? visibleRows : flattenedRows" t-as="row" t-key="row._rowKey">
                         <div t-att-class="getRowClass(row)"
                              t-att-data-record-id="row._isGroup ? undefined : row.id"
-                             t-on-click="(ev) => !row._isGroup and this.onTaskSelect(row, ev)"
+                             t-att-data-row-id="row.id"
+                             t-on-click="(ev) => this.onRowClick(row, ev)"
                              t-on-dblclick="(ev) => !row._isGroup and this.onTaskDblClick(row, ev)"
                              t-on-mouseenter="() => this.onRowHover(row.id)"
                              t-on-mouseleave="onRowLeave">
                             <t t-if="row._isGroup">
                                 <span class="o_gantt_group_toggle"
-                                      t-on-click.stop="() => this.onGroupClick(row)">
+                                      t-on-click.stop="() => this.onGroupToggle(row)">
                                     <i t-att-class="'fa ' + (row.fold ? 'fa-chevron-right' : 'fa-chevron-down')"/>
                                 </span>
-                                <img t-if="getGroupAvatarUrl(row)"
-                                     t-att-src="getGroupAvatarUrl(row)"
+                                <t t-set="groupAvatarUrl" t-value="getGroupAvatarUrl(row)"/>
+                                <img t-if="groupAvatarUrl"
+                                     t-att-src="groupAvatarUrl"
                                      class="o_gantt_user_avatar o_gantt_group_avatar"
                                      loading="lazy"/>
                                 <span class="o_gantt_group_name" t-esc="row.name"/>
@@ -242,12 +253,13 @@
                                 <span class="o_gantt_group_progress_bar" t-if="getGroupProgress(row) > 0">
                                     <span class="o_gantt_group_progress_fill" t-att-style="getGroupProgressStyle(row)"/>
                                 </span>
+                                <t t-set="groupDateRange" t-value="getGroupDateRange(row)"/>
                                 <span class="o_gantt_group_date_range"
                                       t-on-click.stop="(ev) => this.onGroupDateRangeClick(row, ev)"
-                                      t-att-title="getGroupDateRange(row) ? '點擊修改專案日期' : '點擊設定專案日期'">
+                                      t-att-title="groupDateRange ? '點擊修改專案日期' : '點擊設定專案日期'">
                                     <i class="fa fa-calendar-o"/>
-                                    <t t-if="getGroupDateRange(row)">
-                                        <t t-esc="getGroupDateRange(row)"/>
+                                    <t t-if="groupDateRange">
+                                        <t t-esc="groupDateRange"/>
                                     </t>
                                     <t t-else="">
                                         <span class="o_gantt_group_date_placeholder">設定日期</span>
@@ -318,11 +330,38 @@
                                 </t>
                                 <!-- WBS number -->
                                 <span class="o_gantt_wbs_number" t-if="row._wbsNumber" t-esc="row._wbsNumber"/>
-                                <img t-if="getUserAvatarUrl(row)"
-                                     t-att-src="getUserAvatarUrl(row)"
+                                <!-- Activity button (before avatar, always visible) -->
+                                <span class="o_gantt_activity_btn"
+                                      t-on-click.stop="(ev) => this.onActivityClick(row, ev)"
+                                      title="活動">
+                                    <i t-att-class="'fa fa-fw ' + getActivityButtonClass(row)"/>
+                                </span>
+                                <t t-set="userAvatarUrl" t-value="getUserAvatarUrl(row)"/>
+                                <img t-if="userAvatarUrl"
+                                     t-att-src="userAvatarUrl"
                                      class="o_gantt_user_avatar"
                                      loading="lazy"/>
-                                <span class="o_gantt_extra_users" t-if="getExtraUserCount(row) > 0">+<t t-esc="getExtraUserCount(row)"/></span>
+                                <t t-set="extraUserCount" t-value="getExtraUserCount(row)"/>
+                                <span class="o_gantt_extra_users" t-if="extraUserCount > 0">+<t t-esc="extraUserCount"/></span>
+                                <!-- Task state indicator with dropdown -->
+                                <t t-if="!row._isGroup">
+                                    <span class="o_gantt_task_state"
+                                          t-att-class="getTaskStateClass(row)"
+                                          t-att-title="getTaskStateLabel(row)"
+                                          t-on-click.stop="(ev) => this.onTaskStateClick(row, ev)">
+                                        <i t-att-class="getTaskStateIcon(row)"/>
+                                    </span>
+                                    <div t-if="state.stateMenuRecordId === row.id"
+                                         class="o_gantt_state_menu">
+                                        <t t-foreach="getStateMenuItems(row)" t-as="si" t-key="si.value">
+                                            <div t-att-class="'o_gantt_state_menu_item' + (si.active ? ' active' : '') + (si.disabled ? ' disabled' : '')"
+                                                 t-on-click.stop="() => this.onStateMenuSelect(row, si)">
+                                                <i t-att-class="si.icon"/>
+                                                <span t-esc="si.label"/>
+                                            </div>
+                                        </t>
+                                    </div>
+                                </t>
                                 <span class="o_gantt_task_name">
                                     <t t-esc="row.display_name || row[props.archInfo?.name]"/>
                                     <!-- Loop detection icon -->
@@ -331,8 +370,9 @@
                                            title="偵測到相依迴圈"/>
                                     </t>
                                     <!-- Document count badge -->
-                                    <t t-if="getDocCount(row) > 0">
-                                        <span class="o_gantt_doc_badge" t-esc="getDocCount(row)"/>
+                                    <t t-set="docCount" t-value="getDocCount(row)"/>
+                                    <t t-if="docCount > 0">
+                                        <span class="o_gantt_doc_badge" t-esc="docCount"/>
                                     </t>
                                     <!-- Plan action warning icon -->
                                     <t t-if="hasPlanAction(row)">
@@ -355,8 +395,9 @@
                                     <span class="o_gantt_task_date" t-esc="getInfoStartDate(row)"/>
                                     <span class="o_gantt_task_date" t-esc="getInfoEndDate(row)"/>
                                 </t>
-                                <span class="o_gantt_resource_level" t-if="getResourceLevel(row)"
-                                      t-esc="getResourceLevel(row)"/>
+                                <t t-set="resourceLevel" t-value="getResourceLevel(row)"/>
+                                <span class="o_gantt_resource_level" t-if="resourceLevel"
+                                      t-esc="resourceLevel"/>
                                 <!-- Focus/scroll to bar -->
                                 <span class="o_gantt_focus_btn"
                                       t-on-click.stop="() => this.onFocusClick(row)"
@@ -378,6 +419,7 @@
                             </t>
                         </div>
                     </t>
+                  </div>
                     <t t-if="!flattenedRows || !flattenedRows.length">
                         <div class="o_gantt_empty_state">
                             <i class="o_gantt_empty_icon fa fa-tasks"/>
@@ -405,8 +447,10 @@
                     <span>工期</span>
                 </div>
                 <div class="o_gantt_duration_rows" t-ref="durationRows">
-                    <t t-foreach="flattenedRows" t-as="row" t-key="row.id || row_index">
-                        <div t-att-class="'o_gantt_duration_row' + (row._isGroup ? ' o_gantt_group_row' : '') + (state.hoveredRowId === row.id ? ' o_gantt_row_hover' : '')"
+                  <div t-att-style="_shouldUseVirtualScroll ? (_virtualScrollTotalHeightStyle + _virtualScrollOffsetStyle) : ''">
+                    <t t-foreach="_shouldUseVirtualScroll ? visibleRows : flattenedRows" t-as="row" t-key="row._rowKey">
+                        <div t-att-class="'o_gantt_duration_row' + (row._isGroup ? ' o_gantt_group_row' : '') + (state.selectedRowId === row.id ? ' o_gantt_row_selected' : '')"
+                             t-att-data-row-id="row.id"
                              t-on-mouseenter="() => this.onRowHover(row.id)"
                              t-on-mouseleave="onRowLeave">
                             <t t-if="!row._isGroup">
@@ -418,6 +462,7 @@
                             </t>
                         </div>
                     </t>
+                  </div>
                 </div>
             </div>
 
@@ -477,23 +522,27 @@
                     <GanttTooltip archInfo="props.archInfo"
                                   getRecord="(id) => this.props.model.data?.records?.find(r => r.id === id)"
                                   getPredecessorCount="(id) => this.getPredecessorCount(id)"
-                                  isPlanningMode="isPlanningMode"/>
+                                  isPlanningMode="isPlanningMode"
+                                  hoursPerDay="this.props.model.data?.calendarInfo?.hours_per_day"/>
 
                     <!-- Context Menu -->
                     <GanttContextMenu archInfo="props.archInfo"
                                       getRecord="(id) => this.props.model.data?.records?.find(r => r.id === id)"
                                       onAction="(rid, action) => this.onContextAction(rid, action)"/>
 
-                    <!-- Timeline Rows -->
-                    <t t-foreach="flattenedRows" t-as="row" t-key="row.id || row_index">
+                    <!-- Timeline Rows (always render all — bars are position:absolute, arrows depend on full row indices) -->
+                    <t t-foreach="flattenedRows" t-as="row" t-key="row._rowKey">
                         <div t-att-class="getTimelineRowClass(row)"
+                             t-att-data-row-id="row.id"
+                             t-on-click="(ev) => this.onRowClick(row, ev)"
                              t-on-mouseenter="() => this.onRowHover(row.id)"
                              t-on-mouseleave="onRowLeave">
                             <!-- Project aggregate bar for group rows -->
                             <t t-if="row._isGroup">
-                                <div class="o_gantt_group_bar"
+                                <div t-att-class="getGroupBarClass(row)"
                                      t-att-style="getGroupBarStyle(row)"
-                                     t-att-title="row.name + ' (' + getGroupProgress(row) + '%)'">
+                                     t-att-title="row.name + ' (' + getGroupProgress(row) + '%)'"
+                                     t-on-click="(ev) => this.onGroupBarClick(row, ev)">
                                     <div class="o_gantt_group_bar_progress"
                                          t-att-style="getGroupProgressStyle(row)"/>
                                 </div>
@@ -517,11 +566,11 @@
                                 </t>
                             </t>
                             <t t-if="!row._isGroup">
+                                <t t-set="cachedBarStyle" t-value="getBarStyle(row)"/>
                                 <div t-att-class="getBarClass(row)"
-                                     t-att-style="getBarStyle(row) + getBarCustomStyle(row)"
+                                     t-att-style="cachedBarStyle + getBarCustomStyle(row)"
                                      t-att-data-record-id="row.id"
-                                     t-on-click.stop="(ev) => this.onBarClick(row, ev)"
-                                     t-on-dblclick.stop="() => this.props.onRecordClick(row)">
+                                     t-on-click.stop="(ev) => this.onBarClick(row, ev)">
                                     <t t-if="!row._hasChildren">
                                         <!-- Progress bar fill + drag handle -->
                                         <div class="o_gantt_bar_progress"
@@ -530,15 +579,12 @@
                                              t-att-style="'left:' + Math.min(row._progress||0, 100) + '%;'"/>
                                         <span class="o_gantt_bar_progress_text" t-if="row._progress > 0"
                                               t-esc="Math.round(row._progress) + '%'"/>
-                                        <img t-if="getUserAvatarUrl(row)"
-                                             t-att-src="getUserAvatarUrl(row)"
+                                        <t t-set="barAvatarUrl" t-value="getUserAvatarUrl(row)"/>
+                                        <img t-if="barAvatarUrl"
+                                             t-att-src="barAvatarUrl"
                                              class="o_gantt_bar_avatar"
                                              loading="lazy"/>
                                         <span class="o_gantt_bar_label" t-if="row._showLabel" t-esc="row.display_name"/>
-                                        <!-- Constraint badge -->
-                                        <t t-set="constraintBadge" t-value="getConstraintBadge(row)"/>
-                                        <span class="o_gantt_constraint_badge" t-if="constraintBadge"
-                                              t-esc="constraintBadge" t-att-title="'限制: ' + constraintBadge"/>
                                         <div class="o_gantt_bar_resize_handle o_gantt_bar_resize_left"/>
                                         <div class="o_gantt_bar_resize_handle o_gantt_bar_resize_right"/>
                                         <!-- Connector dots for arrow drawing -->
@@ -558,11 +604,41 @@
                                         <div class="o_gantt_connector o_gantt_connector_right" title="拖曳建立關聯 (結束)"/>
                                     </t>
                                 </div>
-                                <!-- Constraint date marker (flag) -->
+                                <!-- Constraint date marker (vertical line + label + connector) -->
                                 <t t-if="hasConstraintDate(row)">
-                                    <div class="o_gantt_constraint_marker"
-                                         t-att-style="getConstraintDateStyle(row)"
-                                         t-att-title="getConstraintDateTitle(row)"/>
+                                    <t t-set="cInfo" t-value="getConstraintInfo(row)"/>
+                                    <div t-att-class="'o_gantt_constraint_marker' + (cInfo.hard ? ' o_gantt_constraint_hard' : '') + (cInfo.violated ? ' o_gantt_constraint_violated' : '') + (cInfo.isStartType ? ' o_gantt_constraint_start' : ' o_gantt_constraint_end')"
+                                         t-att-style="cInfo.style"
+                                         t-on-click.stop="(ev) => this.onConstraintClick(row, ev)"
+                                         t-on-mouseenter="(ev) => this.onConstraintEnter(row, ev)"
+                                         t-on-mouseleave="() => this.onConstraintLeave()">
+                                        <span class="o_gantt_constraint_label" t-esc="cInfo.label"/>
+                                        <div class="o_gantt_constraint_line"/>
+                                        <!-- Horizontal connector to task bar -->
+                                        <t t-if="cInfo.connector">
+                                            <div t-att-class="'o_gantt_constraint_connector o_gantt_constraint_connector_' + cInfo.connector.direction"
+                                                 t-att-style="'left:' + cInfo.connector.left + 'px; width:' + cInfo.connector.width + 'px;'"/>
+                                        </t>
+                                    </div>
+                                    <!-- Constraint custom tooltip -->
+                                    <div t-if="state.constraintTooltipId === row.id"
+                                         class="o_gantt_constraint_tooltip"
+                                         t-att-style="state.constraintTooltipStyle">
+                                        <div class="o_gantt_constraint_tooltip_type">
+                                            <i t-att-class="'fa fa-fw ' + (cInfo.hard ? 'fa-lock' : 'fa-unlock-alt')"/>
+                                            <span t-esc="cInfo.typeLabel"/>
+                                        </div>
+                                        <div class="o_gantt_constraint_tooltip_date">
+                                            <span t-esc="cInfo.dateStr"/>
+                                        </div>
+                                        <div t-if="cInfo.violated" class="o_gantt_constraint_tooltip_warn">
+                                            <i class="fa fa-exclamation-triangle"/>
+                                            <span>約束違反</span>
+                                        </div>
+                                        <div class="o_gantt_constraint_tooltip_current">
+                                            <span t-esc="cInfo.currentLabel"/>
+                                        </div>
+                                    </div>
                                 </t>
                                 <!-- Deadline marker (diamond) - draggable -->
                                 <t t-if="hasDeadline(row)">
@@ -585,10 +661,11 @@
                                          t-att-title="'完成: ' + row._dateDone.toFormat('yyyy/M/d')"/>
                                 </t>
                                 <!-- Task info overlay (ES/LS/EF/LF) -->
-                                <t t-if="getTaskInfos(row).length > 0">
-                                    <t t-foreach="getTaskInfos(row)" t-as="info" t-key="info_index">
+                                <t t-set="rowTaskInfos" t-value="getTaskInfos(row)"/>
+                                <t t-if="rowTaskInfos.length > 0">
+                                    <t t-foreach="rowTaskInfos" t-as="info" t-key="info_index">
                                         <div class="o_gantt_task_info_overlay"
-                                             t-att-style="getBarStyle(row)">
+                                             t-att-style="cachedBarStyle">
                                             <span class="o_gantt_info_lu" t-esc="info.leftUp"/>
                                             <span class="o_gantt_info_ru" t-esc="info.rightUp"/>
                                             <span class="o_gantt_info_ld" t-esc="info.leftDown"/>
@@ -605,7 +682,7 @@
                                 <!-- Resource conflict indicator -->
                                 <t t-if="hasResourceConflict(row)">
                                     <div class="o_gantt_resource_conflict_indicator"
-                                         t-att-style="getBarStyle(row)"
+                                         t-att-style="cachedBarStyle"
                                          title="資源衝突：指派重疊"/>
                                 </t>
                                 <!-- Resource load bars (detail plan) -->
@@ -678,7 +755,7 @@
     <t t-name="dobtor_project.GanttScrollMap">
         <canvas t-ref="scrollMapCanvas"
                 class="o_gantt_scrollmap_canvas"
-                t-on-mousedown="_onMouseDown"/>
+                t-on-pointerdown="_onPointerDown"/>
     </t>
 
     <!-- Gantt Tooltip Template (Apple Popover Style) -->
@@ -958,6 +1035,10 @@
                                 <span class="o_gantt_inspector_progress_val"
                                       t-esc="Math.round(props.record._summaryProgress || 0) + '% (自動)'"/>
                             </t>
+                            <t t-elif="props.record._progressMode === 'timesheet'">
+                                <span class="o_gantt_inspector_progress_val"
+                                      t-esc="Math.round(props.record._progress || 0) + '% (工時單)'"/>
+                            </t>
                             <t t-else="">
                                 <div class="o_gantt_inspector_progress_row">
                                     <input type="range" min="0" max="100"
@@ -1031,6 +1112,11 @@
                                           t-esc="this.lagDisplayLabel(pred)"/>
                                 </t>
                             </div>
+                            <span class="o_gantt_inspector_pred_blocking"
+                                  t-att-title="pred.enable_blocking ? '阻擋中（前置未完成時等待）' : '不阻擋'"
+                                  t-att-class="'text-' + (pred.enable_blocking ? 'warning' : 'muted')">
+                                <i t-att-class="'fa ' + (pred.enable_blocking ? 'fa-lock' : 'fa-unlock')"/>
+                            </span>
                             <span class="o_gantt_inspector_pred_delete"
                                   t-if="props.onDeletePredecessor"
                                   t-on-click.stop="() => props.onDeletePredecessor(pred._predIdentifier)"

@@ -25,7 +25,7 @@
             <field name="name">project.task.resource.link.form</field>
             <field name="model">project.task.resource.link</field>
             <field name="arch" type="xml">
-                <form string="資源關聯">
+                <form>
                     <sheet>
                         <group>
                             <group>

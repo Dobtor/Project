@@ -41,9 +41,9 @@ export class GanttScrollMap extends Component {
         this.MAP_WIDTH = 200;
         this.MAP_HEIGHT = 40;
 
-        this._onMouseDown = this._onMouseDown.bind(this);
-        this._onMouseMove = this._onMouseMove.bind(this);
-        this._onMouseUp = this._onMouseUp.bind(this);
+        this._onPointerDown = this._onPointerDown.bind(this);
+        this._onPointerMove = this._onPointerMove.bind(this);
+        this._onPointerUp = this._onPointerUp.bind(this);
 
         onMounted(() => {
             this._draw();
@@ -54,8 +54,8 @@ export class GanttScrollMap extends Component {
         });
 
         onWillUnmount(() => {
-            document.removeEventListener("mousemove", this._onMouseMove);
-            document.removeEventListener("mouseup", this._onMouseUp);
+            document.removeEventListener("pointermove", this._onPointerMove);
+            document.removeEventListener("pointerup", this._onPointerUp);
         });
     }
 
@@ -109,24 +109,24 @@ export class GanttScrollMap extends Component {
         ctx.strokeRect(vpX, vpY, vpW, vpH);
     }
 
-    _onMouseDown(ev) {
+    _onPointerDown(ev) {
         ev.preventDefault();
         this.state.isDragging = true;
         this._scrollTo(ev);
 
-        document.addEventListener("mousemove", this._onMouseMove);
-        document.addEventListener("mouseup", this._onMouseUp);
+        document.addEventListener("pointermove", this._onPointerMove);
+        document.addEventListener("pointerup", this._onPointerUp);
     }
 
-    _onMouseMove(ev) {
+    _onPointerMove(ev) {
         if (!this.state.isDragging) return;
         this._scrollTo(ev);
     }
 
-    _onMouseUp() {
+    _onPointerUp() {
         this.state.isDragging = false;
-        document.removeEventListener("mousemove", this._onMouseMove);
-        document.removeEventListener("mouseup", this._onMouseUp);
+        document.removeEventListener("pointermove", this._onPointerMove);
+        document.removeEventListener("pointerup", this._onPointerUp);
     }
 
     _scrollTo(ev) {

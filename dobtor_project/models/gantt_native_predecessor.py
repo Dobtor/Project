@@ -23,3 +23,9 @@ class GanttNativePredecessor(models.AbstractModel):
     )
 
     lag_hours = fields.Float(string='延遲(小時)', default=0.0)
+
+    enable_blocking = fields.Boolean(
+        string='啟用阻擋',
+        default=True,
+        help='啟用後，前置任務未完成時，後續任務自動設為「等待中」狀態。',
+    )

@@ -1,6 +1,6 @@
 /** @odoo-module **/
 
-import { Component, useState, useRef, onMounted, onWillUnmount, markRaw, reactive } from "@odoo/owl";
+import { Component, useState, useRef, onMounted, onWillUnmount, onPatched, onWillPatch, markRaw, reactive } from "@odoo/owl";
 import { useOwnedDialogs } from "@web/core/utils/hooks";
 import { usePopover } from "@web/core/popover/popover_hook";
 import { DateTimePickerPopover } from "@web/core/datetime/datetime_picker_popover";
@@ -13,12 +13,13 @@ import { useGanttDeadlineDrag } from "./gantt_deadline_drag_hook";
 import { useGanttTreeDrag } from "./gantt_tree_drag_hook";
 import { useGanttArrowDraw } from "./gantt_arrow_draw_hook";
 import { useGanttProgressDrag } from "./gantt_progress_drag_hook";
-import { cellsDeltaToDuration, toOdooDatetime } from "./gantt_utils";
+import { cellsDeltaToDuration, toOdooDatetime, humanizeDays, humanizeHours } from "./gantt_utils";
 import { GanttArrows } from "./gantt_arrows";
 import { GanttTooltip } from "./gantt_tooltip";
 import { GanttContextMenu } from "./gantt_context_menu";
 import { GanttScrollMap } from "./gantt_scrollmap";
 import { GanttInspector, GANTT_COLORS } from "./gantt_inspector";
+import { ActivityListPopover } from "@mail/core/web/activity_list_popover";
 
 const { DateTime } = luxon;
 
@@ -84,7 +85,7 @@ export class GanttRenderer extends Component {
                     getSelectedRowId: () => this.state.selectedRowId,
                     setSelectedRowId: (id) => { this.state.selectedRowId = id; },
                     getSelectedRowIds: () => this.state.selectedRowIds,
-                    clearMultiSelect: () => this.state.selectedRowIds.clear(),
+                    clearMultiSelect: () => { this.state.selectedRowIds = {}; },
                     getFlattenedRows: () => this.flattenedRows,
                     createSiblingTask: (id) => this.createSiblingTask(id),
                 });
@@ -122,6 +123,9 @@ export class GanttRenderer extends Component {
             onClose: () => this._onDateRangePopoverClose(),
         });
 
+        // Activity popover (for activity_ids clock button)
+        this.activityPopover = usePopover(ActivityListPopover, { position: "bottom-start" });
+
         // Restore gutter widths from localStorage
         const savedGutterWidth = parseInt(localStorage.getItem("gantt_gutter_width"), 10);
         const savedDurationWidth = parseInt(localStorage.getItem("gantt_duration_width"), 10);
@@ -129,10 +133,15 @@ export class GanttRenderer extends Component {
         this.state = useState({
             gutterWidth: (savedGutterWidth > 0) ? savedGutterWidth : 300,
             durationWidth: (savedDurationWidth > 0) ? savedDurationWidth : 80,
-            hoveredRowId: null,
             selectedRowId: null,
-            selectedRowIds: new Set(),
+            selectedRowIds: {},
+            stateMenuRecordId: null,
+            constraintTooltipId: null,
+            constraintTooltipStyle: "",
         });
+
+        // Reactive drag state for live arrow updates via OWL re-render
+        this._dragState = useState({ recordId: null, deltaX: 0 });
 
         // Cell width per column unit for each scale
         this.cellWidths = {
@@ -167,16 +176,24 @@ export class GanttRenderer extends Component {
             getCellWidth: () => this.cellWidth,
             getScale: () => this.props.scale,
             getTimeStart: () => this.props.model.data?.timeStart,
-            getRecord: (id) => this.props.model.data?.records.find(r => r.id === id),
+            getRecord: (id) => this.props.model.getRecord(id),
             getCalHpd: () => this._calHpd,
             getCalDpw: () => this._calDpw,
+            // Shift a date by cellsDelta, respecting working days/hours
+            shiftDate: (dt, cellsDelta) => {
+                if (this._isHidingNonWorking()) {
+                    return this._addWorkingUnits(dt, cellsDelta);
+                }
+                return dt.plus(cellsDeltaToDuration(cellsDelta, this.props.scale));
+            },
             getMinStart: (id) => {
-                const rec = this.props.model.data?.records.find(r => r.id === id);
+                const rec = this.props.model.getRecord(id);
                 if (rec && rec._hasChildren) {
                     return this.props.model.getMinStartForParentDrag(id);
                 }
                 return this.props.model.getMinStartForRecord(id);
             },
+            getMinMilestoneDate: (id) => this.props.model.getMinDateForMilestone(id),
             onBoundaryHit: (id) => {
                 const info = this.props.model.getBlockingFsInfo(id);
                 if (info) {
@@ -186,8 +203,15 @@ export class GanttRenderer extends Component {
                     });
                 }
             },
+            // Live arrow update during drag — update reactive state for OWL re-render
+            onDragMove: (recordId, deltaX) => {
+                this._dragState.recordId = recordId;
+                this._dragState.deltaX = deltaX;
+            },
             onDragEnd: async (recordId, cellsDelta) => {
-                const record = this.props.model.data?.records.find(r => r.id === recordId);
+                this._dragState.recordId = null;
+                this._dragState.deltaX = 0;
+                const record = this.props.model.getRecord(recordId);
                 if (!record) return;
 
                 const useWorkingMove = this._isHidingNonWorking();
@@ -207,14 +231,15 @@ export class GanttRenderer extends Component {
                         newStart = minStart;
                         wasClamped = true;
                     }
-                    const shiftHours = newStart.diff(summaryStart, "hours").hours;
+                    let shiftHours = newStart.diff(summaryStart, "hours").hours;
+                    // Virtual timeline hours must be converted to working hours for the backend
+                    if (record._isVirtualDates) {
+                        const scaleFactor = (this._calHpd < 24) ? (24 / this._calHpd) : 1;
+                        shiftHours = shiftHours / scaleFactor;
+                    }
                     if (Math.abs(shiftHours) < 0.01) return;
                     const moveOpts = wasClamped ? { context: { skip_date_snap: true } } : {};
-                    await this.props.model.moveRecordWithChildren(recordId, shiftHours, moveOpts);
-                    await this.props.model._pushFSSuccessors(recordId);
-                    await this.props.model._pushAncestorFSSuccessors(recordId);
-                    await this.props.model._recalcAndUpdateLags(recordId);
-                    if (this.props.onReload) await this.props.onReload();
+                    await this.props.model.moveAndCascade(recordId, null, shiftHours, moveOpts);
                     return;
                 }
 
@@ -223,6 +248,11 @@ export class GanttRenderer extends Component {
                     let newDate = useWorkingMove && record._dateStart
                         ? this._addWorkingUnits(record._dateStart, cellsDelta)
                         : (record._dateStart ? record._dateStart.plus(shiftDur) : null);
+                    // Clamp to linked tasks' end dates
+                    const minDate = this.props.model.getMinDateForMilestone(recordId);
+                    if (minDate && newDate && newDate < minDate) {
+                        newDate = minDate;
+                    }
                     if (newDate) {
                         await this.props.model.updateRecord(recordId, {
                             deadline_datetime: newDate.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"),
@@ -238,16 +268,23 @@ export class GanttRenderer extends Component {
                 let wasClamped = false;
 
                 if (record._isVirtualDates) {
-                    // Planning mode: update plan_offset (hours)
-                    const shiftHours = DateTime.fromMillis(0).plus(shiftDur).toMillis() / 3600000;
-                    let newOffset = Math.max(0, (record._planOffset || 0) + shiftHours);
+                    // Planning mode: drag delta is in virtual timeline units,
+                    // divide by scaleFactor to convert back to working hours
+                    const scaleFactor = (this._calHpd < 24) ? (24 / this._calHpd) : 1;
+                    // Convert duration to hours directly (avoid epoch-based month inaccuracy)
+                    const shiftHours = (shiftDur.hours || 0) + (shiftDur.days || 0) * 24
+                        + (shiftDur.weeks || 0) * 168 + (shiftDur.months || 0) * 720;
+                    const shiftWorkingHours = shiftHours / scaleFactor;
+                    let newOffset = Math.max(0, (record._planOffset || 0) + shiftWorkingHours);
                     // Clamp to FS predecessor end
                     if (minStart) {
                         const T0 = PLANNING_T0;
-                        const minOffset = minStart.diff(T0, "hours").hours;
-                        if (newOffset < minOffset) newOffset = minOffset;
+                        const minVirtualHours = minStart.diff(T0, "hours").hours;
+                        const minOffsetWorking = minVirtualHours / scaleFactor;
+                        if (newOffset < minOffsetWorking) newOffset = minOffsetWorking;
                     }
-                    await this.props.model.updatePlanOffset(recordId, newOffset);
+                    const planOffsetField = this.props.archInfo.planOffset || "plan_offset";
+                    await this.props.model.moveAndCascade(recordId, { [planOffsetField]: newOffset });
                 } else if (record._scheduleMode === "auto") {
                     // Auto mode: convert drag to SNET constraint instead of overwriting dates
                     let newStart = useWorkingMove && record._dateStart
@@ -270,7 +307,7 @@ export class GanttRenderer extends Component {
                     const dateStopField = this.props.archInfo.dateStop || "date_end";
                     if (this._isFieldReadonly(dateStartField) || this._isFieldReadonly(dateStopField)) {
                         this.env.services.notification.add(
-                            "\u7121\u6CD5\u4FEE\u6539\uFF1A\u65E5\u671F\u6B04\u4F4D\u70BA\u552F\u8B80",
+                            _t("無法修改：日期欄位為唯讀"),
                             { type: "warning" }
                         );
                         return;
@@ -292,19 +329,34 @@ export class GanttRenderer extends Component {
                         values[dateStopField] = (newStart || record._dateStart).plus(duration).setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                     }
                     const writeOpts = wasClamped ? { context: { skip_date_snap: true } } : {};
-                    await this.props.model.updateRecord(recordId, values, writeOpts);
+                    await this.props.model.moveAndCascade(recordId, values, null, writeOpts);
                 }
-                // Push FS successors if this task's end moved forward
-                await this.props.model._pushFSSuccessors(recordId);
-                await this.props.model._pushAncestorFSSuccessors(recordId);
-                await this.props.model._recalcAndUpdateLags(recordId);
-                // Full reload to refresh server-computed fields
-                if (this.props.onReload) await this.props.onReload();
+            },
+            // Lag preview: compute FS predecessor lag changes during drag
+            getPredLagPreview: (recId, cellsDelta) => {
+                return this._computePredLagPreview(recId, cellsDelta, "both");
             },
             // Vertical reorder: drag bar up/down to reorder tasks
             onVerticalReorder: async (recordId, targetId, position) => {
                 await this.props.model.reorderRecord(recordId, targetId, position);
                 // No reload — model handles optimistic local update internally
+            },
+            // Item 10: Multi-select drag callbacks
+            getSelectedIds: () => {
+                const ids = this.state.selectedRowIds || {};
+                return Object.keys(ids).filter(k => ids[k]).map(Number);
+            },
+            onMultiDragEnd: async (recordIds, cellsDelta) => {
+                const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
+                // Convert duration to hours
+                let shiftHours = (shiftDur.hours || 0) + (shiftDur.days || 0) * 24
+                    + (shiftDur.weeks || 0) * 168 + (shiftDur.months || 0) * 720;
+                // If hiding non-working days, use working-hour conversion
+                if (this._isHidingNonWorking()) {
+                    const scaleFactor = (this._calHpd < 24) ? (24 / this._calHpd) : 1;
+                    shiftHours = shiftHours / scaleFactor;
+                }
+                await this.props.model.moveMultipleRecords(recordIds, shiftHours);
             },
             getFlattenedRows: () => this.flattenedRows,
             getListEl: () => this.listRowsRef.el,
@@ -315,45 +367,90 @@ export class GanttRenderer extends Component {
             getTimelineEl: () => this.timelineDataRef.el,
             getCellWidth: () => this.cellWidth,
             getScale: () => this.props.scale,
-            getRecord: (id) => this.props.model.data?.records.find(r => r.id === id),
+            getRecord: (id) => this.props.model.getRecord(id),
             getCalHpd: () => this._calHpd,
             getCalDpw: () => this._calDpw,
+            getMinEnd: (id) => this.props.model.getMinEndForRecord(id),
+            shiftDate: (dt, cellsDelta) => {
+                if (this._isHidingNonWorking()) {
+                    return this._addWorkingUnits(dt, cellsDelta);
+                }
+                return dt.plus(cellsDeltaToDuration(cellsDelta, this.props.scale));
+            },
             onResizeEnd: async (recordId, side, cellsDelta) => {
-                const record = this.props.model.data?.records.find(r => r.id === recordId);
+                const record = this.props.model.getRecord(recordId);
                 if (!record) return;
 
-                // Constraint for left-side resize: FS predecessors + parent start
+                // Constraint for left-side resize: FS/SS/FF/SF predecessors
                 const minStart = (side === "left")
                     ? this.props.model.getMinStartForRecord(recordId)
                     : null;
+                // Constraint for right-side resize: FF/SF predecessors
+                const minEnd = (side === "right")
+                    ? this.props.model.getMinEndForRecord(recordId)
+                    : null;
 
                 if (record._isVirtualDates) {
-                    // Planning mode: update plan_duration and plan_offset (hours)
+                    // Planning mode: resize delta is in virtual timeline units,
+                    // divide by scaleFactor to convert back to working hours
+                    const scaleFactor = (this._calHpd < 24) ? (24 / this._calHpd) : 1;
+                    const minDuration = this._calHpd; // Minimum 1 working day
                     const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
-                    const shiftHours = DateTime.fromMillis(0).plus(shiftDur).toMillis() / 3600000;
+                    // Convert duration to hours directly (avoid epoch-based month inaccuracy)
+                    const shiftHours = (shiftDur.hours || 0) + (shiftDur.days || 0) * 24
+                        + (shiftDur.weeks || 0) * 168 + (shiftDur.months || 0) * 720;
+                    const shiftWorkingHours = shiftHours / scaleFactor;
                     if (side === "right") {
-                        const newDuration = Math.max(24, (record._planDuration || 24) + shiftHours);
-                        await this.props.model.updatePlanDuration(recordId, newDuration);
+                        let newDuration = Math.max(minDuration, (record._planDuration || this._calHpd) + shiftWorkingHours);
+                        // Clamp to FF/SF predecessor min end
+                        if (minEnd) {
+                            const T0 = PLANNING_T0;
+                            const minEndVirtualHours = minEnd.diff(T0, "hours").hours;
+                            const minEndWorking = minEndVirtualHours / scaleFactor;
+                            const currentOffset = record._planOffset || 0;
+                            const minDur = Math.max(minDuration, minEndWorking - currentOffset);
+                            if (newDuration < minDur) {
+                                newDuration = minDur;
+                            }
+                        }
+                        const planDurField = this.props.archInfo.planDuration || "plan_duration";
+                        await this.props.model.moveAndCascade(recordId, { [planDurField]: newDuration });
                     } else {
                         // Left resize: adjust both offset and duration
-                        let newOffset = Math.max(0, (record._planOffset || 0) + shiftHours);
-                        let newDuration = Math.max(24, (record._planDuration || 24) - shiftHours);
+                        let newOffset = Math.max(0, (record._planOffset || 0) + shiftWorkingHours);
+                        let newDuration = Math.max(minDuration, (record._planDuration || this._calHpd) - shiftWorkingHours);
                         // Clamp to FS predecessor end
                         if (minStart) {
                             const T0 = PLANNING_T0;
-                            const minOffset = minStart.diff(T0, "hours").hours;
-                            if (newOffset < minOffset) {
-                                newDuration = Math.max(24, newDuration - (minOffset - newOffset));
-                                newOffset = minOffset;
+                            const minVirtualHours = minStart.diff(T0, "hours").hours;
+                            const minOffsetWorking = minVirtualHours / scaleFactor;
+                            if (newOffset < minOffsetWorking) {
+                                newDuration = Math.max(minDuration, newDuration - (minOffsetWorking - newOffset));
+                                newOffset = minOffsetWorking;
                             }
                         }
                         const planDurationField = this.props.archInfo.planDuration || "plan_duration";
                         const planOffsetField = this.props.archInfo.planOffset || "plan_offset";
-                        await this.props.model.updateRecord(recordId, {
+                        await this.props.model.moveAndCascade(recordId, {
                             [planOffsetField]: newOffset,
                             [planDurationField]: newDuration,
                         });
                     }
+                } else if (record._scheduleMode === "auto" && side === "right") {
+                    // Auto mode + right resize: modify plan_duration (duration change only)
+                    const useWorkingMove = this._isHidingNonWorking();
+                    const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
+                    let newEnd = useWorkingMove
+                        ? this._addWorkingUnits(record._dateEnd, cellsDelta)
+                        : record._dateEnd.plus(shiftDur);
+                    // Clamp to FF/SF predecessor min end
+                    if (minEnd && newEnd < minEnd) {
+                        newEnd = minEnd;
+                    }
+                    if (!newEnd || !record._dateStart || newEnd <= record._dateStart) return;
+                    const newDurationHours = newEnd.diff(record._dateStart, "hours").hours;
+                    const planDurField = this.props.archInfo.planDuration || "plan_duration";
+                    await this.props.model.moveAndCascade(recordId, { [planDurField]: newDurationHours });
                 } else {
                     // Normal mode: update actual dates
                     const dateStartField = this.props.archInfo.dateStart || "date_start";
@@ -361,7 +458,7 @@ export class GanttRenderer extends Component {
                     const checkField = side === "left" ? dateStartField : dateStopField;
                     if (this._isFieldReadonly(checkField)) {
                         this.env.services.notification.add(
-                            "\u7121\u6CD5\u4FEE\u6539\uFF1A\u65E5\u671F\u6B04\u4F4D\u70BA\u552F\u8B80",
+                            _t("無法修改：日期欄位為唯讀"),
                             { type: "warning" }
                         );
                         return;
@@ -381,21 +478,25 @@ export class GanttRenderer extends Component {
                         }
                         values[dateStartField] = newStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                     } else if (side === "right" && record._dateEnd) {
-                        const newEnd = useWorkingMove
+                        let newEnd = useWorkingMove
                             ? this._addWorkingUnits(record._dateEnd, cellsDelta)
                             : record._dateEnd.plus(shiftDur);
+                        // Clamp to FF/SF predecessor min end
+                        if (minEnd && newEnd < minEnd) {
+                            newEnd = minEnd;
+                            wasClamped = true;
+                        }
                         values[dateStopField] = newEnd.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                     }
                     // Only skip snap when clamped to FS boundary; otherwise let
                     // Python directional snap handle non-work-hour positions.
                     const resizeOpts = wasClamped ? { context: { skip_date_snap: true } } : {};
-                    await this.props.model.updateRecord(recordId, values, resizeOpts);
+                    await this.props.model.moveAndCascade(recordId, values, null, resizeOpts);
                 }
-                // Push FS successors if this task's end moved forward
-                await this.props.model._pushFSSuccessors(recordId);
-                await this.props.model._pushAncestorFSSuccessors(recordId);
-                await this.props.model._recalcAndUpdateLags(recordId);
-                if (this.props.onReload) await this.props.onReload();
+            },
+            // Lag preview: compute FS predecessor lag changes during resize
+            getPredLagPreview: (recId, cellsDelta, resizeSide) => {
+                return this._computePredLagPreview(recId, cellsDelta, resizeSide === "left" ? "incoming" : "outgoing");
             },
             onConstraintSet: async (recordId, constrainType, constrainDate) => {
                 const constrainTypeField = this.props.archInfo.constrainType || "constrain_type";
@@ -412,16 +513,17 @@ export class GanttRenderer extends Component {
         useGanttDeadlineDrag({
             getTimelineEl: () => this.timelineDataRef.el,
             getCellWidth: () => this.cellWidth,
+            getScale: () => this.props.scale,
             getTimeStart: () => this.props.model.data?.timeStart,
-            getRecord: (id) => this.props.model.data?.records.find(r => r.id === id),
+            getRecord: (id) => this.props.model.getRecord(id),
             onDragEnd: async (recordId, cellsDelta) => {
-                const record = this.props.model.data?.records.find(r => r.id === recordId);
+                const record = this.props.model.getRecord(recordId);
                 if (!record || !record._dateDeadline) return;
                 const deadlineField = this.props.archInfo.dateDeadline;
                 if (!deadlineField) return;
                 if (this._isFieldReadonly(deadlineField)) {
                     this.env.services.notification.add(
-                        "\u7121\u6CD5\u4FEE\u6539\uFF1A\u622A\u6B62\u65E5\u6B04\u4F4D\u70BA\u552F\u8B80",
+                        _t("無法修改：截止日欄位為唯讀"),
                         { type: "warning" }
                     );
                     return;
@@ -433,13 +535,17 @@ export class GanttRenderer extends Component {
                 await this.props.model.updateRecord(recordId, {
                     [deadlineField]: newDeadline.toFormat("yyyy-MM-dd"),
                 });
+                // Recompute milestone positions (deadline may affect visual positioning)
+                if (this.props.model._recomputeMilestonePositions) {
+                    this.props.model._recomputeMilestonePositions();
+                }
             },
         });
 
         // --- Hook: Tree drag-drop reordering ---
         useGanttTreeDrag({
             getListEl: () => this.listRowsRef.el,
-            getRecord: (id) => this.props.model.data?.records.find(r => r.id === id),
+            getRecord: (id) => this.props.model.getRecord(id),
             onReorder: async (recordId, targetId, position) => {
                 await this.props.model.reorderRecord(recordId, targetId, position);
                 // No reload — model handles optimistic local update internally
@@ -449,7 +555,7 @@ export class GanttRenderer extends Component {
         // --- Hook: Arrow draw (create/delete predecessor links) ---
         useGanttArrowDraw({
             getTimelineEl: () => this.timelineDataRef.el,
-            getRecord: (id) => this.props.model.data?.records.find(r => r.id === id),
+            getRecord: (id) => this.props.model.getRecord(id),
             onLinkCreated: async (fromId, toId, type) => {
                 if (toId < 0) {
                     // Target is a milestone (negative ID)
@@ -459,12 +565,11 @@ export class GanttRenderer extends Component {
                     return;
                 } else {
                     // Block links between ancestor-descendant tasks
-                    const records = this.props.model.data?.records || [];
                     const isAncestor = (aId, dId) => {
-                        let r = records.find(x => x.id === dId);
+                        let r = this.props.model.getRecord(dId);
                         while (r && r._parentId) {
                             if (r._parentId === aId) return true;
-                            r = records.find(x => x.id === r._parentId);
+                            r = this.props.model.getRecord(r._parentId);
                         }
                         return false;
                     };
@@ -481,18 +586,19 @@ export class GanttRenderer extends Component {
                 await this.props.model.deletePredecessor(predIdentifier);
                 if (this.props.onReload) await this.props.onReload();
             },
+            deleteLinkLabel: _t("刪除連結"),
         });
 
         // --- Hook: Progress drag ---
         useGanttProgressDrag({
             getTimelineEl: () => this.timelineDataRef.el,
-            getRecord: (id) => this.props.model.data?.records.find(r => r.id === id),
+            getRecord: (id) => this.props.model.getRecord(id),
             onProgressEnd: async (recordId, newProgress) => {
                 const progressField = this.props.archInfo.progress;
                 if (!progressField) return;
                 if (this._isFieldReadonly(progressField)) {
                     this.env.services.notification.add(
-                        "\u7121\u6CD5\u4FEE\u6539\uFF1A\u9032\u5EA6\u6B04\u4F4D\u70BA\u552F\u8B80",
+                        _t("無法修改：進度欄位為唯讀"),
                         { type: "warning" }
                     );
                     return;
@@ -504,14 +610,16 @@ export class GanttRenderer extends Component {
         // Inline rename state
         this._editingRecordId = null;
 
-        // Scrollmap state
-        this._scrollState = useState({
-            scrollLeft: 0,
-            scrollTop: 0,
-            viewportWidth: 0,
-            viewportHeight: 0,
-            totalHeight: 0,
-        });
+        // Scroll position (non-reactive — avoids OWL re-render on every scroll frame)
+        this._scrollPos = { scrollLeft: 0, scrollTop: 0, viewportWidth: 0, viewportHeight: 0, totalHeight: 0 };
+        // Only the visible range is reactive (triggers re-render when rows enter/leave viewport)
+        this._visibleRangeState = useState({ start: 0, end: 0 });
+
+        // Hover tracking via direct DOM manipulation (no OWL re-render)
+        this._hoveredId = null;
+
+        // Scroll listener cleanup registry
+        this._scrollCleanups = [];
 
         // Keyboard: Enter to create sibling task (handled in renderer directly,
         // avoids cross-component API bridge timing issues)
@@ -524,17 +632,45 @@ export class GanttRenderer extends Component {
             }
         };
 
+        this._lastPanelCount = 0;
+
         onMounted(() => {
             this._syncScroll();
             this._initScrollTracking();
             document.addEventListener("keydown", this._onRendererKeyDown);
         });
 
+        onWillPatch(() => {
+            // Clear _dateToPx cache before each render pass
+            this._dateToPxCache = null;
+        });
+
+        onPatched(() => {
+            // Re-init scroll sync + tracking when panels are toggled
+            const panels = [this.timelineRef.el, this.listRowsRef.el, this.durationRowsRef?.el].filter(Boolean);
+            if (panels.length !== this._lastPanelCount) {
+                for (const cleanup of this._scrollCleanups) cleanup();
+                this._scrollCleanups = [];
+                if (this._resizeObserver) {
+                    this._resizeObserver.disconnect();
+                    this._resizeObserver = null;
+                }
+                this._syncScroll();
+                this._initScrollTracking();
+            }
+        });
+
         onWillUnmount(() => {
             document.removeEventListener("keydown", this._onRendererKeyDown);
+            for (const cleanup of this._scrollCleanups) cleanup();
+            this._scrollCleanups = [];
             if (this._resizeObserver) {
                 this._resizeObserver.disconnect();
                 this._resizeObserver = null;
+            }
+            if (this._activeDurationInput) {
+                this._activeDurationInput.remove();
+                this._activeDurationInput = null;
             }
         });
     }
@@ -549,24 +685,23 @@ export class GanttRenderer extends Component {
         let isSyncing = false;
         const panels = [timeline, listRows];
         if (durationRows) panels.push(durationRows);
+        this._lastPanelCount = panels.length;
 
         const syncScroll = (source) => {
             if (isSyncing) return;
             isSyncing = true;
-            // Apply scrollTop synchronously to avoid stale values
             for (const panel of panels) {
                 if (panel !== source) {
                     panel.scrollTop = source.scrollTop;
                 }
             }
-            // Keep flag true until next frame to suppress feedback scroll events
-            requestAnimationFrame(() => {
-                isSyncing = false;
-            });
+            requestAnimationFrame(() => { isSyncing = false; });
         };
 
         for (const panel of panels) {
-            panel.addEventListener("scroll", () => syncScroll(panel), { passive: true });
+            const handler = () => syncScroll(panel);
+            panel.addEventListener("scroll", handler, { passive: true });
+            this._scrollCleanups.push(() => panel.removeEventListener("scroll", handler));
         }
     }
 
@@ -575,21 +710,110 @@ export class GanttRenderer extends Component {
         if (!timeline) return;
 
         const updateScroll = () => {
-            this._scrollState.scrollLeft = timeline.scrollLeft;
-            this._scrollState.scrollTop = timeline.scrollTop;
-            this._scrollState.viewportWidth = timeline.clientWidth;
-            this._scrollState.viewportHeight = timeline.clientHeight;
-            this._scrollState.totalHeight = timeline.scrollHeight;
+            this._scrollPos.scrollLeft = timeline.scrollLeft;
+            this._scrollPos.scrollTop = timeline.scrollTop;
+            this._scrollPos.viewportWidth = timeline.clientWidth;
+            this._scrollPos.viewportHeight = timeline.clientHeight;
+            this._scrollPos.totalHeight = timeline.scrollHeight;
+            this._updateVisibleRange();
         };
 
-        timeline.addEventListener("scroll", updateScroll);
+        timeline.addEventListener("scroll", updateScroll, { passive: true });
+        this._scrollCleanups.push(() => timeline.removeEventListener("scroll", updateScroll));
         updateScroll();
 
-        // Also observe resize
         if (typeof ResizeObserver !== "undefined") {
             this._resizeObserver = new ResizeObserver(updateScroll);
             this._resizeObserver.observe(timeline);
         }
+    }
+
+    // ============================================
+    // Virtual Scrolling
+    // ============================================
+    
+    /**
+     * Configuration for virtual scrolling
+     */
+    get _virtualScrollConfig() {
+        return {
+            rowHeight: 44,        // Height of each row in pixels
+            bufferRows: 10,       // Number of extra rows to render above/below viewport
+            maxVisibleRows: 100,  // Maximum rows to render (safety limit)
+        };
+    }
+
+    /**
+     * Update the visible row range based on current scroll position.
+     * Only triggers OWL re-render when the range actually changes.
+     */
+    _updateVisibleRange() {
+        const allRows = this.flattenedRows;
+        const totalRows = allRows.length;
+
+        if (totalRows === 0) {
+            if (this._visibleRangeState.start !== 0 || this._visibleRangeState.end !== 0) {
+                this._visibleRangeState.start = 0;
+                this._visibleRangeState.end = 0;
+            }
+            return;
+        }
+
+        const { rowHeight, bufferRows, maxVisibleRows } = this._virtualScrollConfig;
+        const scrollTop = this._scrollPos.scrollTop;
+        const viewportHeight = this._scrollPos.viewportHeight || 600;
+
+        let startIdx = Math.max(0, Math.floor(scrollTop / rowHeight) - bufferRows);
+        const visibleCount = Math.ceil(viewportHeight / rowHeight) + (bufferRows * 2);
+        let endIdx = Math.min(totalRows, startIdx + visibleCount);
+
+        if (endIdx - startIdx > maxVisibleRows) {
+            endIdx = startIdx + maxVisibleRows;
+        }
+
+        // Only update reactive state when range actually changes (avoids unnecessary re-render)
+        if (startIdx !== this._visibleRangeState.start || endIdx !== this._visibleRangeState.end) {
+            this._visibleRangeState.start = startIdx;
+            this._visibleRangeState.end = endIdx;
+        }
+    }
+
+    /**
+     * Get only the rows that should be visible (for virtual scrolling)
+     */
+    get visibleRows() {
+        const allRows = this.flattenedRows;
+        const { start, end } = this._visibleRangeState;
+        if (end <= start) return allRows;
+        return allRows.slice(start, end);
+    }
+
+    /**
+     * Get the offset style for the first visible row (to maintain scroll position)
+     */
+    get _virtualScrollOffsetStyle() {
+        const { start, end } = this._visibleRangeState;
+        // When visibleRows fallback returns all rows (end <= start), no padding needed
+        if (end <= start) return "";
+        const { rowHeight } = this._virtualScrollConfig;
+        const allRows = this.flattenedRows;
+        const visibleCount = end - start;
+        const bottomPad = Math.max(0, (allRows.length - start - visibleCount) * rowHeight);
+        return `padding-top: ${start * rowHeight}px; padding-bottom: ${bottomPad}px;`;
+    }
+
+    /**
+     * Get the total height style for the scroll container (no-op, height is driven by padding)
+     */
+    get _virtualScrollTotalHeightStyle() {
+        return "";
+    }
+
+    /**
+     * Check if virtual scrolling should be enabled
+     */
+    get _shouldUseVirtualScroll() {
+        return this.flattenedRows.length > 50;
     }
 
     get cellWidth() {
@@ -749,7 +973,7 @@ export class GanttRenderer extends Component {
                         date: current,
                         label: current.toFormat("d"),
                         weekday: current.toFormat("EEE"),
-                        month: current.toFormat("yyyy\u5E74M\u6708"),
+                        month: current.toFormat("yyyy/MM"),
                         isWeekend,
                         isNonWorking,
                         isToday: current.hasSame(now, "day"),
@@ -788,7 +1012,7 @@ export class GanttRenderer extends Component {
                             date: current,
                             label: `W${current.plus({ days: 1 }).weekNumber}`,
                             weekday: `${current.toFormat("M/d")} - ${weekEnd.toFormat("M/d")}`,
-                            month: current.toFormat("yyyy\u5E74M\u6708"),
+                            month: current.toFormat("yyyy/MM"),
                             isWeekend: false,
                             isToday: now >= current && now <= weekEnd,
                         });
@@ -802,7 +1026,7 @@ export class GanttRenderer extends Component {
                             date: current,
                             label: `W${current.weekNumber}`,
                             weekday: `${current.toFormat("M/d")} - ${weekEnd.toFormat("M/d")}`,
-                            month: current.toFormat("yyyy\u5E74M\u6708"),
+                            month: current.toFormat("yyyy/MM"),
                             isWeekend: false,
                             isToday: now >= current && now <= weekEnd,
                         });
@@ -828,7 +1052,7 @@ export class GanttRenderer extends Component {
                 } else {
                     columns.push({
                         date: current,
-                        label: `${current.month}\u6708`,
+                        label: current.toFormat("MMM"),
                         weekday: current.toFormat("yyyy"),
                         month: current.toFormat("yyyy"),
                         isWeekend: false,
@@ -851,8 +1075,19 @@ export class GanttRenderer extends Component {
     _dateToPx(dt) {
         const data = this.props.model.data;
         if (!data?.timeStart || !dt) return 0;
-        // Guard against invalid Luxon DateTimes
         if (!data.timeStart.isValid || (dt.isValid !== undefined && !dt.isValid)) return 0;
+        // Render-cycle cache: same dt → same px within one render pass
+        if (!this._dateToPxCache) this._dateToPxCache = new Map();
+        const cacheKey = dt.toMillis();
+        const cached = this._dateToPxCache.get(cacheKey);
+        if (cached !== undefined) return cached;
+        const result = this._dateToPxUncached(dt);
+        this._dateToPxCache.set(cacheKey, result);
+        return result;
+    }
+
+    _dateToPxUncached(dt) {
+        const data = this.props.model.data;
 
         const scale = this.props.scale;
         const cw = this.cellWidth;
@@ -901,16 +1136,26 @@ export class GanttRenderer extends Component {
             if (cols && cols.length > 0) {
                 const step = scale === "week" ? { weeks: 1 } : { months: 1 };
                 const dtMs = dt.toMillis();
-                for (let i = 0; i < cols.length; i++) {
+                // Binary search for the column containing dtMs
+                let lo = 0, hi = cols.length - 1, i = -1;
+                while (lo <= hi) {
+                    const mid = (lo + hi) >> 1;
+                    const colStartMs = cols[mid].date.toMillis();
+                    if (dtMs < colStartMs) {
+                        hi = mid - 1;
+                    } else {
+                        i = mid;
+                        lo = mid + 1;
+                    }
+                }
+                if (i >= 0 && i < cols.length) {
                     const colStartMs = cols[i].date.toMillis();
                     const colEndMs = (i + 1 < cols.length)
                         ? cols[i + 1].date.toMillis()
                         : cols[i].date.plus(step).toMillis();
-                    if (dtMs >= colStartMs && dtMs < colEndMs) {
-                        const totalMs = colEndMs - colStartMs;
-                        const frac = totalMs > 0 ? (dtMs - colStartMs) / totalMs : 0;
-                        return (i + frac) * cw;
-                    }
+                    const totalMs = colEndMs - colStartMs;
+                    const frac = totalMs > 0 ? (dtMs - colStartMs) / totalMs : 0;
+                    return (i + frac) * cw;
                 }
                 // Extrapolate: dt is outside column range
                 const firstMs = cols[0].date.toMillis();
@@ -1004,9 +1249,11 @@ export class GanttRenderer extends Component {
      * Used by drag/resize when hideNonWorkingDays is active.
      */
     _addWorkingDays(dt, days) {
+        days = Math.round(days); // Ensure integer days
         const calendarInfo = this.props.model.data?.calendarInfo;
         if (!calendarInfo) return dt.plus({ days });
         const workingWeekdays = calendarInfo._workingWeekdays;
+        if (!workingWeekdays || workingWeekdays.size === 0) return dt.plus({ days });
         const leaveDays = calendarInfo._leaveDays;
         let cursor = dt;
         let remaining = Math.abs(days);
@@ -1063,13 +1310,25 @@ export class GanttRenderer extends Component {
         const hours = parseInt(this.props.scale);
         const msPerCol = hours * 3600 * 1000;
 
-        // Find the column whose time range contains dt
+        // Find the column whose time range contains dt.
+        // Try fast Map lookup first, then fallback to linear scan.
         let srcIdx = -1;
-        for (let i = 0; i < cols.length; i++) {
-            const colMs = cols[i].date.toMillis();
-            if (dt.toMillis() >= colMs && dt.toMillis() < colMs + msPerCol) {
-                srcIdx = i;
-                break;
+        if (this._workingHourIndex) {
+            const dtHour = dt.hour + dt.minute / 60;
+            const aligned = dt.startOf("hour").set({ hour: Math.floor(dtHour) - (Math.floor(dtHour) % hours) });
+            const idx = this._workingHourIndex.get(aligned.toISO());
+            if (idx !== undefined) {
+                srcIdx = idx;
+            }
+        }
+        if (srcIdx < 0) {
+            // Fallback: linear scan for the column whose time range contains dt
+            for (let i = 0; i < cols.length; i++) {
+                const colMs = cols[i].date.toMillis();
+                if (dt.toMillis() >= colMs && dt.toMillis() < colMs + msPerCol) {
+                    srcIdx = i;
+                    break;
+                }
             }
         }
         if (srcIdx < 0) {
@@ -1132,20 +1391,20 @@ export class GanttRenderer extends Component {
     get flattenedRows() {
         const rows = [];
         const groups = this.props.model.data?.groups || [];
-
         for (const group of groups) {
+            group._rowKey = `g_${group.id}`;
             rows.push(group);
             if (!group.fold) {
-                // Use tree-ordered records if available, otherwise fall back to flat
                 const records = group._treeRecords || group.records || [];
                 for (const record of records) {
+                    record._rowKey = `t_${record.id}`;
                     rows.push(record);
                 }
             }
         }
-
         return rows;
     }
+
 
     get timelineWidth() {
         return this.timelineColumns.length * this.cellWidth;
@@ -1156,7 +1415,7 @@ export class GanttRenderer extends Component {
      * (first / last task) can still be scrolled to the viewport center.
      */
     get extraPaddingCols() {
-        const vw = this._scrollState.viewportWidth;
+        const vw = this._scrollPos.viewportWidth;
         const cw = this.cellWidth;
         if (cw <= 0) return 0;
         return Math.ceil((vw > 0 ? vw : 800) / 2 / cw);
@@ -1204,9 +1463,12 @@ export class GanttRenderer extends Component {
     // Arrow component props
     // -------------------------------------------------------------------------
 
-    /** Hours per working day from the project's calendar (default 24). */
+    /** Hours per working day from the project's calendar.
+     *  In planning mode default to 8 (working day); otherwise 24 (calendar day). */
     get _calHpd() {
-        return this.props.model.data?.calendarInfo?.hours_per_day || 24;
+        const hpd = this.props.model.data?.calendarInfo?.hours_per_day;
+        if (hpd) return hpd;
+        return this.isPlanningMode ? 8 : 24;
     }
 
     /** Working days per week from the project's calendar (default 7). */
@@ -1217,45 +1479,163 @@ export class GanttRenderer extends Component {
 
     get arrowProps() {
         const data = this.props.model.data;
+        
+        // Build visible row IDs set for virtual scroll optimization
+        const visibleRowIds = new Set();
+        if (this._shouldUseVirtualScroll) {
+            const allRows = this.flattenedRows;
+            const { start, end } = this._visibleRangeState;
+            for (let i = start; i < end && i < allRows.length; i++) {
+                const row = allRows[i];
+                if (row.id) {
+                    visibleRowIds.add(row.id);
+                }
+            }
+        }
+        
         return {
             predecessors: data?.predecessors || [],
             milestoneLinks: data?.milestoneLinks || [],
             records: data?.records || [],
             flattenedRows: this.flattenedRows,
+            visibleRowIds: visibleRowIds.size > 0 ? visibleRowIds : undefined,
             dateToPx: (dt) => this._dateToPx(dt),
             rowHeight: 44,
             selectedRowId: this.state.selectedRowId,
             criticalField: this.props.archInfo.criticalPath || "",
             hpd: this._calHpd,
             dpw: this._calDpw,
+            dragState: this._dragState,
         };
+    }
+
+    /**
+     * Compute lag preview for FS predecessors/successors during drag or resize.
+     *
+     * @param {number} recId - the dragged/resized record id
+     * @param {number} cellsDelta - fractional cells moved
+     * @param {string} mode - "both" (drag: both ends move), "incoming" (left resize: start moves),
+     *                        "outgoing" (right resize: end moves)
+     * @returns {Array<{type: string, sourceName: string, currentLag: string, newLag: string}>}
+     */
+    _computePredLagPreview(recId, cellsDelta, mode) {
+        const model = this.props.model;
+        const preds = model.data?.predecessors;
+        if (!preds || preds.length === 0) return [];
+
+        const hpd = this._calHpd;
+        const dpw = this._calDpw;
+        const scale = this.props.scale;
+        const shiftDur = cellsDeltaToDuration(cellsDelta, scale);
+        const shiftHours = (shiftDur.hours || 0) + (shiftDur.days || 0) * 24
+            + (shiftDur.weeks || 0) * 168 + (shiftDur.months || 0) * 720;
+
+        const record = model.getRecord(recId);
+        if (!record) return [];
+
+        const results = [];
+
+        // Incoming FS: this task is the child (task_id), lag = childStart - sourceEnd
+        // Affected by drag (both ends move) or left-resize (start moves)
+        if (mode === "both" || mode === "incoming") {
+            const incomingFs = preds.filter(p =>
+                p.task_id === recId && (p.type || "FS").toUpperCase() === "FS"
+            );
+            for (const pred of incomingFs) {
+                const source = model.getRecord(pred.parent_task_id);
+                if (!source) continue;
+                const sourceEnd = (source._hasChildren && source._summaryDateEnd) || source._dateEnd;
+                const childStart = (record._hasChildren && record._summaryDateStart) || record._dateStart;
+                if (!sourceEnd || !childStart) continue;
+
+                const currentLagHours = childStart.diff(sourceEnd, "hours").hours;
+                const newLagHours = currentLagHours + shiftHours;
+
+                results.push({
+                    type: "FS",
+                    sourceName: source.display_name || String(pred.parent_task_id),
+                    currentLag: humanizeHours(currentLagHours, hpd, dpw),
+                    newLag: humanizeHours(newLagHours, hpd, dpw),
+                });
+            }
+        }
+
+        // Outgoing FS: this task is the parent (parent_task_id), lag = childStart - sourceEnd
+        // Affected by drag (both ends move) or right-resize (end moves)
+        if (mode === "both" || mode === "outgoing") {
+            const outgoingFs = preds.filter(p =>
+                p.parent_task_id === recId && (p.type || "FS").toUpperCase() === "FS"
+            );
+            for (const pred of outgoingFs) {
+                const child = model.getRecord(pred.task_id);
+                if (!child) continue;
+                const sourceEnd = (record._hasChildren && record._summaryDateEnd) || record._dateEnd;
+                const childStart = (child._hasChildren && child._summaryDateStart) || child._dateStart;
+                if (!sourceEnd || !childStart) continue;
+
+                const currentLagHours = childStart.diff(sourceEnd, "hours").hours;
+                const newLagHours = currentLagHours - shiftHours;
+
+                results.push({
+                    type: "FS",
+                    sourceName: child.display_name || String(pred.task_id),
+                    currentLag: humanizeHours(currentLagHours, hpd, dpw),
+                    newLag: humanizeHours(newLagHours, hpd, dpw),
+                });
+            }
+        }
+
+        return results;
     }
 
     // -------------------------------------------------------------------------
     // Event handlers
     // -------------------------------------------------------------------------
 
-    onGroupClick(group) {
+    /**
+     * Handle group toggle (expand/collapse) - only toggles fold state
+     */
+    onGroupToggle(group) {
         if (this.props.model.toggleGroup) {
             this.props.model.toggleGroup(group.id);
         }
     }
 
+    /**
+     * Handle click on any row (task or group) - sets selection
+     */
+    onRowClick(row, ev) {
+        // Close state menu on any row click
+        this.state.stateMenuRecordId = null;
+        // Always set the selected row
+        if (ev && (ev.ctrlKey || ev.metaKey)) {
+            // Multi-select with Ctrl/Cmd key
+            if (this.state.selectedRowIds[row.id]) {
+                const { [row.id]: _, ...rest } = this.state.selectedRowIds;
+                this.state.selectedRowIds = rest;
+            } else {
+                this.state.selectedRowIds = { ...this.state.selectedRowIds, [row.id]: true };
+            }
+        } else {
+            this.state.selectedRowIds = {};
+        }
+        this.state.selectedRowId = row.id;
+    }
+
     onRecordClick(record) {
         this.state.selectedRowId = record.id;
-        this.props.onRecordClick(record);
     }
 
     onBarClick(record, ev) {
         // Multi-select with Ctrl/Cmd key
         if (ev && (ev.ctrlKey || ev.metaKey)) {
-            if (this.state.selectedRowIds.has(record.id)) {
-                this.state.selectedRowIds.delete(record.id);
+            if (this.state.selectedRowIds[record.id]) {
+                delete this.state.selectedRowIds[record.id];
             } else {
-                this.state.selectedRowIds.add(record.id);
+                this.state.selectedRowIds[record.id] = true;
             }
         } else {
-            this.state.selectedRowIds.clear();
+            this.state.selectedRowIds = {};
         }
         this.state.selectedRowId = record.id;
     }
@@ -1263,13 +1643,13 @@ export class GanttRenderer extends Component {
     onTaskSelect(record, ev) {
         // Multi-select with Ctrl/Cmd key
         if (ev && (ev.ctrlKey || ev.metaKey)) {
-            if (this.state.selectedRowIds.has(record.id)) {
-                this.state.selectedRowIds.delete(record.id);
+            if (this.state.selectedRowIds[record.id]) {
+                delete this.state.selectedRowIds[record.id];
             } else {
-                this.state.selectedRowIds.add(record.id);
+                this.state.selectedRowIds[record.id] = true;
             }
         } else {
-            this.state.selectedRowIds.clear();
+            this.state.selectedRowIds = {};
         }
         this.state.selectedRowId = record.id;
     }
@@ -1287,11 +1667,30 @@ export class GanttRenderer extends Component {
     }
 
     onRowHover(rowId) {
-        this.state.hoveredRowId = rowId;
+        if (this._hoveredId === rowId) return;
+        // Direct DOM manipulation — no OWL re-render
+        const root = this.timelineRef.el?.closest(".o_gantt_container");
+        if (!root) return;
+        for (const el of root.querySelectorAll(".o_gantt_row_hover")) {
+            el.classList.remove("o_gantt_row_hover");
+        }
+        if (rowId != null) {
+            for (const el of root.querySelectorAll(`[data-row-id="${rowId}"]`)) {
+                el.classList.add("o_gantt_row_hover");
+            }
+        }
+        this._hoveredId = rowId;
     }
 
     onRowLeave() {
-        this.state.hoveredRowId = null;
+        if (this._hoveredId == null) return;
+        const root = this.timelineRef.el?.closest(".o_gantt_container");
+        if (root) {
+            for (const el of root.querySelectorAll(".o_gantt_row_hover")) {
+                el.classList.remove("o_gantt_row_hover");
+            }
+        }
+        this._hoveredId = null;
     }
 
     // -------------------------------------------------------------------------
@@ -1330,7 +1729,7 @@ export class GanttRenderer extends Component {
      * @param {boolean} isNew - If true, Escape/blur-with-empty deletes the milestone
      */
     _startMilestoneInlineEdit(negativeId, nameEl, isNew = false) {
-        const record = this.props.model.data?.records.find(r => r.id === negativeId);
+        const record = this.props.model.getRecord(negativeId);
         if (!record) return;
 
         const oldText = isNew ? "" : (record.display_name || record.name || "");
@@ -1384,7 +1783,9 @@ export class GanttRenderer extends Component {
                     nameEl.contentEditable = false;
                     nameEl.classList.remove("o_gantt_inline_editing");
                     nameEl.removeEventListener("keydown", onKeyDown);
-                    this.props.model.deleteMilestone(negativeId);
+                    this.props.model.deleteMilestone(negativeId).catch((e) => {
+                        console.warn("Failed to delete milestone:", e);
+                    });
                 } else {
                     nameEl.textContent = oldText;
                     nameEl.blur();
@@ -1403,7 +1804,7 @@ export class GanttRenderer extends Component {
      * @param {boolean} isNew - If true, Escape/blur-with-empty deletes the record
      */
     _startInlineEdit(recordId, nameEl, isNew) {
-        const record = this.props.model.data?.records?.find(r => r.id === recordId);
+        const record = this.props.model.getRecord(recordId);
         const origText = isNew ? "" : (record?.display_name || "");
 
         this._editingRecordId = recordId;
@@ -1460,7 +1861,9 @@ export class GanttRenderer extends Component {
                     nameEl.classList.remove("o_gantt_inline_editing");
                     nameEl.removeEventListener("keydown", onKeyDown);
                     this._editingRecordId = null;
-                    this.props.model.deleteRecord(recordId);
+                    this.props.model.deleteRecord(recordId).catch((e) => {
+                        console.warn("Failed to delete record:", e);
+                    });
                 } else {
                     nameEl.textContent = origText;
                     nameEl.blur();
@@ -1529,17 +1932,77 @@ export class GanttRenderer extends Component {
     }
 
     async onIndentClick(record) {
-        const success = await this.props.model.indentTask(record.id);
-        if (success && this.props.onReload) {
-            await this.props.onReload();
-        }
+        await this.props.model.indentTask(record.id);
     }
 
     async onOutdentClick(record) {
-        const success = await this.props.model.outdentTask(record.id);
-        if (success && this.props.onReload) {
-            await this.props.onReload();
+        await this.props.model.outdentTask(record.id);
+    }
+
+    // -------------------------------------------------------------------------
+    // Activity button
+    // -------------------------------------------------------------------------
+
+    /**
+     * Return FA icon classes matching the official mail.ActivityButton logic.
+     * Combines state color + icon (exception icon / activity type icon / clock).
+     */
+    getActivityButtonClass(record) {
+        const classes = [];
+        // --- State color ---
+        switch (record.activity_state) {
+            case "overdue":
+                classes.push("text-danger");
+                break;
+            case "today":
+                classes.push("text-warning");
+                break;
+            case "planned":
+                classes.push("text-success");
+                break;
+            // ListActivityButton: no color when no activity
         }
+        // --- Icon (exception > type icon > clock) ---
+        switch (record.activity_exception_decoration) {
+            case "warning":
+                classes.push("text-warning", record.activity_exception_icon || "fa-clock-o");
+                break;
+            case "danger":
+                classes.push("text-danger", record.activity_exception_icon || "fa-clock-o");
+                break;
+            default: {
+                const ids = record.activity_ids;
+                if (ids && ids.length) {
+                    classes.push(record.activity_type_icon || "fa-tasks");
+                } else {
+                    classes.push("fa-clock-o");
+                }
+                break;
+            }
+        }
+        return classes.join(" ");
+    }
+
+    /**
+     * Open the activity popover for a task row.
+     */
+    onActivityClick(record, ev) {
+        const btnEl = ev.currentTarget;
+        if (this.activityPopover.isOpen) {
+            this.activityPopover.close();
+            return;
+        }
+        this.activityPopover.open(btnEl, {
+            activityIds: record.activity_ids || [],
+            onActivityChanged: () => {
+                this.activityPopover.close();
+                if (this.props.onReload) {
+                    this.props.onReload();
+                }
+            },
+            resId: record.id,
+            resModel: this.props.model.resModel,
+        });
     }
 
     // -------------------------------------------------------------------------
@@ -1558,6 +2021,15 @@ export class GanttRenderer extends Component {
         };
         if (projectId) {
             defaults[`default_${groupField}`] = projectId;
+        }
+
+        // Planning mode: align new subtask after the last child of this parent
+        const group = this.props.model._groupMap.get(projectId);
+        if (group && group._isPlanningMode) {
+            const offset = this._getNextPlanOffset(group, parentRecord.id);
+            if (offset > 0) {
+                defaults.default_plan_offset = offset;
+            }
         }
 
         if (this.props.onAddTask) {
@@ -1587,7 +2059,7 @@ export class GanttRenderer extends Component {
     onDeleteTaskClick(record) {
         const descendantIds = this._collectDescendantIds(record.id);
         const allIds = [record.id, ...descendantIds];
-        const name = record.display_name || record.name || `\u4EFB\u52D9 #${record.id}`;
+        const name = record.display_name || record.name || _t("任務 #%(id)s", { id: record.id });
 
         let body;
         if (descendantIds.length > 0) {
@@ -1604,11 +2076,12 @@ export class GanttRenderer extends Component {
             confirm: async () => {
                 await this.props.model.deleteRecords(allIds);
                 this.state.selectedRowId = null;
-                this.state.selectedRowIds.clear();
+                this.state.selectedRowIds = {};
                 if (this.props.onReload) {
                     await this.props.onReload();
                 }
             },
+            dismiss: () => {},
         });
     }
 
@@ -1618,9 +2091,30 @@ export class GanttRenderer extends Component {
             [`default_${groupField}`]: group.id,
         };
 
+        // Planning mode: align new task after the last root-level task
+        if (group._isPlanningMode) {
+            const offset = this._getNextPlanOffset(group, 0);
+            if (offset > 0) {
+                defaults.default_plan_offset = offset;
+            }
+        }
+
         if (this.props.onAddTask) {
             this.props.onAddTask(defaults);
         }
+    }
+
+    /**
+     * Find the plan_offset for a new child task — align to parent's start.
+     * @param {Object} group - project group
+     * @param {number} parentId - parent task id (0 for root level)
+     * @returns {number} plan_offset in hours
+     */
+    _getNextPlanOffset(group, parentId) {
+        if (!parentId) return 0;
+        // Place new child at the parent's own start position
+        const parent = this.props.model.getRecord(parentId);
+        return parent ? (parent._planOffset || 0) : 0;
     }
 
     async onAddMilestoneToGroup(group) {
@@ -1646,12 +2140,13 @@ export class GanttRenderer extends Component {
     }
 
     onDeleteMilestoneClick(record) {
-        const name = record.display_name || record.name || `里程碑 #${Math.abs(record.id)}`;
+        const name = record.display_name || record.name || _t("里程碑 #%(id)s", { id: Math.abs(record.id) });
         this.displayDialog(ConfirmationDialog, {
-            body: _t("確定要刪除里程碑 \"%s\" 嗎？", name),
+            body: _t("確定要刪除里程碑「%(name)s」嗎？", { name }),
             confirm: async () => {
                 await this.props.model.deleteMilestone(record.id);
             },
+            dismiss: () => {},
         });
     }
 
@@ -1675,6 +2170,41 @@ export class GanttRenderer extends Component {
             width = Math.max(right - left, 4);
         }
         return `left: ${left}px; width: ${width}px;`;
+    }
+
+    /**
+     * Get CSS class for group bar (parent task bar)
+     * @param {Object} group - Group row data
+     * @returns {String} CSS classes
+     */
+    getGroupBarClass(group) {
+        const classes = ["o_gantt_group_bar"];
+        if (this.state.selectedRowId === group.id) {
+            classes.push("o_gantt_group_bar_selected");
+        }
+        return classes.join(" ");
+    }
+
+    /**
+     * Handle group bar click to select the parent task
+     * @param {Object} group - Group row data
+     * @param {Event} ev - Click event
+     */
+    onGroupBarClick(group, ev) {
+        // Stop propagation to prevent row click handler from firing
+        ev.stopPropagation();
+
+        if (ev.ctrlKey || ev.metaKey) {
+            if (this.state.selectedRowIds[group.id]) {
+                delete this.state.selectedRowIds[group.id];
+            } else {
+                this.state.selectedRowIds[group.id] = true;
+            }
+        } else {
+            this.state.selectedRowIds = {};
+            this.state.selectedRowIds[group.id] = true;
+        }
+        this.state.selectedRowId = group.id;
     }
 
     // -------------------------------------------------------------------------
@@ -1721,12 +2251,12 @@ export class GanttRenderer extends Component {
     get scrollMapProps() {
         return {
             timelineWidth: this.timelineWidth,
-            viewportWidth: this._scrollState.viewportWidth || 800,
-            scrollLeft: this._scrollState.scrollLeft || 0,
+            viewportWidth: this._scrollPos.viewportWidth || 800,
+            scrollLeft: this._scrollPos.scrollLeft || 0,
             rowCount: this.flattenedRows.length,
-            viewportHeight: this._scrollState.viewportHeight || 400,
-            scrollTop: this._scrollState.scrollTop || 0,
-            totalHeight: this._scrollState.totalHeight || 400,
+            viewportHeight: this._scrollPos.viewportHeight || 400,
+            scrollTop: this._scrollPos.scrollTop || 0,
+            totalHeight: this._scrollPos.totalHeight || 400,
             todayPosition: this.todayPosition,
             onScroll: (left, top) => {
                 const timeline = this.timelineRef.el;
@@ -1744,7 +2274,7 @@ export class GanttRenderer extends Component {
 
     get inspectorRecord() {
         if (!this.props.inspectorRecordId) return null;
-        const record = this.props.model.data?.records?.find(r => r.id === this.props.inspectorRecordId);
+        const record = this.props.model.getRecord(this.props.inspectorRecordId);
         // Return shallow copy so OWL detects prop changes after updateRecord
         return record ? { ...record } : null;
     }
@@ -1756,10 +2286,10 @@ export class GanttRenderer extends Component {
         const selectedId = this.props.inspectorRecordId;
 
         const LINK_LABELS = {
-            FS: ["\u5B8C\u6210", "\u958B\u59CB"],  // 完成 → 開始
-            SF: ["\u958B\u59CB", "\u5B8C\u6210"],  // 開始 → 完成
-            SS: ["\u958B\u59CB", "\u958B\u59CB"],  // 開始 → 開始
-            FF: ["\u5B8C\u6210", "\u5B8C\u6210"],  // 完成 → 完成
+            FS: [_t("完成"), _t("開始")],
+            SF: [_t("開始"), _t("完成")],
+            SS: [_t("開始"), _t("開始")],
+            FF: [_t("完成"), _t("完成")],
         };
 
         return (this.props.model.data?.predecessors || [])
@@ -1786,9 +2316,8 @@ export class GanttRenderer extends Component {
         const milestoneNegId = record.id;
         const links = (this.props.model.data?.milestoneLinks || [])
             .filter(l => l.milestone_id === milestoneNegId);
-        const records = this.props.model.data?.records || [];
         return links.map(l => {
-            const task = records.find(r => r.id === l.task_id);
+            const task = this.props.model.getRecord(l.task_id);
             return {
                 task_id: l.task_id,
                 task_name: task ? (task.display_name || task.name) : `#${l.task_id}`,
@@ -1807,21 +2336,29 @@ export class GanttRenderer extends Component {
     async onDeletePredecessor(predIdentifier) {
         // Optimistic removal: immediately filter out from local data for instant UI feedback
         const preds = this.props.model.data?.predecessors;
+        let removed = null;
+        let removedIdx = -1;
         if (preds) {
             const numId = parseInt(predIdentifier, 10);
-            const idx = preds.findIndex(p => p.id === numId);
-            if (idx !== -1) preds.splice(idx, 1);
-            this.props.model.notify();
+            removedIdx = preds.findIndex(p => p.id === numId);
+            if (removedIdx !== -1) {
+                removed = preds.splice(removedIdx, 1)[0];
+                this.props.model.notify();
+            }
         }
-        const success = await this.props.model.deletePredecessor(predIdentifier);
-        if (success && this.props.onReload) {
-            await this.props.onReload();
+        try {
+            await this.props.model.deletePredecessor(predIdentifier);
+        } catch (e) {
+            // Rollback on failure
+            if (removed && preds && removedIdx !== -1) {
+                preds.splice(removedIdx, 0, removed);
+                this.props.model.notify();
+            }
         }
     }
 
     async onUpdatePredecessor(predId, values) {
         await this.props.model.updatePredecessor(predId, values);
-        if (this.props.onReload) await this.props.onReload();
     }
 
     async onInspectorFieldChange(recordId, fieldName, newValue) {
@@ -1876,7 +2413,7 @@ export class GanttRenderer extends Component {
                 }
                 break;
             case "add_subtask": {
-                const record = model.data?.records?.find(r => r.id === recordId);
+                const record = model.getRecord(recordId);
                 if (record) {
                     this.onAddSubtask(record);
                 }
@@ -1905,7 +2442,6 @@ export class GanttRenderer extends Component {
                 const onGanttField = this.props.archInfo.onGantt || "on_gantt";
                 const showLabel = action === "show_bar_label";
                 await model.updateRecord(recordId, { [onGanttField]: showLabel });
-                if (this.props.onReload) await this.props.onReload();
                 break;
             }
             // Milestone actions
@@ -1956,6 +2492,84 @@ export class GanttRenderer extends Component {
     }
 
     // -------------------------------------------------------------------------
+    // Task State (unified blocking)
+    // -------------------------------------------------------------------------
+
+    getTaskStateIcon(record) {
+        if (record._isGroup) return "";
+        const state = record.state;
+        switch (state) {
+            case "1_done": return "fa fa-fw fa-check-circle";
+            case "1_canceled": return "fa fa-fw fa-times-circle";
+            case "04_waiting_normal": return "fa fa-fw fa-hourglass-o";
+            case "03_approved": return "fa fa-fw fa-thumbs-up";
+            case "02_changes_requested": return "fa fa-fw fa-adjust";
+            default: return "fa fa-fw fa-circle-o";
+        }
+    }
+
+    getTaskStateClass(record) {
+        if (record._isGroup) return "d-none";
+        const state = record.state;
+        switch (state) {
+            case "1_done": return "o_gantt_task_state text-success";
+            case "1_canceled": return "o_gantt_task_state text-muted";
+            case "04_waiting_normal": return "o_gantt_task_state text-info";
+            case "03_approved": return "o_gantt_task_state text-success";
+            case "02_changes_requested": return "o_gantt_task_state text-warning";
+            default: return "o_gantt_task_state text-secondary";
+        }
+    }
+
+    getTaskStateLabel(record) {
+        if (record._isGroup) return "";
+        const state = record.state;
+        switch (state) {
+            case "1_done": return "完成";
+            case "1_canceled": return "已取消";
+            case "04_waiting_normal": return "等待中（被前置任務阻擋）";
+            case "03_approved": return "已核准";
+            case "02_changes_requested": return "要求修改";
+            default: return "進行中";
+        }
+    }
+
+    onTaskStateClick(record, ev) {
+        if (record._isGroup) return;
+        // Toggle dropdown: open if closed, close if already open for this record
+        if (this.state.stateMenuRecordId === record.id) {
+            this.state.stateMenuRecordId = null;
+        } else {
+            this.state.stateMenuRecordId = record.id;
+        }
+    }
+
+    getStateMenuItems(record) {
+        const current = record.state;
+        return [
+            { value: "01_in_progress", label: _t("進行中"), icon: "fa fa-fw fa-circle-o text-secondary", active: current === "01_in_progress", disabled: false },
+            { value: "02_changes_requested", label: _t("要求修改"), icon: "fa fa-fw fa-adjust text-warning", active: current === "02_changes_requested", disabled: false },
+            { value: "03_approved", label: _t("已核准"), icon: "fa fa-fw fa-thumbs-up text-success", active: current === "03_approved", disabled: false },
+            { value: "1_done", label: _t("完成"), icon: "fa fa-fw fa-check-circle text-success", active: current === "1_done", disabled: false },
+            { value: "1_canceled", label: _t("已取消"), icon: "fa fa-fw fa-times-circle text-muted", active: current === "1_canceled", disabled: false },
+        ];
+    }
+
+    async onStateMenuSelect(record, item) {
+        this.state.stateMenuRecordId = null;
+        if (item.active || item.disabled) return;
+        try {
+            await this.props.model.orm.write("project.task", [record.id], { state: item.value });
+            await this.props.onReload();
+        } catch (error) {
+            this.env.services.notification.add(
+                _t("狀態更新失敗"),
+                { type: "danger" },
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Class / Style helpers
     // -------------------------------------------------------------------------
 
@@ -1967,9 +2581,7 @@ export class GanttRenderer extends Component {
         if (!row._isGroup && row._isMilestoneRecord) {
             classes.push("o_gantt_milestone_row");
         }
-        if (this.state.hoveredRowId === row.id) {
-            classes.push("o_gantt_row_hover");
-        }
+        // hover is now managed via direct DOM (onRowHover), not state
         if (this.state.selectedRowId === row.id) {
             classes.push("o_gantt_selected");
         }
@@ -1981,10 +2593,7 @@ export class GanttRenderer extends Component {
         if (row._isGroup) {
             classes.push("o_gantt_group_row");
         }
-        if (this.state.hoveredRowId === row.id) {
-            classes.push("o_gantt_row_hover");
-        }
-        if (!row._isGroup && this.state.selectedRowId === row.id) {
+        if (this.state.selectedRowId === row.id) {
             classes.push("o_gantt_row_selected");
         }
         return classes.join(" ");
@@ -2062,7 +2671,7 @@ export class GanttRenderer extends Component {
         }
 
         // Multi-select highlight
-        if (this.state.selectedRowIds.has(record.id)) {
+        if (this.state.selectedRowIds[record.id]) {
             classes.push("o_gantt_multi_selected");
         }
 
@@ -2343,58 +2952,130 @@ export class GanttRenderer extends Component {
     // -------------------------------------------------------------------------
 
     hasConstraintDate(record) {
+        if (record._isGroup) return false;
         const typeField = this.props.archInfo.constrainType || "constrain_type";
-        const dateField = this.props.archInfo.constrainDate || "constrain_date";
         const type = record[typeField];
         if (!type || type === "asap" || type === "alap") return false;
-        const dateVal = record[dateField];
-        return !!dateVal;
+        return !!record._constrainDate;
     }
 
-    getConstraintDateStyle(record) {
-        const data = this.props.model.data;
-        const dateField = this.props.archInfo.constrainDate || "constrain_date";
-        const dateVal = record[dateField];
-        if (!data?.timeStart || !data.timeStart.isValid || !dateVal) return "display: none;";
-        const dt = typeof dateVal === "string"
-            ? DateTime.fromSQL(dateVal.replace("T", " "))
-            : dateVal;
-        if (!dt || !dt.isValid) return "display: none;";
-        const left = this._dateToPx(dt);
-        return `left: ${left}px;`;
-    }
-
-    getConstraintDateTitle(record) {
+    getConstraintInfo(record) {
         const typeField = this.props.archInfo.constrainType || "constrain_type";
-        const dateField = this.props.archInfo.constrainDate || "constrain_date";
         const type = record[typeField];
-        const dateVal = record[dateField];
+        const dt = record._constrainDate;
+        const data = this.props.model.data;
+
         const labels = {
-            snet: "\u4E0D\u65E9\u65BC\u958B\u59CB", snlt: "\u4E0D\u665A\u65BC\u958B\u59CB",
-            fnet: "\u4E0D\u65E9\u65BC\u5B8C\u6210", fnlt: "\u4E0D\u665A\u65BC\u5B8C\u6210",
-            mso: "\u5FC5\u9808\u958B\u59CB\u65BC", mfo: "\u5FC5\u9808\u5B8C\u6210\u65BC",
+            snet: _t("開始不早於"), snlt: _t("開始不晚於"),
+            fnet: _t("完成不早於"), fnlt: _t("完成不晚於"),
+            mso: _t("必須開始於"), mfo: _t("必須完成於"),
         };
-        const typeLabel = labels[type] || (type || "").toUpperCase();
-        let dateStr = "";
-        if (dateVal) {
-            const dt = typeof dateVal === "string"
-                ? DateTime.fromSQL(dateVal.replace("T", " "))
-                : dateVal;
-            if (dt && dt.isValid) dateStr = dt.toFormat("M/d HH:mm");
+        const shortLabels = { snet: "S≥", snlt: "S≤", fnet: "F≥", fnlt: "F≤", mso: "S=", mfo: "F=" };
+        const hard = type === "mso" || type === "mfo";
+        const isStartType = ["snet", "snlt", "mso"].includes(type);
+
+        // Position
+        let style = "display: none;";
+        let constraintPx = 0;
+        if (data?.timeStart?.isValid && dt?.isValid) {
+            constraintPx = this._dateToPx(dt);
+            style = `left: ${constraintPx}px;`;
         }
-        return `${typeLabel}: ${dateStr}`;
+
+        // Violation check
+        let violated = false;
+        if (dt?.isValid) {
+            const ds = record._dateStart;
+            const de = record._dateEnd;
+            if (ds?.isValid && de?.isValid) {
+                if (type === "snet" && ds < dt) violated = true;
+                else if (type === "snlt" && ds > dt) violated = true;
+                else if (type === "fnet" && de < dt) violated = true;
+                else if (type === "fnlt" && de > dt) violated = true;
+                else if (type === "mso" && Math.abs(ds.toMillis() - dt.toMillis()) > 60000) violated = true;
+                else if (type === "mfo" && Math.abs(de.toMillis() - dt.toMillis()) > 60000) violated = true;
+            }
+        }
+
+        // Current date label
+        let currentLabel = "";
+        if (isStartType && record._dateStart?.isValid) {
+            currentLabel = _t("目前開始: ") + record._dateStart.toFormat("M/d HH:mm");
+        } else if (!isStartType && record._dateEnd?.isValid) {
+            currentLabel = _t("目前完成: ") + record._dateEnd.toFormat("M/d HH:mm");
+        }
+
+        // Connector line: horizontal link between constraint marker and task bar edge
+        let connector = null;
+        if (data?.timeStart?.isValid && dt?.isValid) {
+            const ds = record._dateStart;
+            const de = record._dateEnd;
+            // For start-type: connect to bar start; for end-type: connect to bar end
+            const targetDt = isStartType ? ds : de;
+            if (targetDt?.isValid) {
+                const targetPx = this._dateToPx(targetDt);
+                const gap = targetPx - constraintPx;
+                // Only show connector if there's meaningful distance (> 8px)
+                if (Math.abs(gap) > 8) {
+                    const left = Math.min(0, gap);
+                    const width = Math.abs(gap);
+                    // Direction: arrow points from constraint to task edge
+                    const direction = gap > 0 ? "right" : "left";
+                    connector = { left, width, direction };
+                }
+            }
+        }
+
+        return {
+            style,
+            label: shortLabels[type] || type?.toUpperCase() || "",
+            typeLabel: labels[type] || (type || "").toUpperCase(),
+            dateStr: dt?.isValid ? dt.toFormat("yyyy-MM-dd HH:mm") : "",
+            hard,
+            isStartType,
+            violated,
+            currentLabel,
+            connector,
+        };
+    }
+
+    onConstraintClick(record, ev) {
+        if (this.props.onInspectorOpen) {
+            this.props.onInspectorOpen(record.id);
+        }
+    }
+
+    onConstraintEnter(record, ev) {
+        const el = ev.currentTarget;
+        const rect = el.getBoundingClientRect();
+        const x = rect.left;
+        const y = rect.top - 8;
+        this.state.constraintTooltipId = record.id;
+        this.state.constraintTooltipStyle = `left: ${x}px; bottom: ${window.innerHeight - y}px;`;
+    }
+
+    onConstraintLeave() {
+        this.state.constraintTooltipId = null;
     }
 
     /**
      * Check if a value is a valid Luxon DateTime.
      */
     _isValidDt(dt) {
-        return dt && typeof dt === "object" && dt.isValid !== false && typeof dt.toFormat === "function";
+        return dt && typeof dt === "object" && dt.isValid === true;
     }
 
     getInfoDuration(record) {
-        const hpd = this._calHpd;
         const dpw = this._calDpw;
+
+        // Determine hours per day:
+        // - Planning mode (virtual dates): use project calendar hours_per_day (default 8)
+        // - Normal mode: use calendarInfo hours_per_day (default 24 for continuous)
+        const isPlanningMode = record._isVirtualDates;
+        const calendarHpd = this.props.model.data?.calendarInfo?.hours_per_day;
+        const hpd = isPlanningMode 
+            ? (calendarHpd || 8)   // Planning mode: 8 hours/day default (working day)
+            : (calendarHpd || 24); // Normal mode: 24 hours/day default (calendar day)
 
         // 1. Server-calculated working hours (most accurate with calendar)
         const wdField = this.props.archInfo.workingDuration || "working_duration";
@@ -2403,7 +3084,7 @@ export class GanttRenderer extends Component {
             return this.formatDurationChinese(workingHours, hpd);
         }
 
-        // 2. plan_duration (user-specified working hours)
+        // 2. plan_duration (user-specified working hours) - display as working days
         if (record._planDuration && record._planDuration > 0 && !record._hasChildren) {
             return this.formatDurationChinese(record._planDuration, hpd);
         }
@@ -2427,6 +3108,11 @@ export class GanttRenderer extends Component {
         const ds = (record._hasChildren && record._summaryDateStart) || record._dateStart;
         const de = (record._hasChildren && record._summaryDateEnd) || record._dateEnd;
         if (!this._isValidDt(ds)) return "";
+        if (record._isVirtualDates) {
+            const start = this._formatPlanningDay(ds);
+            if (!this._isValidDt(de)) return start;
+            return `${start}-${this._formatPlanningDay(de)}`;
+        }
         const start = ds.toFormat("M/d");
         if (!this._isValidDt(de)) return start;
         const end = de.toFormat("M/d");
@@ -2436,27 +3122,38 @@ export class GanttRenderer extends Component {
     getInfoStartDate(record) {
         const dt = (record._hasChildren && record._summaryDateStart) || record._dateStart;
         if (!this._isValidDt(dt)) return "";
+        if (record._isVirtualDates) return this._formatPlanningDay(dt);
         return dt.toFormat("M/d");
     }
 
     getInfoEndDate(record) {
         const dt = (record._hasChildren && record._summaryDateEnd) || record._dateEnd;
         if (!this._isValidDt(dt)) return "";
+        if (record._isVirtualDates) return this._formatPlanningDay(dt);
         return dt.toFormat("M/d");
     }
 
+    /**
+     * Convert a virtual DateTime to T+Xd label (working-day precision).
+     * Reverses the scaleFactor applied by _rescaleVirtualDates to get
+     * working hours, then divides by hpd to get working days.
+     */
+    _formatPlanningDay(dt) {
+        const hpd = this.props.model.data?.calendarInfo?.hours_per_day || 8;
+        const scaleFactor = hpd < 24 ? (24 / hpd) : 1;
+        const virtualHours = dt.diff(PLANNING_T0, "hours").hours;
+        const workingDays = virtualHours / scaleFactor / hpd;
+        if (workingDays < 0.001) return "T";
+        if (Math.abs(workingDays - Math.round(workingDays)) < 0.01) {
+            return `T+${Math.round(workingDays)}d`;
+        }
+        // Sub-day: show 1 decimal
+        return `T+${workingDays.toFixed(1)}d`;
+    }
+
     _humanizeDuration(days, dpw = 7) {
-        if (!Number.isFinite(days) || days <= 0) return "0\u5929";
-        if (days < 1) {
-            const hours = Math.round(days * (this._calHpd || 24));
-            return `${hours}\u6642`;
-        }
-        if (days < dpw) {
-            return `${Math.round(days * 10) / 10}\u5929`;
-        }
-        const weeks = Math.floor(days / dpw);
-        const remain = Math.round(days % dpw);
-        return remain > 0 ? `${weeks}\u9031${remain}\u5929` : `${weeks}\u9031`;
+        if (!Number.isFinite(days) || days <= 0) return humanizeDays(0, dpw, this._calHpd || 24);
+        return humanizeDays(days, dpw, this._calHpd || 24);
     }
 
     // -------------------------------------------------------------------------
@@ -2466,24 +3163,20 @@ export class GanttRenderer extends Component {
     formatDurationChinese(hours, hpd) {
         if (!hours || hours <= 0) return "";
         hpd = hpd || this._calHpd || 24;
-        const d = Math.floor(hours / hpd);
-        const remainH = hours - d * hpd;
-        const h = Math.floor(remainH);
-        const m = Math.round((remainH % 1) * 60) % 60;
-        const parts = [];
-        if (d > 0) parts.push(`${d}\u5929`);
-        if (h > 0) parts.push(`${h}\u5c0f\u6642`);
-        if (m > 0) parts.push(`${m}\u5206\u9418`);
-        return parts.join("") || "0\u5c0f\u6642";
+        const ws = this.props.model.data?.calendarInfo?._workingWeekdays;
+        const dpw = (ws && ws.size > 0) ? ws.size : 7;
+        return humanizeHours(hours, hpd, dpw);
     }
 
     _hoursToInputFormat(hours) {
         if (!hours) return "";
         const hpd = this._calHpd || 24;
-        const d = Math.floor(hours / hpd);
-        const remainH = hours - d * hpd;
-        const h = Math.floor(remainH);
-        const m = Math.round((remainH % 1) * 60) % 60;
+        const totalMinutes = Math.round(hours * 60);
+        const minutesPerDay = Math.round(hpd * 60);
+        const d = Math.floor(totalMinutes / minutesPerDay);
+        const remainMinutes = totalMinutes - d * minutesPerDay;
+        const h = Math.floor(remainMinutes / 60);
+        const m = remainMinutes % 60;
         const parts = [];
         if (d > 0) parts.push(`${d}d`);
         if (h > 0) parts.push(`${h}h`);
@@ -2518,7 +3211,7 @@ export class GanttRenderer extends Component {
     }
 
     _startDurationEdit(recordId, el) {
-        const record = this.props.model.data?.records?.find(r => r.id === recordId);
+        const record = this.props.model.getRecord(recordId);
         const currentHours = record?._planDuration || 0;
         const input = document.createElement("input");
         input.type = "text";
@@ -2529,6 +3222,7 @@ export class GanttRenderer extends Component {
         input.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;` +
             `width:${Math.max(rect.width, 80)}px;height:${rect.height}px;z-index:1000;`;
         document.body.appendChild(input);
+        this._activeDurationInput = input;
         input.focus();
         input.select();
 
@@ -2537,16 +3231,19 @@ export class GanttRenderer extends Component {
                 const hours = this.parseDurationInput(input.value);
                 if (hours > 0 && hours !== currentHours) {
                     await this.props.model.updatePlanDuration(recordId, hours);
-                    if (this.props.onReload) await this.props.onReload();
                 }
             }
             input.remove();
+            if (this._activeDurationInput === input) {
+                this._activeDurationInput = null;
+            }
         };
-        input.addEventListener("blur", () => finish(true), { once: true });
+        const onBlur = () => finish(true);
+        input.addEventListener("blur", onBlur, { once: true });
         input.addEventListener("keydown", (e) => {
             if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); input.blur(); }
             if (e.key === "Escape") {
-                input.removeEventListener("blur", () => {});
+                input.removeEventListener("blur", onBlur);
                 finish(false);
             }
         });
@@ -2558,11 +3255,17 @@ export class GanttRenderer extends Component {
 
     async onClearScheduleClick(group, ev) {
         ev.stopPropagation();
-        const clearTasks = confirm(
-            "是否同步清除所有任務日期？\n" +
-            "確定 = 清除任務日期（回到計劃模式）\n" +
-            "取消 = 僅清除專案日期"
-        );
+        const clearTasks = await new Promise((resolve) => {
+            this.displayDialog(ConfirmationDialog, {
+                title: _t("清除排程日期"),
+                body: _t("是否同步清除所有任務日期？"),
+                confirmLabel: _t("清除任務日期（回到計劃模式）"),
+                cancelLabel: _t("僅清除專案日期"),
+                confirm: () => resolve(true),
+                cancel: () => resolve(false),
+                dismiss: () => resolve(false),
+            });
+        });
         // Clear schedule dates (schedule_start/schedule_end)
         await this.props.model.clearProjectScheduleDates(group.id, clearTasks);
         // Also clear planned dates (date_start/date)
@@ -2618,7 +3321,7 @@ export class GanttRenderer extends Component {
             return `${column.date.toFormat("M/d")} - ${end.toFormat("M/d")}`;
         }
         if (scale === "month") {
-            return column.date.toFormat("yyyy\u5E74M\u6708");
+            return column.date.toFormat("yyyy/MM");
         }
         // Sub-day scales
         return column.date.toFormat("M/d HH:mm");
@@ -2892,7 +3595,7 @@ export class GanttRenderer extends Component {
     }
 
     scrollToRecord(recordId) {
-        const record = this.props.model.data?.records?.find(r => r.id === recordId);
+        const record = this.props.model.getRecord(recordId);
         if (record) {
             this.onFocusClick(record);
             return;

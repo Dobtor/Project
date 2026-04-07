@@ -1,7 +1,9 @@
 /** @odoo-module **/
 
 import { onMounted, onWillUnmount } from "@odoo/owl";
+import { _t } from "@web/core/l10n/translation";
 import { useThrottleForAnimation } from "@web/core/utils/timing";
+import { cellsDeltaToDuration } from "./gantt_utils";
 
 const { DateTime } = luxon;
 
@@ -125,8 +127,10 @@ export function useGanttDeadlineDrag(params) {
         const record = params.getRecord(recordId);
 
         if (record && record._dateDeadline) {
-            const newDeadline = record._dateDeadline.plus({ days: cellsDelta });
-            hintEl.textContent = `\u622A\u6B62\u65E5: ${newDeadline.toFormat("M/d")}`;
+            const scale = params.getScale ? params.getScale() : "day";
+            const dur = cellsDeltaToDuration(cellsDelta, scale);
+            const newDeadline = record._dateDeadline.plus(dur);
+            hintEl.textContent = _t("截止日: %(date)s", { date: newDeadline.toFormat("M/d") });
         }
 
         const rect = marker.getBoundingClientRect();

@@ -1,6 +1,7 @@
 /** @odoo-module **/
 
 import { Component, useState, useRef, onMounted, onWillUnmount } from "@odoo/owl";
+import { _t } from "@web/core/l10n/translation";
 
 const { DateTime } = luxon;
 
@@ -26,10 +27,12 @@ export class GanttTooltip extends Component {
         getRecord: Function,
         getPredecessorCount: { type: Function, optional: true },
         isPlanningMode: { type: Boolean, optional: true },
+        hoursPerDay: { type: Number, optional: true },
     };
 
     static defaultProps = {
         isPlanningMode: false,
+        hoursPerDay: 8,  // Default 8 hours per working day
     };
 
     setup() {
@@ -45,23 +48,27 @@ export class GanttTooltip extends Component {
         this._onMouseOut = this._onMouseOut.bind(this);
         this._onMouseMove = this._onMouseMove.bind(this);
         this._hideTimeout = null;
+        this._container = null;
 
         onMounted(() => {
-            const container = document.querySelector(".o_gantt_timeline_data");
-            if (container) {
-                container.addEventListener("mouseover", this._onMouseOver);
-                container.addEventListener("mouseout", this._onMouseOut);
-                container.addEventListener("mousemove", this._onMouseMove);
+            const rootEl = this.tooltipRef.el?.closest(".o_gantt_content_wrapper");
+            this._container = rootEl
+                ? rootEl.querySelector(".o_gantt_timeline_data")
+                : null;
+            if (this._container) {
+                this._container.addEventListener("mouseover", this._onMouseOver);
+                this._container.addEventListener("mouseout", this._onMouseOut);
+                this._container.addEventListener("mousemove", this._onMouseMove);
             }
         });
 
         onWillUnmount(() => {
-            const container = document.querySelector(".o_gantt_timeline_data");
-            if (container) {
-                container.removeEventListener("mouseover", this._onMouseOver);
-                container.removeEventListener("mouseout", this._onMouseOut);
-                container.removeEventListener("mousemove", this._onMouseMove);
+            if (this._container) {
+                this._container.removeEventListener("mouseover", this._onMouseOver);
+                this._container.removeEventListener("mouseout", this._onMouseOut);
+                this._container.removeEventListener("mousemove", this._onMouseMove);
             }
+            this._container = null;
             clearTimeout(this._hideTimeout);
         });
     }
@@ -79,6 +86,7 @@ export class GanttTooltip extends Component {
         if (!record) return;
 
         this.state.record = record;
+        this._currentBar = bar;
         this.state.visible = true;
         this._positionTooltip(ev);
     }
@@ -100,23 +108,45 @@ export class GanttTooltip extends Component {
     }
 
     _positionTooltip(ev) {
-        const OFFSET_X = 16;
-        const OFFSET_Y = 16;
-        let x = ev.clientX + OFFSET_X;
-        let y = ev.clientY + OFFSET_Y;
-
-        // Keep tooltip in viewport
+        const GAP = 8;
         const el = this.tooltipRef.el;
-        if (el) {
-            const rect = el.getBoundingClientRect();
-            const vw = window.innerWidth;
-            const vh = window.innerHeight;
+        const bar = this._currentBar;
+        if (!bar) return;
 
-            if (x + rect.width > vw - 10) {
-                x = ev.clientX - rect.width - OFFSET_X;
+        const barRect = bar.getBoundingClientRect();
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+
+        // X: align tooltip left edge with bar left, follow mouse X if bar is wide
+        let x = Math.max(barRect.left, Math.min(ev.clientX, barRect.right - 20));
+
+        // Y: default above the bar
+        let y = barRect.top - GAP;
+
+        if (el) {
+            const ttRect = el.getBoundingClientRect();
+
+            // Y: place tooltip bottom edge above the bar
+            y = barRect.top - ttRect.height - GAP;
+
+            // Not enough space above → show below the bar
+            if (y < 10) {
+                y = barRect.bottom + GAP;
             }
-            if (y + rect.height > vh - 10) {
-                y = ev.clientY - rect.height - OFFSET_Y;
+
+            // Bottom overflow → clamp
+            if (y + ttRect.height > vh - 10) {
+                y = vh - ttRect.height - 10;
+            }
+
+            // Right overflow → shift left
+            if (x + ttRect.width > vw - 10) {
+                x = vw - ttRect.width - 10;
+            }
+
+            // Left overflow → clamp
+            if (x < 10) {
+                x = 10;
             }
         }
 
@@ -158,10 +188,16 @@ export class GanttTooltip extends Component {
                 : dateEnd.toFormat("yyyy/M/d");
         }
 
-        // Duration
-        if (dateStart && dateEnd) {
+        // Duration - show working days in planning mode
+        if (inPlanning && record._planDuration > 0) {
+            // Planning mode: use plan_duration and convert to working days
+            // Use project calendar hours_per_day (default 8 hours per working day)
+            const hoursPerDay = this.props.hoursPerDay || 8;
+            const workingDays = record._planDuration / hoursPerDay;
+            data.duration = _t("%(n)s天", { n: Math.round(workingDays * 10) / 10 });
+        } else if (dateStart && dateEnd) {
             const days = dateEnd.diff(dateStart, "days").days;
-            data.duration = `${Math.round(days * 10) / 10} \u5929`;
+            data.duration = _t("%(n)s天", { n: Math.round(days * 10) / 10 });
         }
 
         // Progress (use summary progress for parent tasks)
@@ -175,13 +211,13 @@ export class GanttTooltip extends Component {
 
         // Schedule mode
         if (record._scheduleMode) {
-            data.scheduleMode = record._scheduleMode === "auto" ? "\u81EA\u52D5" : "\u624B\u52D5";
+            data.scheduleMode = record._scheduleMode === "auto" ? _t("自動") : _t("手動");
         }
 
         // Fixed calc type (固定工期/固定工時)
         const fixedCalcField = archInfo.fixedCalcType;
         if (fixedCalcField && record[fixedCalcField]) {
-            const calcLabels = { duration: "\u56FA\u5B9A\u5DE5\u671F", work: "\u56FA\u5B9A\u5DE5\u6642" };
+            const calcLabels = { duration: _t("固定工期"), work: _t("固定工時") };
             data.fixedCalcType = calcLabels[record[fixedCalcField]] || record[fixedCalcField];
         }
 
@@ -199,7 +235,11 @@ export class GanttTooltip extends Component {
             const constrainField = archInfo.constrainType;
             if (constrainField && record[constrainField] &&
                 record[constrainField] !== "asap") {
-                data.constraint = record[constrainField].toUpperCase();
+                let constraintLabel = record[constrainField].toUpperCase();
+                if (record._constrainDate) {
+                    constraintLabel += " " + record._constrainDate.toFormat("yyyy-MM-dd HH:mm");
+                }
+                data.constraint = constraintLabel;
             }
         }
 

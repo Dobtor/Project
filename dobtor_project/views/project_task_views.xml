@@ -12,12 +12,16 @@
             <field name="arch" type="xml">
 
                 <!-- Add Gantt date fields to main form area (before notebook) -->
-                <xpath expr="//field[@name='tag_ids']/.." position="after">
+                <xpath expr="//field[@name='tag_ids']/parent::group" position="after">
                     <group name="gantt_dates" col="4" invisible="not project_id">
                         <field name="date_start" readonly="schedule_mode == 'auto'"/>
                         <field name="date_end" readonly="schedule_mode == 'auto'"/>
                         <field name="duration" widget="float_time" readonly="1"/>
-                        <field name="progress" widget="progressbar"/>
+                        <field name="progress" widget="progressbar"
+                               readonly="progress_mode == 'timesheet'"/>
+                        <field name="allocated_hours" widget="float_time"
+                               invisible="progress_mode != 'timesheet'"/>
+                        <field name="progress_mode" invisible="1"/>
                     </group>
                 </xpath>
 
@@ -56,17 +60,23 @@
                     </page>
                 </xpath>
 
-                <!-- Add Predecessors tab - Gantt scheduling dependencies (different from Odoo's "Blocked By") -->
+                <!-- Hide native "Blocked By" tab — replaced by unified predecessors -->
+                <xpath expr="//page[@name='task_dependencies']" position="attributes">
+                    <attribute name="invisible">1</attribute>
+                </xpath>
+
+                <!-- Add unified Predecessors tab (scheduling + blocking) -->
                 <xpath expr="//page[@name='task_dependencies']" position="after">
                     <page name="gantt_predecessors" string="前置任務" invisible="not project_id">
                         <div class="text-muted mb-2">
-                            定義甘特圖的排程依賴關係（FS=完成到開始、SS=開始到開始、FF=完成到完成、SF=開始到完成）
+                            定義排程依賴關係與阻擋狀態（勾選「阻擋」= 前置未完成時本任務自動等待）
                         </div>
                         <field name="predecessor_ids" nolabel="1">
                             <list editable="bottom">
                                 <field name="parent_task_id" string="前置任務"/>
                                 <field name="type" string="關聯類型"/>
                                 <field name="lag_hours" string="延遲(小時)" widget="float_time"/>
+                                <field name="enable_blocking" string="阻擋"/>
                             </list>
                         </field>
                     </page>
@@ -87,8 +97,8 @@
                 </xpath>
 
                 <!-- Add Gantt Info to Extra Info tab -->
-                <xpath expr="//page[@name='extra_info']//group" position="inside">
-                    <group string="甘特圖資訊" groups="base.group_no_one">
+                <xpath expr="//page[@name='extra_info']/group" position="inside">
+                    <group string="甘特圖資訊">
                         <field name="critical_path" readonly="1"/>
                         <field name="p_loop" readonly="1"/>
                         <field name="sorting_seq"/>
@@ -99,7 +109,7 @@
 
                 <!-- Add info_ids to Extra Info tab -->
                 <xpath expr="//page[@name='extra_info']" position="inside">
-                    <group string="甘特圖顯示資訊" groups="base.group_no_one">
+                    <group string="甘特圖顯示資訊">
                         <field name="info_ids" nolabel="1">
                             <list editable="bottom">
                                 <field name="name"/>
@@ -199,6 +209,8 @@
                     ghost_durations="unit_amount"
                     plan_offset="plan_offset"
                     milestone_id="milestone_id"
+                    progress_mode="progress_mode"
+                    fixed_calc_type="fixed_calc_type"
                 >
                 </ganttaps>
             </field>

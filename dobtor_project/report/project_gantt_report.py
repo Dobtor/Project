@@ -2,7 +2,8 @@
 from collections import defaultdict
 from datetime import datetime, time, timedelta
 
-from odoo import api, fields, models
+from odoo import api, fields, models, _
+from odoo.exceptions import UserError
 
 # Must match frontend PLANNING_T0 in gantt_model.js exactly
 PLANNING_T0 = datetime(2000, 1, 1)
@@ -171,11 +172,12 @@ class GanttReport(models.AbstractModel):
     # ------------------------------------------------------------------
     # Planning mode: virtual dates from plan_offset / plan_duration
     # ------------------------------------------------------------------
-    def _compute_planning_virtual_dates(self, tasks, t0):
+    def _compute_planning_virtual_dates(self, tasks, t0, scale_factor=1.0):
         """Compute virtual (ds, de) for every task in planning mode.
 
-        Leaf tasks: ds = T0 + plan_offset, de = T0 + plan_offset + plan_duration.
+        Leaf tasks: ds = T0 + plan_offset * scale, de = ds + plan_duration * scale.
         Parent tasks: min(children ds), max(children de) — recursive DFS.
+        scale_factor = 24 / hours_per_day — matches frontend _rescaleVirtualDates.
         Returns dict {task_id: (datetime, datetime) or (False, False)}.
         """
         task_map = {t.id: t for t in tasks}
@@ -208,8 +210,8 @@ class GanttReport(models.AbstractModel):
                     result[task.id] = (False, False)
                 else:
                     offset = task.plan_offset or 0
-                    ds = t0 + timedelta(hours=offset)
-                    de = t0 + timedelta(hours=offset + dur)
+                    ds = t0 + timedelta(hours=offset * scale_factor)
+                    de = t0 + timedelta(hours=(offset + dur) * scale_factor)
                     result[task.id] = (ds, de)
             return result[task.id]
 
@@ -252,14 +254,32 @@ class GanttReport(models.AbstractModel):
 
     @staticmethod
     def _format_planning_day(dt_date, t0_date):
-        """Format a date as 'T+Xd' relative to T0."""
+        """Format a date as 'T+Xd' relative to T0 (day granularity, for markers)."""
         off = (dt_date - t0_date).days
         return "T" if off <= 0 else f"T+{off}d"
 
-    def _planning_duration_label(self, task, is_parent, ds, de, project):
+    @staticmethod
+    def _format_planning_label(dt, t0, scale_factor, hpd):
+        """Format a virtual datetime as T+Xd with sub-day precision.
+
+        Reverses scale_factor to get working hours, then divides by hpd
+        to get working days — matches frontend _formatPlanningDay.
+        """
+        virtual_hours = (dt - t0).total_seconds() / 3600.0
+        working_hours = virtual_hours / scale_factor if scale_factor else virtual_hours
+        working_days = working_hours / hpd if hpd else 0
+        if working_days < 0.001:
+            return "T"
+        if abs(working_days - round(working_days)) < 0.01:
+            return f"T+{round(working_days)}d"
+        return f"T+{working_days:.1f}d"
+
+    def _planning_duration_label(self, task, is_parent, ds, de, project,
+                                  scale_factor=1.0):
         """Duration label for planning mode tasks."""
         if is_parent:
-            hours = (de - ds).total_seconds() / 3600.0
+            # Virtual dates are scaled; un-scale to get working hours
+            hours = (de - ds).total_seconds() / 3600.0 / scale_factor
         else:
             hours = task.plan_duration or 0
         if hours <= 0:
@@ -267,7 +287,7 @@ class GanttReport(models.AbstractModel):
         if project.use_calendar and project.resource_calendar_id:
             hours_per_day = project.resource_calendar_id.hours_per_day or 8.0
         else:
-            hours_per_day = 24.0
+            hours_per_day = 8.0  # Match frontend _calHpd planning default
         days = hours / hours_per_day
         return f"{int(days)}d" if days == int(days) else f"{days:.1f}d"
 
@@ -277,7 +297,9 @@ class GanttReport(models.AbstractModel):
     @api.model
     def _get_report_values(self, docids, data=None):
         project_id = data.get("project_id") if data else (docids[0] if docids else None)
-        project = self.env["project.project"].browse(project_id)
+        project = self.env["project.project"].browse(project_id).exists()
+        if not project:
+            raise UserError(_('找不到專案。'))
         is_planning = not project.schedule_start
 
         # Planning mode: sort by plan_offset; schedule mode: date_start asc
@@ -293,30 +315,44 @@ class GanttReport(models.AbstractModel):
             order="sorting_seq asc",
         )
 
+        # Scale factor: matches frontend _rescaleVirtualDates (24 / hpd)
+        scale_factor = 1.0
+        planning_hpd = 24.0
+        if is_planning:
+            if project.use_calendar and project.resource_calendar_id:
+                planning_hpd = project.resource_calendar_id.hours_per_day or 8.0
+            else:
+                planning_hpd = 8.0  # Match frontend _calHpd default for planning mode
+            if planning_hpd < 24:
+                scale_factor = 24.0 / planning_hpd
+
         # Pre-compute virtual dates for planning mode
         virtual_dates = {}
         if is_planning:
-            virtual_dates = self._compute_planning_virtual_dates(tasks, PLANNING_T0)
+            virtual_dates = self._compute_planning_virtual_dates(
+                tasks, PLANNING_T0, scale_factor)
         t0_date = PLANNING_T0.date()  # date(2000, 1, 1)
 
-        # Milestone effective date (local calendar date).
-        # Mirrors frontend _computeMilestonePositions: for milestones without
-        # deadline, use max(date_end) of tasks linked via milestone_id.
-        ms_effective_date = {}
+        # Milestone effective position.
+        # Scheduled mode: date objects.
+        # Planning mode: datetime objects (sub-day precision for correct positioning).
+        ms_effective_date = {}   # scheduled: {ms_id: date}
+        ms_effective_dt = {}     # planning: {ms_id: datetime}
         for ms in milestones:
-            if ms.deadline:
-                ms_effective_date[ms.id] = ms.deadline
-            else:
+            if is_planning:
                 linked = tasks.filtered(lambda t, m=ms: t.milestone_id.id == m.id)
-                if is_planning:
-                    end_dates = []
-                    for t in linked:
-                        vd = virtual_dates.get(t.id, (False, False))
-                        if vd[1]:
-                            end_dates.append(vd[1].date())
-                    if end_dates:
-                        ms_effective_date[ms.id] = max(end_dates)
+                end_dts = []
+                for t in linked:
+                    vd = virtual_dates.get(t.id, (False, False))
+                    if vd[1]:
+                        end_dts.append(vd[1])
+                if end_dts:
+                    ms_effective_dt[ms.id] = max(end_dts)
+            else:
+                if ms.deadline:
+                    ms_effective_date[ms.id] = ms.deadline
                 else:
+                    linked = tasks.filtered(lambda t, m=ms: t.milestone_id.id == m.id)
                     end_dates = [t.date_end for t in linked if t.date_end]
                     if end_dates:
                         max_dt = max(end_dates)
@@ -331,41 +367,60 @@ class GanttReport(models.AbstractModel):
         for i, ms in enumerate(milestones):
             ms_number_map[ms.id] = f"M{i + 1}"
 
-        # Collect all dates for project range (unified as date objects)
-        all_dates = []
-        for task in tasks:
-            if is_planning:
+        # Collect range data
+        if is_planning:
+            # Planning mode: collect datetimes for sub-day positioning precision
+            all_dts = []
+            for task in tasks:
                 vds, vde = virtual_dates.get(task.id, (False, False))
                 if vds:
-                    all_dates.append(vds.date())
+                    all_dts.append(vds)
                 if vde:
-                    all_dates.append(vde.date())
+                    all_dts.append(vde)
+            for ms_dt in ms_effective_dt.values():
+                all_dts.append(ms_dt)
+
+            if all_dts:
+                raw_start_dt = min(all_dts)
+                raw_end_dt = max(all_dts)
             else:
+                raw_start_dt = PLANNING_T0
+                raw_end_dt = PLANNING_T0
+
+            # Pad so bars at edges aren't clipped
+            p_start_dt = raw_start_dt - timedelta(hours=24)
+            p_end_dt = raw_end_dt + timedelta(hours=24)
+            total_secs = (p_end_dt - p_start_dt).total_seconds() or 1
+
+            # Date-based range still needed for T+Xd axis markers
+            p_start_date = p_start_dt.date()
+            p_end_date = p_end_dt.date()
+            total_days = (p_end_date - p_start_date).days or 1
+        else:
+            # Scheduled mode: date objects (day granularity is fine)
+            all_dates = []
+            for task in tasks:
                 ds, de = self._get_effective_dates(task)
                 if ds:
                     all_dates.append(fields.Datetime.context_timestamp(self, ds).date())
                 if de:
                     all_dates.append(fields.Datetime.context_timestamp(self, de).date())
-        for ms in milestones:
-            ms_date = ms_effective_date.get(ms.id)
-            if ms_date:
+            for ms_date in ms_effective_date.values():
                 all_dates.append(ms_date)
 
-        if all_dates:
-            raw_start = min(all_dates)
-            raw_end = max(all_dates)
-        elif is_planning:
-            raw_start = t0_date
-            raw_end = t0_date
-        else:
-            now_dt = fields.Datetime.now()
-            raw_start = fields.Datetime.context_timestamp(self, now_dt).date()
-            raw_end = raw_start
+            if all_dates:
+                raw_start = min(all_dates)
+                raw_end = max(all_dates)
+            else:
+                now_dt = fields.Datetime.now()
+                raw_start = fields.Datetime.context_timestamp(self, now_dt).date()
+                raw_end = raw_start
 
-        # Pad date range so bars/milestones at the edges aren't clipped
-        p_start_date = raw_start - timedelta(days=1)
-        p_end_date = raw_end + timedelta(days=1)
-        total_days = (p_end_date - p_start_date).days or 1
+            p_start_date = raw_start - timedelta(days=1)
+            p_end_date = raw_end + timedelta(days=1)
+            total_days = (p_end_date - p_start_date).days or 1
+            p_start_dt = None  # not used
+            total_secs = 0     # not used
 
         # Build display order (DFS with milestones interleaved)
         display_order = self._build_display_order(tasks, milestones)
@@ -374,19 +429,29 @@ class GanttReport(models.AbstractModel):
         for kind, record, level in display_order:
             if kind == 'milestone':
                 ms = record
-                local_date = ms_effective_date.get(ms.id)
                 left_pct = 0.0
                 date_str = ""
                 ms_upper = ""
                 ms_lower = ""
-                if local_date:
-                    if is_planning:
-                        date_str = self._format_planning_day(local_date, t0_date)
-                    else:
+                has_pos = False
+                if is_planning:
+                    ms_dt = ms_effective_dt.get(ms.id)
+                    if ms_dt:
+                        has_pos = True
+                        date_str = self._format_planning_label(
+                            ms_dt, PLANNING_T0, scale_factor, planning_hpd)
+                        left_pct = round(
+                            (ms_dt - p_start_dt).total_seconds()
+                            / total_secs * 100, 2)
+                else:
+                    local_date = ms_effective_date.get(ms.id)
+                    if local_date:
+                        has_pos = True
                         date_str = local_date.strftime("%m/%d")
-                    left_pct = round(
-                        (local_date - p_start_date).days / total_days * 100, 2
-                    )
+                        left_pct = round(
+                            (local_date - p_start_date).days
+                            / total_days * 100, 2)
+                if has_pos:
                     _css, is_no = self._get_color_css(ms.color_gantt)
                     ms_color = "#ff9500" if is_no else self._get_hex_color(ms.color_gantt)
                     # Diamond: upper triangle (tip up) + lower triangle (tip down)
@@ -441,14 +506,20 @@ class GanttReport(models.AbstractModel):
 
                 if ds and de:
                     if is_planning:
-                        # Virtual dates — no TZ conversion needed
-                        local_start = ds.date()
-                        local_end = de.date()
-                        start_str = self._format_planning_day(local_start, t0_date)
-                        end_str = self._format_planning_day(local_end, t0_date)
+                        # Datetime precision — sub-day bars render correctly
+                        start_str = self._format_planning_label(
+                            ds, PLANNING_T0, scale_factor, planning_hpd)
+                        end_str = self._format_planning_label(
+                            de, PLANNING_T0, scale_factor, planning_hpd)
                         duration_label = self._planning_duration_label(
-                            task, is_parent, ds, de, project
+                            task, is_parent, ds, de, project, scale_factor
                         )
+                        left_pct = round(
+                            (ds - p_start_dt).total_seconds()
+                            / total_secs * 100, 2)
+                        raw_w = ((de - ds).total_seconds()
+                                 / total_secs * 100)
+                        width_pct = round(max(raw_w, 0.3), 2)
                     else:
                         local_start = fields.Datetime.context_timestamp(self, ds).date()
                         local_end = fields.Datetime.context_timestamp(self, de).date()
@@ -472,11 +543,11 @@ class GanttReport(models.AbstractModel):
                                 f"{int(days)}d" if days == int(days) else f"{days:.1f}d"
                             )
 
-                    left_pct = round(
-                        (local_start - p_start_date).days / total_days * 100, 2
-                    )
-                    raw_w = (local_end - local_start).days / total_days * 100
-                    width_pct = round(max(raw_w, 0.5), 2)
+                        left_pct = round(
+                            (local_start - p_start_date).days / total_days * 100, 2
+                        )
+                        raw_w = (local_end - local_start).days / total_days * 100
+                        width_pct = round(max(raw_w, 0.5), 2)
 
                     color_css, is_no = self._get_color_css(task.color_gantt)
                     if is_parent:
@@ -694,8 +765,10 @@ class GanttReport(models.AbstractModel):
             month_markers = self._compute_planning_markers(
                 p_start_date, p_end_date, total_days, t0_date
             )
-            project_start_str = self._format_planning_day(raw_start, t0_date)
-            project_end_str = self._format_planning_day(raw_end, t0_date)
+            project_start_str = self._format_planning_label(
+                raw_start_dt, PLANNING_T0, scale_factor, planning_hpd)
+            project_end_str = self._format_planning_label(
+                raw_end_dt, PLANNING_T0, scale_factor, planning_hpd)
         else:
             month_markers = self._compute_month_markers(p_start_date, p_end_date, total_days)
             project_start_str = p_start_date.strftime("%Y/%m/%d")

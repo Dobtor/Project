@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
+import logging
+
 from odoo import models
 from datetime import timedelta
 import pytz
+
+_logger = logging.getLogger(__name__)
 
 
 class ProjectTaskNativeCalendar(models.Model):
@@ -68,11 +72,11 @@ class ProjectTaskNativeCalendar(models.Model):
         """
         :param task: Task obj
         :param date_in: datetime start date or end date
-        :param duration: duration in seconds
+        :param duration: duration in hours
         :param direction: normal or revers mode: from start date or end date
         :return: list of calendar levels
         """
-        if task_obj["project_id"] and task_obj["project_id"].use_calendar or task_obj["task_resource_ids"].ids:
+        if (task_obj["project_id"] and task_obj["project_id"].use_calendar) or task_obj["task_resource_ids"].ids:
             diff = timedelta(hours=duration)
             tz_name = task_obj["project_id"].tz
 
@@ -94,6 +98,9 @@ class ProjectTaskNativeCalendar(models.Model):
         else:
             return False
 
+    # Safety limit to prevent infinite loops with malformed calendars
+    MAX_ITERATIONS = 366
+
     def _get_planned_x(self, t_params, x_date, diff, level=None, tz_name=None, iteration=None, task=None, direct=None):
         """Calculate planned intervals based on calendar and resource availability"""
         level = level or []  # Initialize empty list if None
@@ -107,8 +114,17 @@ class ProjectTaskNativeCalendar(models.Model):
 
         x_date_e = x_date
         next_step = True
+        loop_count = 0
 
         while next_step:
+            loop_count += 1
+            if loop_count > self.MAX_ITERATIONS:
+                _logger.warning(
+                    "Calendar iteration limit (%d) reached for task %s (direction=%s). "
+                    "Check calendar configuration for missing attendance or infinite leave patterns.",
+                    self.MAX_ITERATIONS, task.get("id", "?"), direct,
+                )
+                break
             if not attendance_ids:
                 return level
 
@@ -205,38 +221,49 @@ class ProjectTaskNativeCalendar(models.Model):
         return level
 
     def _check_leave(self, global_leave_ids, dt_work_from, dt_work_to, tz_name):
-        """Check if work period falls within leave period"""
-        if tz_name:
-            for global_leave_id in global_leave_ids:
-                dt_leave_from = global_leave_id["date_from"]
-                dt_leave_to = global_leave_id["date_to"]
+        """Check if work period falls within leave period.
+        Accumulates the effect of all overlapping leaves (not just the first).
+        Returns (fully_covered: bool, cut_info: dict|False).
+        """
+        if not tz_name:
+            return False, False
 
-                dt_leave_from = self.to_tz(dt_leave_from, tz_name)
-                dt_leave_to = self.to_tz(dt_leave_to, tz_name)
+        current_from = dt_work_from
+        current_to = dt_work_to
+        cut_name = False
 
-                global_leave = not dt_leave_from > dt_work_from and not dt_leave_to < dt_work_to
+        for global_leave_id in global_leave_ids:
+            dt_leave_from = self.to_tz(global_leave_id["date_from"], tz_name)
+            dt_leave_to = self.to_tz(global_leave_id["date_to"], tz_name)
 
-                if not global_leave:
-                    new_dt_work_from = dt_work_from
-                    if dt_leave_from <= dt_work_from and dt_leave_to.date() == dt_work_from.date():
-                        td_from = dt_leave_to - dt_work_from
-                        if td_from.days == 0:
-                            new_dt_work_from = dt_work_from + td_from
+            # Check if leave fully covers the (remaining) work period
+            if dt_leave_from <= current_from and dt_leave_to >= current_to:
+                return True, False
 
-                    new_dt_work_to = dt_work_to
-                    if dt_leave_to >= dt_work_to and dt_leave_from.date() == dt_work_to.date():
-                        td_to = dt_work_to - dt_leave_from
-                        if td_to.days == 0:
-                            new_dt_work_to = dt_work_to - td_to
+            # Check if leave partially overlaps — trim work period
+            new_from = current_from
+            if dt_leave_from <= current_from and dt_leave_to.date() == current_from.date():
+                td_from = dt_leave_to - current_from
+                if td_from.days == 0:
+                    new_from = current_from + td_from
 
-                    if new_dt_work_from != dt_work_from or new_dt_work_to != dt_work_to:
-                        return False, {
-                            "name": global_leave_id["name"],
-                            "from": new_dt_work_from,
-                            "to": new_dt_work_to
-                        }
-                else:
-                    return True, False
+            new_to = current_to
+            if dt_leave_to >= current_to and dt_leave_from.date() == current_to.date():
+                td_to = current_to - dt_leave_from
+                if td_to.days == 0:
+                    new_to = current_to - td_to
+
+            if new_from != current_from or new_to != current_to:
+                current_from = new_from
+                current_to = new_to
+                cut_name = global_leave_id["name"]
+
+        if current_from != dt_work_from or current_to != dt_work_to:
+            return False, {
+                "name": cut_name,
+                "from": current_from,
+                "to": current_to
+            }
 
         return False, False
 
@@ -317,7 +344,7 @@ class ProjectTaskNativeCalendar(models.Model):
 
         if _load_control == "in_project":
             global_leave_ids = list(filter(
-                lambda x: x["flag_project"] == flag_project and x["resource_id"] == str(_resource_id) or x["resource_id"] == "-1",
+                lambda x: x["flag_project"] == flag_project and (x["resource_id"] == str(_resource_id) or x["resource_id"] == "-1"),
                 global_leave_ids
             ))
         elif _load_control == "everywhere":

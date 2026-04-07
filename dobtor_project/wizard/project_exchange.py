@@ -2,7 +2,7 @@
 
 import base64
 import logging
-from xml.etree import ElementTree as ET
+from lxml import etree as ET
 
 from odoo import api, fields, models, _, Command
 from odoo.exceptions import UserError
@@ -13,6 +13,9 @@ _logger = logging.getLogger(__name__)
 
 NS = "http://schemas.microsoft.com/project"
 NS_MAP = {"n": NS}
+
+# Secure XML parser — disables entity resolution and network access to prevent XXE attacks
+_SAFE_PARSER = ET.XMLParser(resolve_entities=False, no_network=True)
 
 
 class ProjectExchange(models.TransientModel):
@@ -34,7 +37,7 @@ class ProjectExchange(models.TransientModel):
         if not project:
             raise UserError(_("Please select a project."))
 
-        root = ET.Element("Project", xmlns=NS)
+        root = ET.Element("Project", nsmap={None: NS})
 
         # Project metadata
         self._add_el(root, "SaveVersion", "14")
@@ -90,13 +93,13 @@ class ProjectExchange(models.TransientModel):
         self._add_el(t, "Start", tool.odoo_dt_to_xml(task.date_start))
         self._add_el(t, "Finish", tool.odoo_dt_to_xml(task.date_end))
         self._add_el(t, "Duration",
-                     tool.seconds_to_iso8601(task.duration or 0))
+                     tool.hours_to_iso8601(task.duration or 0))
         self._add_el(t, "ManualStart", tool.odoo_dt_to_xml(task.date_start))
         self._add_el(t, "ManualFinish", tool.odoo_dt_to_xml(task.date_end))
         self._add_el(t, "ManualDuration",
-                     tool.seconds_to_iso8601(task.duration or 0))
+                     tool.hours_to_iso8601(task.duration or 0))
         self._add_el(t, "Work",
-                     tool.seconds_to_iso8601(task.plan_duration or 0))
+                     tool.hours_to_iso8601(task.plan_duration or 0))
         self._add_el(t, "OnGantt", tool.bool_to_xml(task.on_gantt))
         self._add_el(t, "ConstraintType",
                      tool.constraint_type_to_xml(task.constrain_type or "asap"))
@@ -106,6 +109,8 @@ class ProjectExchange(models.TransientModel):
                          tool.odoo_dt_to_xml(task.constrain_date))
 
         self._add_el(t, "ColorGantt", str(task.color_gantt or 0))
+        self._add_el(t, "PlanOffset", str(task.plan_offset or 0.0))
+        self._add_el(t, "FixedCalcType", task.fixed_calc_type or "duration")
 
         # Predecessors
         for pred in task.predecessor_ids:
@@ -159,7 +164,7 @@ class ProjectExchangeImport(models.TransientModel):
 
         try:
             xml_bytes = base64.b64decode(self.file_load)
-            root = ET.fromstring(xml_bytes)
+            root = ET.fromstring(xml_bytes, parser=_SAFE_PARSER)
         except Exception as e:
             raise UserError(_("Failed to parse XML: %s") % str(e))
 
@@ -224,7 +229,7 @@ class ProjectExchangeImport(models.TransientModel):
 
         try:
             xml_bytes = base64.b64decode(self.file_load)
-            root = ET.fromstring(xml_bytes)
+            root = ET.fromstring(xml_bytes, parser=_SAFE_PARSER)
         except Exception as e:
             raise UserError(_("Failed to parse XML: %s") % str(e))
 
@@ -378,13 +383,9 @@ class ProjectExchangeImport(models.TransientModel):
         if finish:
             vals["date_end"] = finish
 
-        duration = tool.iso8601_to_seconds(
-            self._get_text(task_el, "ManualDuration") or
-            self._get_text(task_el, "Duration"))
-        if duration:
-            vals["duration"] = duration
-
-        plan_dur = tool.iso8601_to_seconds(
+        # duration is a readonly compute field — do not write it directly.
+        # Only import plan_duration (Work) which is user-editable.
+        plan_dur = tool.iso8601_to_hours(
             self._get_text(task_el, "Work"))
         if plan_dur:
             vals["plan_duration"] = plan_dur
@@ -403,6 +404,17 @@ class ProjectExchangeImport(models.TransientModel):
                 vals["color_gantt"] = int(color)
             except (ValueError, TypeError):
                 vals["color_gantt"] = 0
+
+        plan_offset = self._get_text(task_el, "PlanOffset")
+        if plan_offset:
+            try:
+                vals["plan_offset"] = float(plan_offset)
+            except (ValueError, TypeError):
+                pass
+
+        fixed_calc = self._get_text(task_el, "FixedCalcType")
+        if fixed_calc and fixed_calc in ('duration', 'work'):
+            vals["fixed_calc_type"] = fixed_calc
 
         return vals
 

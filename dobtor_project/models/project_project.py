@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from odoo import models, fields, api, _
+from odoo.exceptions import UserError
 from datetime import datetime, timedelta
 import pytz
 
@@ -31,6 +32,13 @@ class Project(models.Model):
         string="使用行事曆",
         help="在設定頁籤中設定行事曆",
         default=True
+    )
+
+    progress_mode = fields.Selection(
+        selection=[('manual', '手動'), ('timesheet', '工時單')],
+        string='進度模式',
+        default='manual',
+        help="手動：由使用者拖曳或輸入進度。工時單：依據 allocated_hours 與實際工時自動計算。"
     )
 
     # Override native computed-only field to stored + editable
@@ -197,6 +205,7 @@ class Project(models.Model):
     def get_calendar_info(self, date_from=None, date_to=None):
         """Return calendar data for frontend gantt view."""
         self.ensure_one()
+        self.check_access('read')
         calendar = self.resource_calendar_id
         if not calendar or not self.use_calendar:
             return {'active': False}
@@ -250,7 +259,10 @@ class Project(models.Model):
         plan_offset (scheduler skips manual tasks).
         """
         self.ensure_one()
-        dt = fields.Datetime.from_string(date_str)
+        try:
+            dt = fields.Datetime.from_string(date_str)
+        except (ValueError, TypeError):
+            raise UserError(_('無效的日期格式。'))
         self.write({'schedule_start': dt, 'schedule_end': False})
 
         # Pre-compute dates for manual tasks (scheduler skips them)
@@ -300,13 +312,38 @@ class Project(models.Model):
 
             offset_hours = task.plan_offset or 0
             duration_hours = task.plan_duration or 24.0
-            date_start = schedule_start + timedelta(hours=offset_hours)
 
             if use_cal and t_params is not None:
                 task_resource_ids = task.task_resource_ids
                 cal_id, task_res, t_params = task_model.make_res_cal_leave(
                     task_resource_ids, t_params, manual_tasks.ids
                 )
+
+                # Convert working-hour offset to calendar date via _get_calendar_level
+                if offset_hours > 0:
+                    offset_task_obj = {
+                        "id": 0,
+                        "name": "_offset_calc",
+                        "project_id": self,
+                        "task_resource_ids": task_resource_ids,
+                        "task_res": task_res,
+                        "fixed_calc_type": "duration",
+                        "plan_duration": offset_hours,
+                    }
+                    offset_level = task_model._get_calendar_level(
+                        offset_task_obj, schedule_start, offset_hours, t_params,
+                        direction="normal",
+                    )
+                    if offset_level:
+                        date_start = task_model._get_date_from_level(
+                            offset_level, "date_to", "max"
+                        ) or schedule_start
+                    else:
+                        date_start = schedule_start + timedelta(hours=offset_hours)
+                else:
+                    date_start = schedule_start
+
+                # Convert working-hour duration to calendar end date
                 task_obj = {
                     "id": task.id,
                     "name": task.name,
@@ -337,6 +374,7 @@ class Project(models.Model):
                 else:
                     date_end = date_start + timedelta(hours=duration_hours)
             else:
+                date_start = schedule_start + timedelta(hours=offset_hours)
                 date_end = date_start + timedelta(hours=duration_hours)
 
             task.write({
@@ -380,6 +418,10 @@ class Project(models.Model):
 
         Called before clearing task dates so that planning mode
         preserves the relative task positions from scheduling.
+
+        When the project has a resource calendar enabled, offset and
+        duration are stored in **working hours** (using the calendar).
+        Otherwise falls back to elapsed (calendar) hours.
         """
         tasks = self.env['project.task'].search([
             ('project_id', '=', self.id),
@@ -387,23 +429,51 @@ class Project(models.Model):
             ('child_ids', '=', False),  # leaf tasks only
         ])
 
+        calendar = self.resource_calendar_id
+        use_cal = self.use_calendar and calendar
+        tz = pytz.timezone(self.tz or 'UTC') if use_cal else None
+
         for task in tasks:
             vals = {}
 
-            # Compute plan_offset (hours from schedule_start)
-            offset = (task.date_start - schedule_start).total_seconds() / 3600.0
+            # Compute plan_offset (working hours from schedule_start)
+            if use_cal:
+                start_tz = pytz.UTC.localize(schedule_start).astimezone(tz)
+                task_start_tz = pytz.UTC.localize(task.date_start).astimezone(tz)
+                offset = calendar.get_work_hours_count(start_tz, task_start_tz)
+            else:
+                offset = (task.date_start - schedule_start).total_seconds() / 3600.0
             if abs(offset - (task.plan_offset or 0)) > 0.01:
                 vals['plan_offset'] = offset
 
-            # Compute plan_duration (hours)
+            # Compute plan_duration (working hours)
             if task.date_end:
-                duration = (task.date_end - task.date_start).total_seconds() / 3600.0
+                if use_cal:
+                    # Reuse server-computed working_duration field
+                    duration = task.working_duration or 0
+                else:
+                    duration = (task.date_end - task.date_start).total_seconds() / 3600.0
                 if abs(duration - (task.plan_duration or 0)) > 0.01:
                     vals['plan_duration'] = duration
 
             if vals:
-                # Direct super write to avoid date_snap and ancestor propagation
-                super(type(task), task).write(vals)
+                # Skip date_snap via context flag (ancestor update won't trigger
+                # since we only write plan_offset/plan_duration, not date_start/date_end)
+                task.with_context(skip_date_snap=True).write(vals)
+
+    # -------------------------------------------------------------------------
+    # Batch Color Apply
+    # -------------------------------------------------------------------------
+
+    def action_apply_color_to_tasks(self):
+        """Apply the project's default color to all its tasks."""
+        self.ensure_one()
+        tasks = self.env['project.task'].search([
+            ('project_id', '=', self.id),
+        ])
+        if tasks:
+            tasks.write({'color_gantt': self.task_default_color_gantt})
+        return True
 
     # -------------------------------------------------------------------------
     # Catch Up / Reschedule Actions
@@ -413,20 +483,28 @@ class Project(models.Model):
         """Update progress for auto-scheduled tasks based on current date."""
         self.ensure_one()
         now = fields.Datetime.now()
+        # Timesheet mode: progress is auto-computed, only re-run scheduler
+        if self.progress_mode == 'timesheet':
+            if self.scheduling_type != 'manual':
+                self.env['project.task'].scheduler_plan(self.id)
+            return True
         tasks = self.env['project.task'].search([
             ('project_id', '=', self.id),
             ('schedule_mode', '=', 'auto'),
             ('date_start', '!=', False),
             ('date_end', '!=', False),
         ])
-        for task in tasks:
-            if task.date_end <= now:
-                task.progress = 100
-            elif task.date_start <= now:
-                total = (task.date_end - task.date_start).total_seconds()
-                elapsed = (now - task.date_start).total_seconds()
-                if total > 0:
-                    task.progress = min(round(elapsed / total * 100, 1), 100)
+        # Batch: tasks fully past → progress 100
+        completed = tasks.filtered(lambda t: t.date_end <= now)
+        if completed:
+            completed.write({'progress': 100})
+        # Partial progress: compute individually then batch by value
+        partial = tasks.filtered(lambda t: t.date_start <= now < t.date_end)
+        for task in partial:
+            total = (task.date_end - task.date_start).total_seconds()
+            elapsed = (now - task.date_start).total_seconds()
+            if total > 0:
+                task.progress = min(round(elapsed / total * 100, 1), 100)
         # Re-run scheduler
         if self.scheduling_type != 'manual':
             self.env['project.task'].scheduler_plan(self.id)
@@ -461,6 +539,7 @@ class Project(models.Model):
     def check_violations(self):
         """Return list of project violations for the gantt view."""
         self.ensure_one()
+        self.check_access('read')
         violations = []
         tasks = self.env['project.task'].search([
             ('project_id', '=', self.id),
@@ -474,7 +553,7 @@ class Project(models.Model):
                     'type': 'loop',
                     'task_id': task.id,
                     'task_name': task.name,
-                    'message': '偵測到循環依賴',
+                    'message': _('偵測到循環依賴'),
                     'severity': 'error',
                 })
 
@@ -491,11 +570,12 @@ class Project(models.Model):
                         'type': 'overdue',
                         'task_id': task.id,
                         'task_name': task.name,
-                        'message': '結束日期超過截止日期',
+                        'message': _('結束日期超過截止日期'),
                         'severity': 'warning',
                     })
 
             # 3. Constraint conflict
+            # Use 60s tolerance for MSO/MFO to account for work-time snapping
             if task.constrain_type and task.constrain_date and task.date_start and task.date_end:
                 ct = task.constrain_type
                 cd = task.constrain_date
@@ -508,16 +588,16 @@ class Project(models.Model):
                     conflict = True
                 elif ct == 'fnlt' and task.date_end > cd:
                     conflict = True
-                elif ct == 'mso' and task.date_start != cd:
+                elif ct == 'mso' and abs((task.date_start - cd).total_seconds()) > 60:
                     conflict = True
-                elif ct == 'mfo' and task.date_end != cd:
+                elif ct == 'mfo' and abs((task.date_end - cd).total_seconds()) > 60:
                     conflict = True
                 if conflict:
                     violations.append({
                         'type': 'constraint',
                         'task_id': task.id,
                         'task_name': task.name,
-                        'message': '%s 約束違反' % ct.upper(),
+                        'message': _('%(type)s 約束違反', type=ct.upper()),
                         'severity': 'warning',
                     })
 
@@ -529,11 +609,13 @@ class Project(models.Model):
                     'type': 'unlinked',
                     'task_id': task.id,
                     'task_name': task.name,
-                    'message': '自動排程任務無前置關聯或約束',
+                    'message': _('自動排程任務無前置關聯或約束'),
                     'severity': 'info',
                 })
 
         # 5. Resource overload detection
+        # Prefetch resource links to avoid N+1 queries in the loop
+        tasks.mapped('task_resource_ids.resource_id')
         resource_tasks = {}
         for task in tasks:
             if not task.date_end:
@@ -547,16 +629,23 @@ class Project(models.Model):
                 })
         for rid, data in resource_tasks.items():
             intervals = sorted(data['intervals'], key=lambda x: x['start'])
+            if not intervals:
+                continue
+            max_end = intervals[0]['end']
+            max_end_task = intervals[0]['task']
             for i in range(1, len(intervals)):
-                if intervals[i]['start'] < intervals[i-1]['end']:
+                if intervals[i]['start'] < max_end:
                     violations.append({
                         'type': 'resource_overload',
                         'task_id': intervals[i]['task'].id,
                         'task_name': intervals[i]['task'].name,
-                        'message': '資源「%s」與 %s 重疊' % (
-                            data['name'], intervals[i-1]['task'].name),
+                        'message': _('資源「%(resource)s」與 %(task)s 重疊',
+                            resource=data['name'], task=max_end_task.name),
                         'severity': 'warning',
                     })
+                if intervals[i]['end'] > max_end:
+                    max_end = intervals[i]['end']
+                    max_end_task = intervals[i]['task']
 
         return violations
 
@@ -590,21 +679,36 @@ class Project(models.Model):
                 })
 
         # Step 3: Sort per resource, delay non-critical overlapping tasks
-        changes = []
+        # Use sweep-line max_end tracking instead of comparing only previous task
+        changes = {}  # task_id → constrain_date (keep latest if multiple resources)
         for rid, task_list in resource_tasks.items():
             task_list.sort(key=lambda t: (not t['critical'], t['start']))
+            max_end = task_list[0]['end']
             for i in range(1, len(task_list)):
-                cur, prev = task_list[i], task_list[i - 1]
-                if cur['start'] < prev['end'] and not cur['critical']:
-                    changes.append((cur['task'].id, prev['end']))
-                    cur['start'] = prev['end']  # cascade
+                cur = task_list[i]
+                if cur['start'] < max_end and not cur['critical']:
+                    tid = cur['task'].id
+                    # Keep the latest constrain_date across resources
+                    if tid not in changes or max_end > changes[tid]:
+                        changes[tid] = max_end
+                    cur['start'] = max_end  # cascade for subsequent checks
+                    cur_new_end = max_end + (cur['end'] - cur['task'].date_start)
+                    cur['end'] = cur_new_end
+                if cur['end'] > max_end:
+                    max_end = cur['end']
 
-        # Step 4: Apply SNET constraints
-        for task_id, constrain_date in changes:
-            self.env['project.task'].browse(task_id).write({
-                'constrain_type': 'snet',
-                'constrain_date': constrain_date,
-            })
+        # Step 4: Apply SNET constraints (batch write grouped by task)
+        if changes:
+            Task = self.env['project.task']
+            task_ids = list(changes.keys())
+            tasks_by_id = {t.id: t for t in Task.browse(task_ids)}
+            for tid, constrain_date in changes.items():
+                task = tasks_by_id.get(tid)
+                if task:
+                    task.write({
+                        'constrain_type': 'snet',
+                        'constrain_date': constrain_date,
+                    })
 
         # Step 5: Re-run scheduler
         if self.scheduling_type != 'manual':
@@ -618,6 +722,7 @@ class Project(models.Model):
 
     def action_save_baseline(self, name=None):
         self.ensure_one()
+        self.check_access('write')
         if not name:
             name = "Baseline %s" % fields.Datetime.now().strftime('%Y-%m-%d %H:%M')
         baseline = self.env['project.baseline'].create({
@@ -629,6 +734,7 @@ class Project(models.Model):
 
     def get_baselines(self):
         self.ensure_one()
+        self.check_access('read')
         return [{'id': b.id, 'name': b.name, 'create_date': str(b.create_date),
                  'line_count': len(b.line_ids)}
                 for b in self.env['project.baseline'].search(

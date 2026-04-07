@@ -1,10 +1,10 @@
 /** @odoo-module **/
 import { Component, useState, onWillStart, onWillUpdateProps } from "@odoo/owl";
 import { DateTimeInput } from "@web/core/datetime/datetime_input";
+import { _t } from "@web/core/l10n/translation";
 import { useService } from "@web/core/utils/hooks";
 import { serializeDateTime } from "@web/core/l10n/dates";
 import { parseLagInput, hoursToInputFormat, humanizeHours } from "./gantt_utils";
-const FIXED_CALC_LABELS = { duration: "\u5de5\u671f", work: "\u5de5\u6642" };
 
 // Kanban-consistent 12 fixed colors (index 0-11)
 export const GANTT_COLORS = [
@@ -22,20 +22,22 @@ export const GANTT_COLORS = [
     "#9872e6",   // 11: Violet
 ];
 
-export const GANTT_COLOR_NAMES = [
-    "無顏色",    // 0
-    "紅色",      // 1
-    "橘色",      // 2
-    "黃色",      // 3
-    "青色",      // 4
-    "紫色",      // 5
-    "杏色",      // 6
-    "藍綠色",    // 7
-    "藍色",      // 8
-    "莓紅色",    // 9
-    "綠色",      // 10
-    "紫羅蘭色",  // 11
-];
+export function getGanttColorNames() {
+    return [
+        _t("無顏色"),    // 0
+        _t("紅色"),      // 1
+        _t("橘色"),      // 2
+        _t("黃色"),      // 3
+        _t("青色"),      // 4
+        _t("紫色"),      // 5
+        _t("杏色"),      // 6
+        _t("藍綠色"),    // 7
+        _t("藍色"),      // 8
+        _t("莓紅色"),    // 9
+        _t("綠色"),      // 10
+        _t("紫羅蘭色"),  // 11
+    ];
+}
 
 export class GanttInspector extends Component {
     static template = "dobtor_project.GanttInspector";
@@ -94,8 +96,22 @@ export class GanttInspector extends Component {
     async _loadUserNames(record) {
         if (!record) return;
         const userField = this.props.archInfo.userId || "user_ids";
-        const ids = record[userField];
-        if (!ids || !ids.length) return;
+        const raw = record[userField];
+        if (!raw || !raw.length) return;
+        // Extract integer IDs: handle both plain [id, ...] and M2M commands [[6, 0, [ids]]]
+        const ids = [];
+        for (const item of raw) {
+            if (typeof item === "number" && Number.isInteger(item) && item > 0) {
+                ids.push(item);
+            } else if (Array.isArray(item) && item[0] === 6 && Array.isArray(item[2])) {
+                // (6, 0, [ids]) replace command
+                ids.push(...item[2].filter(id => typeof id === "number" && id > 0));
+            } else if (Array.isArray(item) && item[0] === 4 && typeof item[1] === "number") {
+                // (4, id) link command
+                ids.push(item[1]);
+            }
+        }
+        if (!ids.length) return;
         const missingIds = ids.filter((id) => !(id in this._userNames));
         if (!missingIds.length) return;
         const results = await this.orm.read("res.users", missingIds, ["display_name"]);
@@ -107,7 +123,7 @@ export class GanttInspector extends Component {
     get userChips() {
         if (!this.props.record) return [];
         const userField = this.props.archInfo.userId || "user_ids";
-        const ids = this.props.record[userField] || [];
+        const ids = (this.props.record[userField] || []).filter((id) => id);
         return ids.map((id) => ({ id, name: this._userNames[id] || `#${id}` }));
     }
 
@@ -194,6 +210,7 @@ export class GanttInspector extends Component {
 
     onProgressChange(ev) {
         if (!this.props.record) return;
+        if (this.props.record._progressMode === 'timesheet') return;
         const val = Math.min(100, Math.max(0, parseInt(ev.target.value, 10) || 0));
         const progressField = this.props.archInfo.progress || "progress";
         this.props.onFieldChange(this.props.record.id, progressField, val);
@@ -216,14 +233,15 @@ export class GanttInspector extends Component {
     }
 
     ganttColorName(index) {
-        return GANTT_COLOR_NAMES[index] || "";
+        return getGanttColorNames()[index] || "";
     }
 
     get fixedCalcTypeLabel() {
         if (!this.props.record) return "";
         const field = this.props.archInfo.fixedCalcType || "fixed_calc_type";
         const val = this.props.record[field];
-        return FIXED_CALC_LABELS[val] || "";
+        const labels = { duration: _t("工期"), work: _t("工時") };
+        return labels[val] || "";
     }
 
     get isMilestoneRecord() {

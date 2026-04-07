@@ -23,6 +23,10 @@
                                 <field name="tz_offset" invisible="1"/>
                             </group>
 
+                            <group string="進度追蹤">
+                                <field name="progress_mode"/>
+                            </group>
+
                             <group string="任務預設值">
                                 <field name="task_default_duration" widget="float_time"/>
                                 <field name="task_default_start" widget="float_time"/>
@@ -30,6 +34,10 @@
                                 <field name="task_default_constrain_type"/>
                                 <field name="task_default_fixed_calc_type"/>
                                 <field name="task_default_color_gantt" widget="color_picker"/>
+                                <button name="action_apply_color_to_tasks"
+                                        string="套用至所有任務"
+                                        type="object"
+                                        class="btn-link"/>
                                 <field name="task_default_on_gantt"/>
                                 <field name="detail_plan"/>
                             </group>

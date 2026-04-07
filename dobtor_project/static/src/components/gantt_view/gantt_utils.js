@@ -1,5 +1,7 @@
 /** @odoo-module **/
 
+import { _t } from "@web/core/l10n/translation";
+
 /**
  * Shared utility functions for the Gantt view.
  * Used by: gantt_renderer, gantt_bar_drag_hook, gantt_bar_resize_hook.
@@ -8,6 +10,23 @@
  *   hpd = hours per (working) day   – from calendarInfo.hours_per_day (default 24)
  *   dpw = working days per week      – from calendarInfo._workingWeekdays.size (default 7)
  */
+
+/**
+ * Escape HTML special characters to prevent XSS when inserting
+ * dynamic values into innerHTML-built hint/tooltip strings.
+ *
+ * @param {*} str - Value to escape (coerced to string)
+ * @returns {string} HTML-safe string
+ */
+export function escapeHtml(str) {
+    const s = String(str ?? "");
+    return s
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
 
 /**
  * Convert a cell count delta to a Luxon-compatible duration object
@@ -34,19 +53,19 @@ export function cellsDeltaToDuration(cellsDelta, scale) {
  * @param {number} [dpw=7] - Working days per week
  * @returns {string} Formatted string (e.g., "4時", "3天", "2週1天")
  */
-export function humanizeDays(days, dpw = 7) {
-    if (days < 0) return "0\u5929";
+export function humanizeDays(days, dpw = 7, hpd = 24) {
+    if (days < 0) return _t("%(n)s天", { n: 0 });
     if (days < 1) {
-        const hours = Math.round(days * 24);
-        return `${hours}\u6642`;
+        const hours = Math.round(days * hpd);
+        return _t("%(n)s時", { n: hours });
     }
     if (days < dpw) {
-        return `${days}\u5929`;
+        return _t("%(n)s天", { n: Math.round(days * 10) / 10 });
     }
     const weeks = Math.floor(days / dpw);
     const remainDays = Math.round(days % dpw);
-    if (remainDays === 0) return `${weeks}\u9031`;
-    return `${weeks}\u9031${remainDays}\u5929`;
+    if (remainDays === 0) return _t("%(n)s週", { n: weeks });
+    return _t("%(w)s週%(d)s天", { w: weeks, d: remainDays });
 }
 
 /**
@@ -113,7 +132,8 @@ export function hoursToInputFormat(hours, hpd = 24) {
     const d = Math.floor(abs / hpd);
     const remainH = abs - d * hpd;
     const h = Math.floor(remainH);
-    const m = Math.round((remainH % 1) * 60) % 60;
+    const rawM = Math.round((remainH % 1) * 60);
+    const m = rawM >= 60 ? 0 : rawM;
     const parts = [];
     if (d > 0) parts.push(`${d}d`);
     if (h > 0) parts.push(`${h}h`);
@@ -138,16 +158,16 @@ export function humanizeHours(hours, hpd = 24, dpw = 7) {
     const days = absHours / hpd;
     let result;
     if (days < 1) {
-        result = `${Math.round(absHours * 10) / 10}\u5c0f\u6642`;
+        result = _t("%(n)s小時", { n: Math.round(absHours * 10) / 10 });
     } else if (days < dpw) {
-        result = `${Math.round(days * 10) / 10}\u5929`;
+        result = _t("%(n)s天", { n: Math.round(days * 10) / 10 });
     } else {
         const weeks = Math.floor(days / dpw);
         const remainDays = Math.round(days % dpw);
         if (remainDays === 0) {
-            result = `${weeks}\u9031`;
+            result = _t("%(n)s週", { n: weeks });
         } else {
-            result = `${weeks}\u9031${remainDays}\u5929`;
+            result = _t("%(w)s週%(d)s天", { w: weeks, d: remainDays });
         }
     }
     return negative ? `-${result}` : result;
@@ -171,13 +191,19 @@ export function toOdooDatetime(dt) {
  * @param {number} cellsDelta - Number of cells moved
  * @param {string} scale - Current gantt scale
  * @param {number} [hpd=24] - Hours per working day
+ * @param {number} [dpw=7] - Working days per week
  * @returns {string} Formatted label with sign prefix
  */
-export function formatDeltaLabel(cellsDelta, scale, hpd = 24) {
+export function formatDeltaLabel(cellsDelta, scale, hpd = 24, dpw = 7) {
     const dur = cellsDeltaToDuration(cellsDelta, scale);
-    // Convert to total minutes using calendar-aware day length
+    // Month scale: display directly as months (variable length, no minute conversion)
+    if (dur.months) {
+        const sign = dur.months >= 0 ? "+" : "-";
+        return `${sign}${_t("%(n)s月", { n: Math.abs(dur.months) })}`;
+    }
+    // Convert to total minutes using calendar-aware day/week length
     const totalMinutes = Math.round(
-        (dur.months || 0) * 43200 + (dur.weeks || 0) * 10080 +
+        (dur.weeks || 0) * dpw * hpd * 60 +
         (dur.days || 0) * hpd * 60 + (dur.hours || 0) * 60 + (dur.minutes || 0)
     );
     const sign = totalMinutes >= 0 ? "+" : "-";
@@ -187,8 +213,8 @@ export function formatDeltaLabel(cellsDelta, scale, hpd = 24) {
     const h = Math.floor((abs % hpdMin) / 60);
     const m = abs % 60;
     const parts = [];
-    if (d > 0) parts.push(`${d}\u5929`);
-    if (h > 0) parts.push(`${h}\u6642`);
-    if (m > 0 || parts.length === 0) parts.push(`${m}\u5206`);
+    if (d > 0) parts.push(_t("%(n)s天", { n: d }));
+    if (h > 0) parts.push(_t("%(n)s時", { n: h }));
+    if (m > 0 || parts.length === 0) parts.push(_t("%(n)s分", { n: m }));
     return `${sign}${parts.join("")}`;
 }

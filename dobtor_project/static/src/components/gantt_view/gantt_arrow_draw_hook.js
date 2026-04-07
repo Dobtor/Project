@@ -1,6 +1,7 @@
 /** @odoo-module **/
 
 import { onMounted, onWillUnmount } from "@odoo/owl";
+import { _t } from "@web/core/l10n/translation";
 
 /**
  * Custom OWL hook for drawing predecessor arrows by dragging from
@@ -280,6 +281,9 @@ export function useGanttArrowDraw(params) {
     }
 
     function _showDeleteMenu(x, y, pathId) {
+        // Clean up previous timeout and listener before creating new menu
+        clearTimeout(pendingDeleteMenuTimeout);
+        document.removeEventListener("click", _removeDeleteMenu);
         // Remove any existing menu
         _removeDeleteMenu();
 
@@ -289,7 +293,11 @@ export function useGanttArrowDraw(params) {
             "background:var(--gantt-surface-elevated, #fff);padding:8px 16px;" +
             "border-radius:var(--gantt-radius-sm, 6px);box-shadow:var(--gantt-shadow-lg);" +
             "cursor:pointer;font-size:13px;font-weight:500;color:var(--gantt-accent-red, #FF3B30);";
-        menu.innerHTML = '<i class="fa fa-trash-o" style="margin-right:6px;"></i>Delete Link';
+        const icon = document.createElement("i");
+        icon.className = "fa fa-trash-o";
+        icon.style.marginRight = "6px";
+        menu.appendChild(icon);
+        menu.appendChild(document.createTextNode(params.deleteLinkLabel || _t("刪除連結")));
 
         menu.addEventListener("click", () => {
             _removeDeleteMenu();
@@ -337,6 +345,8 @@ export function useGanttArrowDraw(params) {
             arrowSvg.removeEventListener("contextmenu", onArrowContextMenu);
         }
         document.removeEventListener("pointermove", onPointerMove);
+        document.removeEventListener("pointerup", onPointerUp);
+        document.removeEventListener("click", _removeDeleteMenu);
         if (pendingDeleteMenuTimeout) {
             clearTimeout(pendingDeleteMenuTimeout);
             pendingDeleteMenuTimeout = null;

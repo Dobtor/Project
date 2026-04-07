@@ -113,6 +113,7 @@ export class GanttController extends Component {
         onWillUnmount(() => {
             document.removeEventListener("keydown", this._onKeyDown);
             document.removeEventListener("click", this._onClickOutside, true);
+            clearTimeout(this._printTimeout);
         });
     }
 
@@ -177,9 +178,9 @@ export class GanttController extends Component {
         if (!records || records.length === 0) return "";
         const limit = this.props.archInfo.limitView || 250;
         if (records.length >= limit) {
-            return `${records.length}+ 筆 (上限: ${limit})`;
+            return _t("%(count)s+ 筆 (上限: %(limit)s)", { count: records.length, limit });
         }
-        return `${records.length} 筆`;
+        return _t("%(count)s 筆", { count: records.length });
     }
 
     // Button handlers
@@ -208,6 +209,27 @@ export class GanttController extends Component {
         }
     }
 
+    async onCompactLeftClick() {
+        const projectId = this._getProjectIdFromContext();
+        if (!projectId) {
+            this.notification.add(_t("請先選擇專案。"), { type: "warning" });
+            return;
+        }
+        this.state.isLoading = true;
+        try {
+            await this.model.compactLeft(projectId);
+            await this._loadWithScrollRestore(this.props);
+            this.notification.add(_t("壓縮完成。"), { type: "success" });
+        } catch (error) {
+            this.notification.add(
+                _t("壓縮失敗: %(error)s", { error: error.message || "" }),
+                { type: "danger" }
+            );
+        } finally {
+            this.state.isLoading = false;
+        }
+    }
+
     async onSchedulerClick() {
         const projectId = this._getProjectIdFromContext();
 
@@ -228,7 +250,7 @@ export class GanttController extends Component {
         } catch (error) {
             console.error("Scheduler error:", error);
             this.notification.add(
-                _t("排程失敗: ") + (error.message || "未知錯誤"),
+                _t("排程失敗: %(error)s", { error: error.message || _t("未知錯誤") }),
                 { type: "danger" }
             );
         } finally {
@@ -275,14 +297,15 @@ export class GanttController extends Component {
 
         // Handle delete action from context menu
         if (record.action === "delete") {
-            const rec = this.model.data?.records?.find(r => r.id === record.id);
+            const rec = this.model.getRecord(record.id);
             const name = rec?.display_name || `\u4EFB\u52D9 #${record.id}`;
             this.displayDialog(ConfirmationDialog, {
-                body: _t("刪除「%s」？", name),
+                body: _t("\u522A\u9664\u300C%(name)s\u300D\uFF1F", { name }),
                 confirm: async () => {
                     await this.model.deleteRecord(record.id);
                     this._rendererApi?.setSelectedRowId?.(null);
                 },
+                dismiss: () => {},
             });
             return;
         }
@@ -291,11 +314,11 @@ export class GanttController extends Component {
         if (record.action === "duplicate") {
             try {
                 // orm.call("copy") returns the new record ID (integer)
-                const newIds = await this.orm.call(this.props.resModel, "copy", [record.id]);
+                await this.orm.call(this.props.resModel, "copy", [record.id]);
                 await this._loadWithScrollRestore(this.props);
                 this.notification.add(_t("任務已複製。"), { type: "success" });
             } catch (e) {
-                this.notification.add(_t("複製失敗: ") + e.message, { type: "danger" });
+                this.notification.add(_t("複製失敗: %(error)s", { error: e.message || "" }), { type: "danger" });
             }
             return;
         }
@@ -369,8 +392,8 @@ export class GanttController extends Component {
     }
 
     get sortLabel() {
-        const labels = { seq: "\u5E8F\u865F", start: "\u958B\u59CB", name: "\u540D\u7A31" };
-        return labels[this.state.sortMode] || "\u5E8F\u865F";
+        const labels = { seq: _t("序號"), start: _t("開始"), name: _t("名稱") };
+        return labels[this.state.sortMode] || _t("序號");
     }
 
     get currentScaleLabel() {
@@ -384,7 +407,7 @@ export class GanttController extends Component {
     }
 
     get weekTypeLabel() {
-        return this.state.weekType === "iso" ? "\u9031\u4E00" : "\u9031\u65E5";
+        return this.state.weekType === "iso" ? _t("週一") : _t("週日");
     }
 
     onListDetailToggle() {
@@ -421,7 +444,8 @@ export class GanttController extends Component {
     _getSelectedIds() {
         const api = this._rendererApi;
         const multiIds = api?.getSelectedRowIds?.();
-        if (multiIds && multiIds.size > 0) return [...multiIds];
+        const keys = multiIds ? Object.keys(multiIds).map(Number) : [];
+        if (keys.length > 0) return keys;
         const singleId = api?.getSelectedRowId?.();
         return singleId ? [singleId] : [];
     }
@@ -433,11 +457,9 @@ export class GanttController extends Component {
             return;
         }
         const field = this.props.archInfo.scheduleMode || "schedule_mode";
-        for (const id of ids) {
-            await this.model.updateRecord(id, { [field]: "auto" });
-        }
+        await this.orm.write(this.props.resModel, ids, { [field]: "auto" });
         await this._loadWithScrollRestore(this.props);
-        this.notification.add(_t("\u5DF2\u5C07 %s \u7B46\u4EFB\u52D9\u8A2D\u70BA\u81EA\u52D5\u6392\u7A0B", ids.length), { type: "success" });
+        this.notification.add(_t("\u5DF2\u5C07 %(count)s \u7B46\u4EFB\u52D9\u8A2D\u70BA\u81EA\u52D5\u6392\u7A0B", { count: ids.length }), { type: "success" });
     }
 
     async onBatchSetManual() {
@@ -447,11 +469,9 @@ export class GanttController extends Component {
             return;
         }
         const field = this.props.archInfo.scheduleMode || "schedule_mode";
-        for (const id of ids) {
-            await this.model.updateRecord(id, { [field]: "manual" });
-        }
+        await this.orm.write(this.props.resModel, ids, { [field]: "manual" });
         await this._loadWithScrollRestore(this.props);
-        this.notification.add(_t("\u5DF2\u5C07 %s \u7B46\u4EFB\u52D9\u8A2D\u70BA\u624B\u52D5\u6392\u7A0B", ids.length), { type: "success" });
+        this.notification.add(_t("\u5DF2\u5C07 %(count)s \u7B46\u4EFB\u52D9\u8A2D\u70BA\u624B\u52D5\u6392\u7A0B", { count: ids.length }), { type: "success" });
     }
 
     async onBatchRemoveConstraints() {
@@ -462,11 +482,9 @@ export class GanttController extends Component {
         }
         const typeField = this.props.archInfo.constrainType || "constrain_type";
         const dateField = this.props.archInfo.constrainDate || "constrain_date";
-        for (const id of ids) {
-            await this.model.updateRecord(id, { [typeField]: "asap", [dateField]: false });
-        }
+        await this.orm.write(this.props.resModel, ids, { [typeField]: "asap", [dateField]: false });
         await this._loadWithScrollRestore(this.props);
-        this.notification.add(_t("\u5DF2\u79FB\u9664 %s \u7B46\u4EFB\u52D9\u7684\u9650\u5236", ids.length), { type: "success" });
+        this.notification.add(_t("\u5DF2\u79FB\u9664 %(count)s \u7B46\u4EFB\u52D9\u7684\u9650\u5236", { count: ids.length }), { type: "success" });
     }
 
     // -------------------------------------------------------------------------
@@ -485,25 +503,10 @@ export class GanttController extends Component {
         this.onRefresh();
     }
 
-    // Feature 22: Fast refresh — incremental update without full reload
+    // Feature 22: Fast refresh — complete reload preserving scroll position
     async onFastRefresh() {
-        if (!this.model.data?.records?.length) {
-            return this.onRefresh();
-        }
-
         this.state.isLoading = true;
         try {
-            // Only reload records that were recently modified (last 5 min)
-            const recentDomain = [
-                ...this.props.domain || [],
-                ["write_date", ">=", new Date(Date.now() - 5 * 60 * 1000).toISOString()],
-            ];
-            await this._loadWithScrollRestore({
-                ...this.props,
-                domain: recentDomain,
-            });
-        } catch {
-            // Fallback to full reload
             await this._loadWithScrollRestore(this.props);
         } finally {
             this.state.isLoading = false;
@@ -516,7 +519,7 @@ export class GanttController extends Component {
         if (this.model.expandAllGroups) {
             this.model.expandAllGroups();
         }
-        setTimeout(() => window.print(), 300);
+        this._printTimeout = setTimeout(() => window.print(), 300);
     }
 
     async onReportClick() {
@@ -593,28 +596,29 @@ export class GanttController extends Component {
             ev.preventDefault();
             // Multi-select delete
             const multiIds = api?.getSelectedRowIds?.();
-            if (multiIds && multiIds.size > 1) {
-                const count = multiIds.size;
+            const multiKeys = multiIds ? Object.keys(multiIds).map(Number) : [];
+            if (multiKeys.length > 1) {
+                const count = multiKeys.length;
                 this.displayDialog(ConfirmationDialog, {
-                    body: _t("刪除已選取的 %s 個任務？", count),
+                    body: _t("\u522A\u9664\u5DF2\u9078\u53D6\u7684 %(count)s \u500B\u4EFB\u52D9\uFF1F", { count }),
                     confirm: async () => {
-                        for (const id of multiIds) {
-                            await this.model.deleteRecord(id);
-                        }
+                        await this.model.deleteRecords(multiKeys);
                         api?.clearMultiSelect?.();
                         api?.setSelectedRowId?.(null);
                         await this._loadWithScrollRestore(this.props);
                     },
+                    dismiss: () => {},
                 });
             } else {
-                const record = this.model.data?.records?.find(r => r.id === selectedId);
-                const name = record?.display_name || `\u4EFB\u52D9 #${selectedId}`;
+                const record = this.model.getRecord(selectedId);
+                const name = record?.display_name || _t("任務 #%(id)s", { id: selectedId });
                 this.displayDialog(ConfirmationDialog, {
-                    body: _t("刪除「%s」？", name),
+                    body: _t("\u522A\u9664\u300C%(name)s\u300D\uFF1F", { name }),
                     confirm: async () => {
                         await this.model.deleteRecord(selectedId);
                         api?.setSelectedRowId?.(null);
                     },
+                    dismiss: () => {},
                 });
             }
         }
@@ -654,8 +658,17 @@ export class GanttController extends Component {
             const rows = api.getFlattenedRows?.()?.filter(r => !r._isGroup) || [];
             const multiIds = api.getSelectedRowIds?.();
             if (multiIds) {
-                rows.forEach(r => multiIds.add(r.id));
+                rows.forEach(r => { multiIds[r.id] = true; });
             }
+        }
+
+        // Item 11: Ctrl+Z = undo, Ctrl+Shift+Z / Ctrl+Y = redo
+        if ((ev.ctrlKey || ev.metaKey) && ev.key === "z" && !ev.shiftKey) {
+            ev.preventDefault();
+            this.model.undo();
+        } else if ((ev.ctrlKey || ev.metaKey) && (ev.key === "y" || (ev.key === "z" && ev.shiftKey) || (ev.key === "Z" && ev.shiftKey))) {
+            ev.preventDefault();
+            this.model.redo();
         }
     }
 
@@ -678,11 +691,12 @@ export class GanttController extends Component {
                     await this._loadWithScrollRestore(this.props);
                     this.notification.add(_t("追趕進度完成。"), { type: "success" });
                 } catch (e) {
-                    this.notification.add(_t("追趕進度失敗: ") + e.message, { type: "danger" });
+                    this.notification.add(_t("追趕進度失敗: %(error)s", { error: e.message || "" }), { type: "danger" });
                 } finally {
                     this.state.isLoading = false;
                 }
             },
+            dismiss: () => {},
         });
     }
 
@@ -701,11 +715,12 @@ export class GanttController extends Component {
                     await this._loadWithScrollRestore(this.props);
                     this.notification.add(_t("重新排程完成。"), { type: "success" });
                 } catch (e) {
-                    this.notification.add(_t("重新排程失敗: ") + e.message, { type: "danger" });
+                    this.notification.add(_t("重新排程失敗: %(error)s", { error: e.message || "" }), { type: "danger" });
                 } finally {
                     this.state.isLoading = false;
                 }
             },
+            dismiss: () => {},
         });
     }
 
@@ -761,7 +776,19 @@ export class GanttController extends Component {
     }
 
     async onInspectorFieldChange(recordId, fieldName, newValue) {
-        await this.model.updateRecord(recordId, { [fieldName]: newValue });
+        // Date fields: use moveAndCascade (single RPC + server-side cascade)
+        // instead of updateRecord (multiple RPCs for cascade)
+        const dateFields = new Set([
+            this.model.archInfo?.dateStart || "date_start",
+            this.model.archInfo?.dateStop || "date_end",
+            this.model.archInfo?.planOffset || "plan_offset",
+            "plan_duration", "constrain_type", "constrain_date",
+        ]);
+        if (dateFields.has(fieldName)) {
+            await this.model.moveAndCascade(recordId, { [fieldName]: newValue });
+        } else {
+            await this.model.updateRecord(recordId, { [fieldName]: newValue });
+        }
         await this._loadWithScrollRestore(this.props);
     }
 
@@ -783,16 +810,33 @@ export class GanttController extends Component {
                     const count = await this.model.levelResources(projectId);
                     await this._loadWithScrollRestore(this.props);
                     this.notification.add(
-                        count > 0 ? _t("%s 個任務已調整。", count) : _t("未發現衝突。"),
+                        count > 0 ? _t("%(count)s \u500B\u4EFB\u52D9\u5DF2\u8ABF\u6574\u3002", { count }) : _t("未發現衝突。"),
                         { type: count > 0 ? "success" : "info" }
                     );
                 } catch (e) {
-                    this.notification.add(_t("平準化失敗: ") + e.message, { type: "danger" });
+                    this.notification.add(_t("平準化失敗: %(error)s", { error: e.message || "" }), { type: "danger" });
                 } finally {
                     this.state.isLoading = false;
                 }
             },
+            dismiss: () => {},
         });
+    }
+
+    async onAlignConstraintsClick() {
+        this.state.isLoading = true;
+        try {
+            const count = await this.model._enforceConstraintAlignment({ silent: false });
+            if (count > 0) {
+                await this._loadWithScrollRestore(this.props);
+            } else {
+                this.notification.add(_t("所有任務已符合前置限制"), { type: "info" });
+            }
+        } catch (e) {
+            this.notification.add(_t("對齊失敗: %(error)s", { error: e.message || "" }), { type: "danger" });
+        } finally {
+            this.state.isLoading = false;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -805,8 +849,10 @@ export class GanttController extends Component {
         this.state.isLoading = true;
         try {
             const result = await this.model.saveBaseline(projectId);
-            this.notification.add(_t("基線已儲存: %s", result.name), { type: "success" });
+            this.notification.add(_t("\u57FA\u7DDA\u5DF2\u5132\u5B58: %(name)s", { name: result.name }), { type: "success" });
             this.state.baselines = await this.model.getBaselines(projectId);
+        } catch (e) {
+            this.notification.add(_t("基線儲存失敗: %(error)s", { error: e.message || "" }), { type: "danger" });
         } finally {
             this.state.isLoading = false;
         }

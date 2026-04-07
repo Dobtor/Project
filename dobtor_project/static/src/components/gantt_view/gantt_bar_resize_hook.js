@@ -1,8 +1,19 @@
 /** @odoo-module **/
 
 import { onMounted, onWillUnmount } from "@odoo/owl";
+import { _t } from "@web/core/l10n/translation";
 import { useThrottleForAnimation } from "@web/core/utils/timing";
-import { cellsDeltaToDuration, humanizeDays, formatDeltaLabel } from "./gantt_utils";
+import { cellsDeltaToDuration, humanizeDays, formatDeltaLabel, escapeHtml } from "./gantt_utils";
+
+function _scaleToMs(scale) {
+    if (scale === "1h") return 3600000;
+    if (scale === "2h") return 7200000;
+    if (scale === "4h") return 14400000;
+    if (scale === "8h") return 28800000;
+    if (scale === "week") return 604800000;
+    if (scale === "month") return 2592000000;
+    return 86400000; // default: day
+}
 
 /**
  * Custom OWL hook for bar resize via left/right handles.
@@ -13,6 +24,7 @@ import { cellsDeltaToDuration, humanizeDays, formatDeltaLabel } from "./gantt_ut
  * @param {Function} params.getRecord - (recordId) => record object
  * @param {Function} params.onResizeEnd - (recordId, side, cellsDelta) => Promise
  * @param {Function} [params.getScale] - () => current scale string (e.g. "day", "1h", "week")
+ * @param {Function} [params.getMinEnd] - (recordId) => DateTime|null (FF/SF min end constraint)
  * @param {Function} [params.onConstraintSet] - (recordId, constrainType, constrainDate) => Promise
  */
 export function useGanttBarResize(params) {
@@ -24,6 +36,7 @@ export function useGanttBarResize(params) {
     let startX = 0;
     let originalLeft = 0;
     let originalWidth = 0;
+    let minRightDeltaX = -Infinity; // FF/SF constraint for right-side resize
     let hintEl = null;
 
     const onMove = useThrottleForAnimation((ev) => {
@@ -31,6 +44,7 @@ export function useGanttBarResize(params) {
 
         const deltaX = ev.clientX - startX;
         const cellWidth = params.getCellWidth();
+        if (!cellWidth) return;
         const minWidth = 4; // minimum visible bar width in px
 
         // Pixel-level resize (no grid snap) for minute-level precision
@@ -42,7 +56,18 @@ export function useGanttBarResize(params) {
                 resizeBar.style.width = `${newWidth}px`;
             }
         } else {
-            const newWidth = originalWidth + deltaX;
+            // Clamp right-side shrink to FF/SF min-end boundary
+            let clampedDelta = deltaX;
+            const hitBoundary = minRightDeltaX > -Infinity && deltaX < minRightDeltaX;
+            if (hitBoundary) {
+                clampedDelta = minRightDeltaX;
+            }
+            if (hitBoundary) {
+                resizeBar.classList.add("o_gantt_bar_at_boundary");
+            } else {
+                resizeBar.classList.remove("o_gantt_bar_at_boundary");
+            }
+            const newWidth = originalWidth + clampedDelta;
             if (newWidth >= minWidth) {
                 resizeBar.style.width = `${newWidth}px`;
             }
@@ -68,8 +93,10 @@ export function useGanttBarResize(params) {
         const shiftHeld = ev.shiftKey;
 
         // Skip auto-scheduled tasks UNLESS Shift is held (constraint mode)
+        // Exception: right-resize is allowed (modifies duration, not start date)
         const record = params.getRecord(rid);
-        if (record && record._scheduleMode === "auto" && !shiftHeld) return;
+        const isLeft = handle.classList.contains("o_gantt_bar_resize_left");
+        if (record && record._scheduleMode === "auto" && !shiftHeld && isLeft) return;
 
         ev.preventDefault();
         ev.stopPropagation(); // Prevent drag hook from triggering
@@ -82,6 +109,23 @@ export function useGanttBarResize(params) {
         startX = ev.clientX;
         originalLeft = parseFloat(bar.style.left) || 0;
         originalWidth = parseFloat(bar.style.width) || 0;
+
+        // Compute FF/SF min-end constraint for right-side resize
+        minRightDeltaX = -Infinity;
+        if (side === "right" && params.getMinEnd) {
+            const minEnd = params.getMinEnd(rid);
+            if (minEnd && record) {
+                const currentEnd = record._dateEnd;
+                if (currentEnd) {
+                    const cellWidth2 = params.getCellWidth();
+                    const scale2 = params.getScale ? params.getScale() : "day";
+                    const diffMs = currentEnd.toMillis() - minEnd.toMillis();
+                    const msPerCell = _scaleToMs(scale2);
+                    const maxShrinkCells = diffMs / msPerCell;
+                    minRightDeltaX = -(maxShrinkCells * cellWidth2);
+                }
+            }
+        }
 
         bar.classList.add("o_gantt_bar_dragging");
         if (isConstraintMode) {
@@ -106,11 +150,13 @@ export function useGanttBarResize(params) {
 
         const deltaX = ev.clientX - startX;
         const cellWidth = params.getCellWidth();
+        if (!cellWidth) { _cleanup(); return; }
         // Fractional cell delta for sub-cell (minute-level) precision
         const cellsDelta = deltaX / cellWidth;
 
         resizeBar.classList.remove("o_gantt_bar_dragging");
         resizeBar.classList.remove("o_gantt_bar_constraint_mode");
+        resizeBar.classList.remove("o_gantt_bar_at_boundary");
         _removeHint();
 
         const _scale = params.getScale ? params.getScale() : "day";
@@ -176,6 +222,7 @@ export function useGanttBarResize(params) {
         if (!hintEl || !resizeBar) return;
 
         const cellWidth = params.getCellWidth();
+        if (!cellWidth) return;
         const cellsDelta = deltaX / cellWidth;
         const record = params.getRecord(recordId);
         const _scale = params.getScale ? params.getScale() : "day";
@@ -189,35 +236,45 @@ export function useGanttBarResize(params) {
                 : record._dateEnd.plus(shiftDur);
             hintEl.innerHTML =
                 `<div class="o_gantt_hint_row o_gantt_hint_constraint">` +
-                `<span class="o_gantt_hint_label">${constraintType}</span> ` +
-                `${targetDate.toFormat("M/d HH:mm")}` +
+                `<span class="o_gantt_hint_label">${escapeHtml(constraintType)}</span> ` +
+                `${escapeHtml(targetDate.toFormat("M/d HH:mm"))}` +
                 `</div>`;
         } else if (record && record._dateStart && record._dateEnd) {
             const hpd = params.getCalHpd ? params.getCalHpd() : 24;
             const dpw = params.getCalDpw ? params.getCalDpw() : 7;
+            // Use renderer's shiftDate for working-day-aware preview
             const newStart = side === "left"
-                ? record._dateStart.plus(shiftDur)
+                ? (params.shiftDate ? params.shiftDate(record._dateStart, cellsDelta) : record._dateStart.plus(shiftDur))
                 : record._dateStart;
             const newEnd = side === "right"
-                ? record._dateEnd.plus(shiftDur)
+                ? (params.shiftDate ? params.shiftDate(record._dateEnd, cellsDelta) : record._dateEnd.plus(shiftDur))
                 : record._dateEnd;
 
-            const calDays = Math.round(newEnd.diff(newStart, "days").days * 10) / 10;
-            const workDays = Math.round(calDays * (dpw / 7) * 10) / 10;
-            const durationStr = humanizeDays(workDays, dpw);
+            const diffHours = newEnd.diff(newStart, "hours").hours;
+            const durationStr = humanizeDays(diffHours / hpd, dpw, hpd);
 
-            const sideLabel = side === "left" ? "\u958B\u59CB" : "\u7D50\u675F";
-            const deltaLabel = formatDeltaLabel(cellsDelta, _scale, hpd);
+            const sideLabel = side === "left" ? _t("開始") : _t("結束");
+            const deltaLabel = formatDeltaLabel(cellsDelta, _scale, hpd, dpw);
 
             const lines = [];
-            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">\u958B\u59CB:</span> ${newStart.toFormat("M/d HH:mm")}</div>`);
-            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">\u7D50\u675F:</span> ${newEnd.toFormat("M/d HH:mm")}</div>`);
-            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">\u5DE5\u671F:</span> ${durationStr}</div>`);
-            lines.push(`<div class="o_gantt_hint_delta">${sideLabel} ${deltaLabel}</div>`);
+            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">${escapeHtml(_t("開始"))}:</span> ${escapeHtml(newStart.toFormat("M/d HH:mm"))}</div>`);
+            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">${escapeHtml(_t("結束"))}:</span> ${escapeHtml(newEnd.toFormat("M/d HH:mm"))}</div>`);
+            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">${escapeHtml(_t("工期"))}:</span> ${escapeHtml(durationStr)}</div>`);
+            lines.push(`<div class="o_gantt_hint_delta">${escapeHtml(sideLabel)} ${escapeHtml(deltaLabel)}</div>`);
+            // Lag preview for FS predecessors
+            if (params.getPredLagPreview) {
+                const lagInfo = params.getPredLagPreview(recordId, cellsDelta, side);
+                if (lagInfo && lagInfo.length > 0) {
+                    for (const info of lagInfo) {
+                        lines.push(`<div class="o_gantt_hint_row o_gantt_hint_lag"><span class="o_gantt_hint_label">${escapeHtml(info.type)} lag:</span> ${escapeHtml(info.currentLag)} → ${escapeHtml(info.newLag)}</div>`);
+                    }
+                }
+            }
             hintEl.innerHTML = lines.join("");
         } else {
             const hpd = params.getCalHpd ? params.getCalHpd() : 24;
-            hintEl.textContent = formatDeltaLabel(cellsDelta, _scale, hpd);
+            const dpw2 = params.getCalDpw ? params.getCalDpw() : 7;
+            hintEl.textContent = formatDeltaLabel(cellsDelta, _scale, hpd, dpw2);
         }
 
         // Position near the resize handle
@@ -244,6 +301,7 @@ export function useGanttBarResize(params) {
         resizeBar = null;
         recordId = null;
         side = null;
+        minRightDeltaX = -Infinity;
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
         _removeHint();

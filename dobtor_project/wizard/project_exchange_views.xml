@@ -9,7 +9,7 @@
             <field name="name">project.exchange.form</field>
             <field name="model">project.exchange</field>
             <field name="arch" type="xml">
-                <form string="Export Project (Gantt)">
+                <form>
                     <group>
                         <field name="project_id"/>
                         <field name="name" invisible="not file_save"/>
@@ -44,7 +44,7 @@
             <field name="name">project.exchange.import.form</field>
             <field name="model">project.exchange.import</field>
             <field name="arch" type="xml">
-                <form string="Import Project (Gantt)">
+                <form>
                     <group>
                         <field name="file_load" filename="name"/>
                         <field name="name" invisible="1"/>
@@ -66,10 +66,10 @@
                     <footer>
                         <button name="action_parse" string="Parse &amp; Preview"
                                 type="object" class="btn-secondary"
-                                invisible="project_id"/>
+                                invisible="preview_line_ids or project_id"/>
                         <button name="action_import" string="Import"
                                 type="object" class="btn-primary"
-                                invisible="project_id"/>
+                                invisible="not preview_line_ids or project_id"/>
                         <button string="Close" class="btn-secondary"
                                 special="cancel"/>
                     </footer>

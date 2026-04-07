@@ -127,6 +127,8 @@ class ProjectTaskResourceLink(models.Model):
     def create(self, vals_list):
         records = super().create(vals_list)
 
+        # Group info_ids commands by task to avoid N+1 writes
+        task_info_map = {}  # task_id -> list of Command.create(...)
         for new_id in records:
             info_name = "res_{}".format(new_id.id)
             value = {
@@ -134,9 +136,13 @@ class ProjectTaskResourceLink(models.Model):
                 "end": new_id.resource_id.name,
                 "show": True
             }
+            task = new_id.task_id
+            if task.id not in task_info_map:
+                task_info_map[task.id] = {"task": task, "cmds": []}
+            task_info_map[task.id]["cmds"].append(Command.create(value))
 
-            vals = {"info_ids": [Command.create(value)]}
-            new_id.task_id.write(vals)
+        for entry in task_info_map.values():
+            entry["task"].write({"info_ids": entry["cmds"]})
 
         return records
 

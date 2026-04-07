@@ -2,12 +2,22 @@
 
 import re
 from datetime import datetime, timedelta
+from lxml import etree as LxmlET
 from xml.dom import minidom
 from xml.etree import ElementTree as ET
 
 
 def prettify(elem):
-    """Return a pretty-printed XML string for the Element."""
+    """Return a pretty-printed XML string for the Element.
+
+    Supports both stdlib ElementTree and lxml etree elements.
+    """
+    if hasattr(elem, 'getroottree'):
+        # lxml element — use lxml's tostring for correct namespace handling
+        return LxmlET.tostring(
+            elem, pretty_print=True, xml_declaration=True,
+            encoding='unicode',
+        )
     rough = ET.tostring(elem, encoding='unicode')
     reparsed = minidom.parseString(rough)
     return reparsed.toprettyxml(indent="  ")
@@ -43,27 +53,35 @@ def xml_dt_to_odoo(xml_str):
 # ISO 8601 duration
 # ---------------------------------------------------------------------------
 
-def seconds_to_iso8601(seconds):
-    """Convert seconds (int/float) to ISO 8601 duration: PT8H0M0S"""
-    if not seconds:
+def hours_to_iso8601(hours):
+    """Convert hours (int/float) to ISO 8601 duration: PT8H0M0S"""
+    if not hours:
         return "PT0H0M0S"
-    total = int(seconds)
-    h, rem = divmod(abs(total), 3600)
+    total_seconds = int(abs(hours) * 3600)
+    h, rem = divmod(total_seconds, 3600)
     m, s = divmod(rem, 60)
     return f"PT{h}H{m}M{s}S"
 
 
-def iso8601_to_seconds(iso_str):
-    """Convert ISO 8601 duration PT8H0M0S to seconds."""
+# Keep old name as alias for backward compatibility
+seconds_to_iso8601 = hours_to_iso8601
+
+
+def iso8601_to_hours(iso_str):
+    """Convert ISO 8601 duration PT8H0M0S to hours (float)."""
     if not iso_str:
-        return 0
+        return 0.0
     match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', iso_str)
     if not match:
-        return 0
+        return 0.0
     h = int(match.group(1) or 0)
     m = int(match.group(2) or 0)
     s = int(match.group(3) or 0)
-    return h * 3600 + m * 60 + s
+    return h + m / 60.0 + s / 3600.0
+
+
+# Keep old name as alias for backward compatibility
+iso8601_to_seconds = iso8601_to_hours
 
 
 # ---------------------------------------------------------------------------

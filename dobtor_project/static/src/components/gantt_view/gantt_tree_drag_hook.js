@@ -24,6 +24,10 @@ export function useGanttTreeDrag(params) {
     let dropTarget = null;
     let dropPosition = "after"; // "before" | "after" | "child"
 
+    // Cached row positions for binary search (built once per drag)
+    let cachedRowPositions = null; // [{el, recordId, top, bottom, midY}, ...] sorted by top
+    let cachedScrollTop = 0; // scrollTop at cache time, used to adjust for scroll delta
+
     const THRESHOLD = 5;
     const ROW_HEIGHT = 44;
 
@@ -73,6 +77,9 @@ export function useGanttTreeDrag(params) {
         recordId = rid;
         startY = ev.clientY;
         dragThresholdMet = false;
+
+        // Build row position cache at drag start
+        _buildRowPositionCache();
 
         document.addEventListener("pointermove", onMove);
         document.addEventListener("pointerup", onPointerUp, { once: true });
@@ -124,79 +131,139 @@ export function useGanttTreeDrag(params) {
         }
     }
 
+    function _buildRowPositionCache() {
+        const listEl = params.getListEl();
+        if (!listEl) {
+            cachedRowPositions = null;
+            return;
+        }
+        cachedScrollTop = listEl.scrollTop;
+        const rows = listEl.querySelectorAll(".o_gantt_list_row:not(.o_gantt_group_row)");
+        cachedRowPositions = [];
+        for (const row of rows) {
+            if (row === dragRow) continue;
+            const rid = parseInt(row.dataset.recordId, 10);
+            if (!rid || rid === recordId) continue;
+            const rect = row.getBoundingClientRect();
+            cachedRowPositions.push({
+                el: row,
+                recordId: rid,
+                top: rect.top,
+                bottom: rect.bottom,
+                midY: rect.top + rect.height / 2,
+                height: rect.height,
+            });
+        }
+        // Sort by top Y (should already be in order, but ensure it)
+        cachedRowPositions.sort((a, b) => a.top - b.top);
+    }
+
+    /**
+     * Binary search to find the closest row to mouseY.
+     * cachedPositions must be sorted by midY (ascending).
+     * Returns {entry, isAbove} or null.
+     */
+    function _findClosestRow(mouseY) {
+        if (!cachedRowPositions || cachedRowPositions.length === 0) return null;
+
+        // Adjust for scroll delta since cache was built.
+        // cached midY was at viewport coords when scrollTop = cachedScrollTop.
+        // Now scrollTop may have changed. Current viewport midY = cached midY - scrollDelta.
+        const listEl = params.getListEl();
+        const sd = listEl ? listEl.scrollTop - cachedScrollTop : 0;
+
+        const positions = cachedRowPositions;
+        let lo = 0;
+        let hi = positions.length - 1;
+        // Find insertion point: the first row whose adjusted midY > mouseY
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if ((positions[mid].midY - sd) > mouseY) {
+                hi = mid - 1;
+            } else {
+                lo = mid + 1;
+            }
+        }
+
+        // Candidates: hi (last row with adjustedMidY <= mouseY) and lo (first row with adjustedMidY > mouseY)
+        let bestIdx = -1;
+        let bestDist = Infinity;
+        for (const idx of [hi, lo]) {
+            if (idx >= 0 && idx < positions.length) {
+                const dist = Math.abs(mouseY - (positions[idx].midY - sd));
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bestIdx = idx;
+                }
+            }
+        }
+
+        if (bestIdx < 0) return null;
+        const entry = positions[bestIdx];
+        const isAbove = mouseY < (entry.midY - sd);
+        return { entry, isAbove, scrollDelta: sd };
+    }
+
     function _updateDropTarget(ev) {
         const listEl = params.getListEl();
         if (!listEl || !dropIndicator) return;
 
         // Clear previous row highlights
-        listEl.querySelectorAll(".o_gantt_tree_drop_child_target").forEach(
-            el => el.classList.remove("o_gantt_tree_drop_child_target")
-        );
+        const prevTarget = listEl.querySelector(".o_gantt_tree_drop_child_target");
+        if (prevTarget) prevTarget.classList.remove("o_gantt_tree_drop_child_target");
 
-        const rows = listEl.querySelectorAll(".o_gantt_list_row:not(.o_gantt_group_row)");
-        let closestRow = null;
-        let closestDist = Infinity;
-        let isAbove = false;
+        const result = _findClosestRow(ev.clientY);
+        if (!result) return;
 
-        for (const row of rows) {
-            if (row === dragRow) continue;
+        const { entry, isAbove, scrollDelta: sd } = result;
+        const rid = entry.recordId;
+        const closestRow = entry.el;
 
-            const rect = row.getBoundingClientRect();
-            const midY = rect.top + rect.height / 2;
-            const dist = Math.abs(ev.clientY - midY);
+        dropTarget = { recordId: rid, el: closestRow };
+        dropPosition = isAbove ? "before" : "after";
 
-            if (dist < closestDist) {
-                closestDist = dist;
-                closestRow = row;
-                isAbove = ev.clientY < midY;
-            }
+        // Check if dropping as child (right 40% of row)
+        // Use cached position for left/width (adjusted for scroll — only vertical scroll matters, not horizontal for left)
+        const rowLeft = entry.el.getBoundingClientRect().left;
+        const rowWidth = entry.bottom - entry.top; // approximate; use cached height
+        const relX = ev.clientX - rowLeft;
+        // For width, use the element's actual width (horizontal position not affected by vertical scroll)
+        const actualWidth = entry.el.offsetWidth;
+        if (relX > actualWidth * 0.6) {
+            dropPosition = "child";
         }
 
-        if (closestRow) {
-            const rid = parseInt(closestRow.dataset.recordId, 10);
-            if (rid && rid !== recordId) {
-                dropTarget = { recordId: rid, el: closestRow };
-                dropPosition = isAbove ? "before" : "after";
+        // Position indicator using cached coordinates
+        const listRect = listEl.getBoundingClientRect();
+        const adjustedTop = entry.top - sd;
+        const adjustedBottom = entry.bottom - sd;
+        dropIndicator.style.display = "block";
 
-                // Check if dropping as child (right 40% of row)
-                const rect = closestRow.getBoundingClientRect();
-                const relX = ev.clientX - rect.left;
-                if (relX > rect.width * 0.6) {
-                    dropPosition = "child";
-                }
+        // Get indent of target row for visual alignment
+        const targetRecord = params.getRecord(rid);
+        const indent = targetRecord?._indent || 0;
+        const indentPx = indent * 20 + 40; // match tree indent + handle width
 
-                // Position indicator
-                const listRect = listEl.getBoundingClientRect();
-                const rowRect = closestRow.getBoundingClientRect();
-                dropIndicator.style.display = "block";
-
-                // Get indent of target row for visual alignment
-                const targetRecord = params.getRecord(rid);
-                const indent = targetRecord?._indent || 0;
-                const indentPx = indent * 20 + 40; // match tree indent + handle width
-
-                if (dropPosition === "before") {
-                    dropIndicator.style.top = `${rowRect.top - listRect.top + listEl.scrollTop}px`;
-                    dropIndicator.style.left = `${indentPx}px`;
-                    dropIndicator.style.right = "0";
-                    dropIndicator.style.height = "2px";
-                    dropIndicator.style.background = "var(--gantt-accent-blue)";
-                } else if (dropPosition === "after") {
-                    dropIndicator.style.top = `${rowRect.bottom - listRect.top + listEl.scrollTop}px`;
-                    dropIndicator.style.left = `${indentPx}px`;
-                    dropIndicator.style.right = "0";
-                    dropIndicator.style.height = "2px";
-                    dropIndicator.style.background = "var(--gantt-accent-blue)";
-                } else {
-                    // "child" — highlight the row with indented indicator
-                    dropIndicator.style.top = `${rowRect.top - listRect.top + listEl.scrollTop}px`;
-                    dropIndicator.style.left = `${indentPx + 20}px`; // one level deeper
-                    dropIndicator.style.right = "0";
-                    dropIndicator.style.height = `${rowRect.height}px`;
-                    dropIndicator.style.background = "rgba(0, 122, 255, 0.08)";
-                    closestRow.classList.add("o_gantt_tree_drop_child_target");
-                }
-            }
+        if (dropPosition === "before") {
+            dropIndicator.style.top = `${adjustedTop - listRect.top + listEl.scrollTop}px`;
+            dropIndicator.style.left = `${indentPx}px`;
+            dropIndicator.style.right = "0";
+            dropIndicator.style.height = "2px";
+            dropIndicator.style.background = "var(--gantt-accent-blue)";
+        } else if (dropPosition === "after") {
+            dropIndicator.style.top = `${adjustedBottom - listRect.top + listEl.scrollTop}px`;
+            dropIndicator.style.left = `${indentPx}px`;
+            dropIndicator.style.right = "0";
+            dropIndicator.style.height = "2px";
+            dropIndicator.style.background = "var(--gantt-accent-blue)";
+        } else {
+            // "child" — highlight the row with indented indicator
+            dropIndicator.style.top = `${adjustedTop - listRect.top + listEl.scrollTop}px`;
+            dropIndicator.style.left = `${indentPx + 20}px`; // one level deeper
+            dropIndicator.style.right = "0";
+            dropIndicator.style.height = `${entry.height}px`;
+            dropIndicator.style.background = "rgba(0, 122, 255, 0.08)";
+            closestRow.classList.add("o_gantt_tree_drop_child_target");
         }
     }
 
@@ -225,6 +292,8 @@ export function useGanttTreeDrag(params) {
         ghostEl = null;
         dropIndicator = null;
         dropTarget = null;
+        cachedRowPositions = null;
+        cachedScrollTop = 0;
     }
 
     onMounted(() => {

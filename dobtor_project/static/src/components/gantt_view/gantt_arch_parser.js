@@ -125,6 +125,9 @@ export class GanttArchParser {
         // Milestone
         archInfo.milestoneId = archInfo.milestoneId || "";
 
+        // Progress mode
+        archInfo.progressMode = archInfo.progressMode || "";
+
         return archInfo;
     }
 

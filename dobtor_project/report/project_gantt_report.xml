@@ -54,8 +54,7 @@
                             min-width: 3em;
                         }
                         .gantt-rpt .col-name {
-                            white-space: normal;
-                            word-wrap: break-word;
+                            white-space: nowrap;
                         }
                         .gantt-rpt .row-parent td {
                             font-weight: 600;

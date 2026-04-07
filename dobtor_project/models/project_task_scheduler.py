@@ -1,14 +1,39 @@
 # -*- coding: utf-8 -*-
 from odoo import models, fields, api, _
+from collections import deque
 from datetime import timedelta
+import logging
+
+_logger = logging.getLogger(__name__)
 
 
 class ProjectTaskNativeScheduler(models.Model):
     _inherit = 'project.task'
-
+    
     def _scheduler_plan_start_calc(self, project):
-        """Main scheduling entry point - optimized to avoid N+1 queries"""
+        """Main scheduling entry point - optimized to avoid N+1 queries.
+
+        The entire scheduling operation is wrapped in a DB savepoint so that
+        if anything fails mid-way (e.g. after schedule_end has already been
+        cleared by _project_check_date), the transaction rolls back to the
+        pre-scheduling state and no data is permanently lost.
+        """
+        _logger.info("Starting schedule calculation for project: %s (ID: %s)", project.name, project.id)
+
+        cr = self.env.cr
+
         scheduling_type = project.scheduling_type
+
+        # Wrap the entire scheduling in a savepoint.  If any step fails
+        # (especially after _project_check_date has cleared schedule_end),
+        # the savepoint rollback restores the original values.
+        with cr.savepoint():
+            self._scheduler_plan_start_calc_inner(project, scheduling_type)
+
+        _logger.info("Schedule calculation completed for project: %s (ID: %s)", project.name, project.id)
+
+    def _scheduler_plan_start_calc_inner(self, project, scheduling_type):
+        """Inner scheduling logic — called inside a savepoint."""
         tasks_ap = []
         project_id = project.id
         leave_ids = list()
@@ -54,8 +79,17 @@ class ProjectTaskNativeScheduler(models.Model):
         detail_plan_model = self.env['project.task.detail.plan']
         detail_plan_model.search([('task_id', 'in', task_ids)]).unlink()
 
+        # OPTIMIZATION: Prefetch task resources to avoid N+1 queries
+        tasks_list.mapped('task_resource_ids')
+        
+        # Batch fetch all task resources info
+        task_resource_map = {}
         for task in tasks_list:
-            task_resource_ids = task.task_resource_ids if hasattr(task, 'task_resource_ids') else False
+            if hasattr(task, 'task_resource_ids'):
+                task_resource_map[task.id] = task.task_resource_ids
+
+        for task in tasks_list:
+            task_resource_ids = task_resource_map.get(task.id, False)
 
             cal_id, task_res, t_params = self.make_res_cal_leave(task_resource_ids, t_params, task_ids)
 
@@ -147,44 +181,62 @@ class ProjectTaskNativeScheduler(models.Model):
                         task_id=task_alap["id"], project=project_ap, tasks=tasks_ap, t_params=t_params, revers_step=False
                     )
 
-        # Write result to task
-        projects_task_obj = self.env['project.task']
-        for task_new in tasks_ap:
-            if "calc" in task_new.keys():
-                task_id = task_new["id"]
-                task_obj = projects_task_obj.browse(task_id)
-                vals = {}
-                vals = self._task_info_add(task=task_new, vals=vals, info_name=info_name)
+        # Write result to tasks — batch browse + deferred recompute
+        calc_tasks = [t for t in tasks_ap if "calc" in t]
+        calc_task_ids = [t["id"] for t in calc_tasks]
+        task_obj_map = {
+            t.id: t
+            for t in self.env['project.task'].browse(calc_task_ids)
+        } if calc_task_ids else {}
 
-                if scheduling_type == "forward":
-                    task_date_start = "soon_date_start"
-                    task_date_end = "soon_date_end"
-                    detail_plan = "soon_detail_plan"
-                else:
-                    task_date_start = "late_date_start"
-                    task_date_end = "late_date_end"
-                    detail_plan = "late_detail_plan"
+        # Collect (task_obj, vals) pairs first, then write in a deferred
+        # recompute block so field recomputations happen only once at the end.
+        write_queue = []
+        for task_new in calc_tasks:
+            task_obj = task_obj_map.get(task_new["id"])
+            if not task_obj:
+                continue
 
-                vals["date_start"] = task_new[task_date_start]
-                vals["date_end"] = task_new[task_date_end]
+            vals = {}
+            vals = self._task_info_add(task=task_new, vals=vals, info_name=info_name)
 
-                if detail_plan in task_new.keys():
-                    save_detail_plan = False
-                    if task_obj.project_id and task_obj.project_id.detail_plan:
-                        save_detail_plan = task_obj.project_id.detail_plan
-                    elif task_obj.detail_plan:
-                        save_detail_plan = True
+            if scheduling_type == "forward":
+                task_date_start = "soon_date_start"
+                task_date_end = "soon_date_end"
+                detail_plan = "soon_detail_plan"
+            else:
+                task_date_start = "late_date_start"
+                task_date_end = "late_date_end"
+                detail_plan = "late_detail_plan"
 
-                    if save_detail_plan:
-                        task_detail_lines = self._add_detail_plan(task_new[detail_plan])
-                        if task_detail_lines:
-                            vals["detail_plan_ids"] = task_detail_lines
+            vals["date_start"] = task_new[task_date_start]
+            vals["date_end"] = task_new[task_date_end]
 
-                if "critical_path" in task_new.keys():
-                    vals["critical_path"] = task_new["critical_path"]
+            if detail_plan in task_new:
+                save_detail_plan = False
+                if task_obj.project_id and task_obj.project_id.detail_plan:
+                    save_detail_plan = task_obj.project_id.detail_plan
+                elif task_obj.detail_plan:
+                    save_detail_plan = True
 
-                vals["p_loop"] = task_new["p_loop"]
-                task_obj.with_context(skip_date_snap=True).write(vals)
+                if save_detail_plan:
+                    task_detail_lines = self._add_detail_plan(task_new[detail_plan])
+                    if task_detail_lines:
+                        vals["detail_plan_ids"] = task_detail_lines
+
+            if "critical_path" in task_new:
+                vals["critical_path"] = task_new["critical_path"]
+
+            vals["p_loop"] = task_new["p_loop"]
+            write_queue.append((task_obj, vals))
+
+        # Batch write: skip date snap and cascade push during scheduling
+        for task_obj, vals in write_queue:
+            task_obj.with_context(
+                skip_date_snap=True,
+                skip_cascade_push=True,
+                skip_auto_complete=True,
+            ).write(vals)
 
     def _project_get_date(self, project_ap, tasks_ap, scheduling_type):
         prj_task_date = []
@@ -233,11 +285,13 @@ class ProjectTaskNativeScheduler(models.Model):
                 ('predecessor_parent', '=', 0)
             ])
 
-        t_params.update({"scheduling_type": scheduling_type})
+        # Use local scheduling_type — do NOT mutate t_params to avoid
+        # polluting subsequent calls (e.g. ALAP processing after reverse step).
+        local_params = dict(t_params, scheduling_type=scheduling_type)
 
         for search_task in search_tasks:
             tasks_ap = self._ap_calc_scheduler_first_work(
-                task=search_task, tasks=tasks_ap, project=project_ap, t_params=t_params, revers_step=revers_step
+                task=search_task, tasks=tasks_ap, project=project_ap, t_params=local_params, revers_step=revers_step
             )
         return tasks_ap
 
@@ -270,7 +324,29 @@ class ProjectTaskNativeScheduler(models.Model):
                 # Use plan_offset to preserve relative position from planning mode
                 plan_offset = task_obj.get("plan_offset", 0)
                 if plan_offset:
-                    new_date = new_date + timedelta(hours=plan_offset)
+                    proj_obj = t_params.get("project")
+                    if proj_obj and proj_obj.use_calendar and proj_obj.resource_calendar_id:
+                        # plan_offset is in working hours — convert via calendar
+                        offset_task = {
+                            "id": 0,
+                            "name": "_offset_calc",
+                            "project_id": proj_obj,
+                            "task_resource_ids": task_obj.get("task_resource_ids", self.env['project.task.resource.link']),
+                            "task_res": task_obj.get("task_res", [{"calendar_id": proj_obj.resource_calendar_id.id or -1,
+                                                                     "resource_id": -1, "load_factor": 1, "load_control": "no"}]),
+                            "fixed_calc_type": "duration",
+                            "plan_duration": plan_offset,
+                        }
+                        offset_level = self._get_calendar_level(
+                            offset_task, new_date, plan_offset, t_params, direction=direction)
+                        if offset_level:
+                            new_date = self._get_date_from_level(
+                                offset_level, "date_to" if direction == "normal" else "date_from",
+                                "max" if direction == "normal" else "min") or new_date
+                        else:
+                            new_date = new_date + timedelta(hours=plan_offset)
+                    else:
+                        new_date = new_date + timedelta(hours=plan_offset)
 
                 calendar_level, date_start, date_end = self._ap_calc_period(
                     task_obj=task_obj, direction=direction, new_date=new_date, date_type=date_type, t_params=t_params
@@ -309,48 +385,50 @@ class ProjectTaskNativeScheduler(models.Model):
             task_field = "parent_task_id"
             next_task_field = "task_id"
 
-        next_stack = [task_id]
-        visited_stack = []
+        next_stack = deque([task_id])
+        visited_ids = set()
 
         _itr = 0
-        while len(next_stack) > 0:
-            for next_id in next_stack[:]:
-                loop_search = list(filter(lambda x: x["next_id"] == next_id and x["itr"] != _itr, visited_stack))
-                next_stack.remove(next_id)
+        while next_stack:
+            current_batch = list(next_stack)
+            next_stack.clear()
 
-                if loop_search:
+            for next_id in current_batch:
+                if next_id in visited_ids:
+                    # Circular dependency detected — mark as loop
                     tasks = [self._task_date_update(x_task, next_id, {"p_loop": True}) for x_task in tasks]
+                    continue
 
-                if not loop_search:
-                    search_objs = filter(lambda x: x[task_field] == next_id, predecessors)
-                    search_objs = list(search_objs)
+                visited_ids.add(next_id)
 
-                    visited_stack.append({"next_id": next_id, "itr": _itr})
+                search_objs = filter(lambda x: x[task_field] == next_id, predecessors)
+                search_objs = list(search_objs)
 
-                    for predecessor_obj in search_objs:
-                        date_list = self._calc_date_list(scheduling_type, predecessors, tasks, predecessor_obj)
-                        task_obj = self._task_from_list(tasks, task_id=predecessor_obj[next_task_field])
+                for predecessor_obj in search_objs:
+                    date_list = self._calc_date_list(scheduling_type, predecessors, tasks, predecessor_obj)
+                    target_id = predecessor_obj[next_task_field]
+                    task_obj = self._task_from_list(tasks, task_id=target_id)
 
-                        if task_obj:
-                            vals, calendar_level = self._calc_new_date(
-                                scheduling_type=scheduling_type, predecessor_obj=predecessor_obj,
-                                task_obj=task_obj, date_list=date_list, t_params=t_params
-                            )
+                    if task_obj:
+                        vals, calendar_level = self._calc_new_date(
+                            scheduling_type=scheduling_type, predecessor_obj=predecessor_obj,
+                            task_obj=task_obj, date_list=date_list, t_params=t_params
+                        )
 
-                            if task_obj["schedule_mode"] == "auto":
-                                if vals and 'plan_action' not in vals.keys():
-                                    next_id = task_obj["id"]
-                                    vals, calendar_level = self._scheduler_work_constrain(
-                                        task_obj, vals, calendar_level, scheduling_type, t_params
-                                    )
-                                    if calendar_level:
-                                        vals["detail_plan"] = calendar_level
-                            else:
-                                vals["calc"] = True
+                        if task_obj["schedule_mode"] == "auto":
+                            if vals and 'plan_action' not in vals.keys():
+                                vals, calendar_level = self._scheduler_work_constrain(
+                                    task_obj, vals, calendar_level, scheduling_type, t_params
+                                )
+                                if calendar_level:
+                                    vals["detail_plan"] = calendar_level
+                        else:
+                            vals["calc"] = True
 
-                            tasks = [self._task_date_update(x_task, next_id, vals) for x_task in tasks]
+                        tasks = [self._task_date_update(x_task, target_id, vals) for x_task in tasks]
 
-                        next_stack.append(predecessor_obj[next_task_field])
+                    if target_id not in visited_ids:
+                        next_stack.append(target_id)
 
             _itr = _itr + 1
             if not next_stack:
@@ -583,7 +661,7 @@ class ProjectTaskNativeScheduler(models.Model):
                     date_type = "date_end"
                     direction = "revers"
                 if type_link == "SS":
-                    new_date = min(date_list)
+                    new_date = max(date_list)
                     date_type = "date_start"
                     direction = "normal"
                 if type_link == "FF":
@@ -670,3 +748,4 @@ class ProjectTaskNativeScheduler(models.Model):
                     calendar_level = calendar_level_new
 
         return vals, calendar_level
+

@@ -71,6 +71,9 @@ export function useGanttProgressDrag(params) {
         const record = params.getRecord(rid);
         if (!record) return;
 
+        // Skip timesheet-mode tasks (progress is auto-computed)
+        if (record._progressMode === 'timesheet') return;
+
         // Prevent bar drag from interfering
         ev.stopPropagation();
         ev.preventDefault();

@@ -1,7 +1,8 @@
 /** @odoo-module **/
 
 import { Model } from "@web/model/model";
-import { lagToDuration, durationToLag, toOdooDatetime } from "./gantt_utils";
+import { _t } from "@web/core/l10n/translation";
+import { durationToLag, cellsDeltaToDuration } from "./gantt_utils";
 
 const { DateTime } = luxon;
 
@@ -31,6 +32,25 @@ export class GanttModel extends Model {
         return dt.isValid ? dt.setZone("default") : null;
     }
 
+    /**
+     * Parse an Odoo Date field (date-only, no time component) as local.
+     * Date fields like "2026-02-10" have no timezone — they represent a
+     * calendar date. Parsing them as UTC then converting to local would
+     * shift the date (e.g., UTC midnight → previous day in UTC+8).
+     * This method parses directly in the local timezone to avoid that.
+     */
+    static parseOdooDateAsLocal(value) {
+        if (!value) return null;
+        if (typeof value !== "string") return null;
+        // Date-only: "YYYY-MM-DD" (exactly 10 chars, no space or T)
+        if (value.length === 10 && !value.includes(" ") && !value.includes("T")) {
+            const dt = DateTime.fromISO(value, { zone: "local" });
+            return dt.isValid ? dt : null;
+        }
+        // Not a pure date string — fall back to standard datetime parsing
+        return GanttModel.parseOdooDate(value);
+    }
+
     setup(params, services) {
         this.orm = services.orm;
         this.notification = services.notification;
@@ -47,7 +67,7 @@ export class GanttModel extends Model {
             milestones: [],       // Milestone raw records (negative ID)
             milestoneLinks: [],   // task→milestone arrow data
             loadBars: [],     // Resource load/detail plan bars
-            taskInfos: [],    // Critical path info (ES/LS/EF/LF)
+            taskInfos: new Map(),  // Critical path info (ES/LS/EF/LF)
             ghostBars: [],    // Baseline/ghost bars for comparison
         };
 
@@ -58,14 +78,110 @@ export class GanttModel extends Model {
         // Track which parents are currently loading children (for spinner UI)
         this._loadingChildrenSet = new Set();
 
+        // Indexes for O(1) lookups — rebuilt via _rebuildIndexes()
+        this._recordMap = new Map();       // id → record
+        this._predByParent = new Map();    // parent_task_id → [pred, ...]
+        this._predByChild = new Map();     // task_id → [pred, ...]
+        this._predById = new Map();        // pred.id → pred
+        this._childrenByParent = new Map(); // _parentId → [record, ...]
+        this._groupMap = new Map();        // groupId → group
+
         this.scale = "day";
         this.sortMode = "seq";  // "seq" | "start" | "name"
+
+        // Item 11: Undo/Redo history stacks
+        this._undoStack = [];  // Array of { type, recordId, before: {...}, after: {...} }
+        this._redoStack = [];
+        this._maxHistory = 30;
+
+        // Deferred task infos refresh
+        this._taskInfosStale = false;
+        this._taskInfosRefreshTimer = null;
+    }
+
+    /**
+     * Rebuild all lookup indexes from this.data.records and this.data.predecessors.
+     * Must be called whenever records or predecessors are added/removed/replaced.
+     */
+    _rebuildIndexes() {
+        // Record index
+        this._recordMap = new Map(this.data.records.map(r => [r.id, r]));
+
+        // Children-by-parent index (_parentId → [record, ...])
+        this._childrenByParent = new Map();
+        for (const r of this.data.records) {
+            const pid = r._parentId ?? 0;
+            if (!this._childrenByParent.has(pid)) {
+                this._childrenByParent.set(pid, []);
+            }
+            this._childrenByParent.get(pid).push(r);
+        }
+
+        // Group index
+        this._groupMap = new Map();
+        if (this.data.groups) {
+            for (const g of this.data.groups) {
+                this._groupMap.set(g.id, g);
+            }
+        }
+
+        this._rebuildPredIndexes();
+    }
+
+    /**
+     * Find the group that contains a record, using the group field.
+     */
+    _getGroupForRecord(recordId) {
+        const record = this._recordMap.get(recordId);
+        if (!record) return null;
+        const groupField = this.archInfo.mainGroupIdName || "project_id";
+        const groupValue = record[groupField];
+        const groupId = Array.isArray(groupValue) ? groupValue[0] : (groupValue || 0);
+        return this._groupMap.get(groupId) || null;
+    }
+
+    /**
+     * Rebuild predecessor indexes only. Called when only predecessors change.
+     */
+    _rebuildPredIndexes() {
+        this._predByParent = new Map();
+        this._predByChild = new Map();
+        this._predById = new Map();
+        for (const p of this.data.predecessors) {
+            if (!this._predByParent.has(p.parent_task_id)) {
+                this._predByParent.set(p.parent_task_id, []);
+            }
+            this._predByParent.get(p.parent_task_id).push(p);
+            if (!this._predByChild.has(p.task_id)) {
+                this._predByChild.set(p.task_id, []);
+            }
+            this._predByChild.get(p.task_id).push(p);
+            if (p.id) {
+                this._predById.set(p.id, p);
+            }
+        }
+    }
+
+    /**
+     * Check if any child of the given parent uses virtual dates (planning mode).
+     * Uses _childrenByParent index for O(1) lookup + small scan.
+     */
+    _hasVirtualChild(parentId) {
+        const children = this._childrenByParent.get(parentId);
+        return children ? children.some(r => r._isVirtualDates) : false;
     }
 
     async load(props) {
         this._lastLoadProps = props;
         const domain = props.domain || [];
         const context = props.context || {};
+
+        // Clear any pending deferred task infos refresh from previous load cycle
+        if (this._taskInfosRefreshTimer) {
+            clearTimeout(this._taskInfosRefreshTimer);
+            this._taskInfosRefreshTimer = null;
+        }
+        this._taskInfosStale = false;
 
         try {
             const fields = this._getFieldsToFetch();
@@ -81,6 +197,8 @@ export class GanttModel extends Model {
             );
 
             this.data.records = this._processRecords(records);
+            // Early index so _autoSupplementChildren and later steps can use _recordMap
+            this._recordMap = new Map(this.data.records.map(r => [r.id, r]));
 
             // Phase 2: Auto-supplement missing children for loaded parent tasks
             await this._autoSupplementChildren(fields, context);
@@ -93,11 +211,11 @@ export class GanttModel extends Model {
             this._calculateTimeRange();
             this._groupRecords();
             await this._loadCalendarInfo();
+            this._rescaleVirtualDates();
             await this._loadMilestones();
             this._computeMilestonePositions();
             this._expandTimeRange(this.data.milestones);
             this._mergeMilestonesIntoGroups();
-            this._buildTree();
             this._buildMilestoneLinks();
             const results = await Promise.allSettled([
                 this._loadPredecessors(),
@@ -106,18 +224,37 @@ export class GanttModel extends Model {
                 this._loadGhostBars(),
                 this._loadGroupAvatars(),
             ]);
-            const labels = ["前置關聯", "資源列", "任務資訊", "Ghost 列", "群組頭像"];
+            const labels = [
+                _t("前置關聯"), _t("資源列"), _t("任務資訊"),
+                _t("Ghost 列"), _t("群組頭像"),
+            ];
             for (let i = 0; i < results.length; i++) {
                 if (results[i].status === "rejected") {
                     console.error(`Failed to load ${labels[i]}:`, results[i].reason);
-                    this.notification.add(`載入${labels[i]}失敗`, { type: "warning" });
+                    this.notification.add(
+                        _t("載入%(label)s失敗", { label: labels[i] }),
+                        { type: "warning" }
+                    );
                 }
             }
+
+            // Build lookup indexes after all records + predecessors are loaded,
+            // then build tree so predecessor indexes are available during tree construction
+            this._rebuildIndexes();
+            this._buildTree();
+
+            // Auto-align: detect FS + parent-child constraint violations (dry run — no writes on browse)
+            const alignCount = await this._enforceConstraintAlignment({ silent: true, dryRun: true });
+            if (alignCount > 0) {
+                console.info(`[Gantt] ${alignCount} task(s) have constraint violations (dry-run detected, no auto-write).`);
+            }
+
             this.notify();
         } catch (error) {
             console.error("Failed to fetch Gantt data:", error);
             this.data.records = [];
             this.data.groups = [];
+            this._rebuildIndexes();
             this.notify();
         }
     }
@@ -156,7 +293,26 @@ export class GanttModel extends Model {
             "milestoneId",
             // Calendar
             "workingDuration",
+            // Progress mode
+            "progressMode",
         ];
+
+        // Always fetch state for task state display in tree panel
+        if (this.fields && "state" in this.fields) {
+            fields.add("state");
+        }
+
+        // Activity fields — only fetch if the model defines them
+        const activityFields = [
+            "activity_ids", "activity_state",
+            "activity_exception_decoration", "activity_exception_icon",
+            "activity_type_icon",
+        ];
+        for (const af of activityFields) {
+            if (this.fields && af in this.fields) {
+                fields.add(af);
+            }
+        }
 
         for (const key of optionalFields) {
             if (this.archInfo[key]) {
@@ -227,6 +383,12 @@ export class GanttModel extends Model {
                 processed._progress = Number(record[progressField]) || 0;
             }
 
+            // Parse progress mode
+            const progressModeField = this.archInfo.progressMode || "";
+            if (progressModeField && record[progressModeField]) {
+                processed._progressMode = record[progressModeField];
+            }
+
             return processed;
         });
     }
@@ -246,19 +408,21 @@ export class GanttModel extends Model {
         // Build a set of loaded IDs for fast lookup
         const loadedIds = new Set(this.data.records.map(r => r.id));
 
+        // Build child count map in O(n) instead of O(n²) nested filter
+        const loadedChildCount = new Map();
+        for (const record of this.data.records) {
+            const pid = Array.isArray(record[parentField]) ? record[parentField][0] : (record[parentField] || 0);
+            if (pid) {
+                loadedChildCount.set(pid, (loadedChildCount.get(pid) || 0) + 1);
+            }
+        }
+
         // Find parents whose subtask_count exceeds loaded children count
         const parentsNeedingChildren = [];
         for (const record of this.data.records) {
             const declaredCount = record[subtaskCountField] || 0;
             if (declaredCount <= 0) continue;
-
-            // Count how many children are already loaded for this parent
-            const loadedChildCount = this.data.records.filter(r => {
-                const pid = Array.isArray(r[parentField]) ? r[parentField][0] : (r[parentField] || 0);
-                return pid === record.id;
-            }).length;
-
-            if (loadedChildCount < declaredCount) {
+            if ((loadedChildCount.get(record.id) || 0) < declaredCount) {
                 parentsNeedingChildren.push(record.id);
             }
         }
@@ -305,6 +469,7 @@ export class GanttModel extends Model {
             if (newRaw.length === 0) return [];
 
             const processed = this._processRecords(newRaw);
+            this._rescaleVirtualDates(processed);
 
             // Track newly loaded IDs
             for (const r of processed) {
@@ -337,11 +502,16 @@ export class GanttModel extends Model {
      */
     _mergeNewRecords(newRecords) {
         const existingIds = new Set(this.data.records.map(r => r.id));
+        let added = false;
         for (const record of newRecords) {
             if (!existingIds.has(record.id)) {
                 this.data.records.push(record);
                 existingIds.add(record.id);
+                added = true;
             }
+        }
+        if (added) {
+            this._rebuildIndexes();
         }
     }
 
@@ -405,16 +575,13 @@ export class GanttModel extends Model {
 
         // Mark this parent and any fully-loaded sub-parents
         this._childrenLoadedSet.add(parentId);
+        // Rebuild children-by-parent index before checking counts
+        this._rebuildIndexes();
         for (const r of newRecords) {
             const count = r[subtaskCountField] || 0;
             if (count > 0) {
-                // Check if all its children are now loaded
-                const loadedChildCount = this.data.records.filter(rec => {
-                    const pid = Array.isArray(rec[parentField])
-                        ? rec[parentField][0]
-                        : (rec[parentField] || 0);
-                    return pid === r.id;
-                }).length;
+                // Use O(1) lookup instead of O(n) filter
+                const loadedChildCount = (this._childrenByParent.get(r.id) || []).length;
                 if (loadedChildCount >= count) {
                     this._childrenLoadedSet.add(r.id);
                 }
@@ -443,9 +610,9 @@ export class GanttModel extends Model {
         for (const record of newRecords) {
             const groupValue = record[groupField];
             const groupId = Array.isArray(groupValue) ? groupValue[0] : (groupValue || 0);
-            const groupName = Array.isArray(groupValue) ? groupValue[1] : String(groupValue || "\u672A\u5206\u914D\u5C08\u6848");
+            const groupName = Array.isArray(groupValue) ? groupValue[1] : String(groupValue || _t("未分配專案"));
 
-            let group = this.data.groups.find(g => g.id === groupId);
+            let group = this._groupMap.get(groupId);
             if (!group) {
                 // Create new group if child is in a different project
                 group = {
@@ -456,6 +623,7 @@ export class GanttModel extends Model {
                     _isGroup: true,
                 };
                 this.data.groups.push(group);
+                this._groupMap.set(groupId, group);
             }
 
             // Avoid duplicates in group.records
@@ -506,7 +674,7 @@ export class GanttModel extends Model {
                 [taskIdField, "in", newTaskIds],
                 [parentTaskIdField, "in", newTaskIds],
             ];
-            const fields = [taskIdField, parentTaskIdField, typeField, "lag_hours"];
+            const fields = [taskIdField, parentTaskIdField, typeField, "lag_hours", "enable_blocking"];
             const results = await this.orm.searchRead(predModel, domain, fields, { limit: 1000 });
 
             const allLoadedIds = new Set(this.data.records.map(r => r.id));
@@ -521,6 +689,7 @@ export class GanttModel extends Model {
                     parent_task_id: Array.isArray(r[parentTaskIdField]) ? r[parentTaskIdField][0] : r[parentTaskIdField],
                     type: r[typeField] || "FS",
                     lag_hours: r.lag_hours || 0,
+                    enable_blocking: r.enable_blocking !== false,
                 }))
                 .filter(p =>
                     allLoadedIds.has(p.task_id) &&
@@ -530,6 +699,7 @@ export class GanttModel extends Model {
 
             if (newPreds.length > 0) {
                 this.data.predecessors.push(...newPreds);
+                this._rebuildPredIndexes();
             }
         } catch (error) {
             console.warn("Failed to supplement predecessors:", error);
@@ -573,7 +743,7 @@ export class GanttModel extends Model {
         for (const record of this.data.records) {
             const groupValue = record[groupField];
             const groupId = Array.isArray(groupValue) ? groupValue[0] : (groupValue || 0);
-            const groupName = Array.isArray(groupValue) ? groupValue[1] : String(groupValue || "\u672A\u5206\u914D\u5C08\u6848");
+            const groupName = Array.isArray(groupValue) ? groupValue[1] : String(groupValue || _t("未分配專案"));
 
             if (!groups.has(groupId)) {
                 groups.set(groupId, {
@@ -589,6 +759,12 @@ export class GanttModel extends Model {
         }
 
         this.data.groups = Array.from(groups.values());
+
+        // Keep _groupMap in sync for early lookups (before _rebuildIndexes)
+        this._groupMap = new Map();
+        for (const g of this.data.groups) {
+            this._groupMap.set(g.id, g);
+        }
     }
 
     // Interactive methods
@@ -604,7 +780,7 @@ export class GanttModel extends Model {
     }
 
     toggleGroup(groupId) {
-        const group = this.data.groups.find(g => g.id === groupId);
+        const group = this._groupMap.get(groupId);
         if (group) {
             group.fold = !group.fold;
             this.notify();
@@ -689,9 +865,9 @@ export class GanttModel extends Model {
                     computeTreeProps(child.id, level + 1, child._wbsNumber);
                 });
             };
-            // Root tasks (parentId = 0 or parent not in this group), sorted
+            // Root tasks (parentId = 0 or parent not in this group), excluding milestones
             const roots = group.records.filter(r =>
-                r._parentId === 0 || !recordMap.has(r._parentId)
+                !r._isMilestoneRecord && (r._parentId === 0 || !recordMap.has(r._parentId))
             );
             roots.sort(comparator);
             roots.forEach((root, idx) => {
@@ -705,6 +881,17 @@ export class GanttModel extends Model {
 
             // Flatten into tree-ordered list respecting fold state
             group._treeRecords = this._flattenTree(group.records, childrenMap, recordMap);
+        }
+
+        // Rebuild _recordMap and _childrenByParent after _parentId is set on all records
+        this._recordMap = new Map(this.data.records.map(r => [r.id, r]));
+        this._childrenByParent = new Map();
+        for (const r of this.data.records) {
+            const pid = r._parentId ?? 0;
+            if (!this._childrenByParent.has(pid)) {
+                this._childrenByParent.set(pid, []);
+            }
+            this._childrenByParent.get(pid).push(r);
         }
     }
 
@@ -737,8 +924,15 @@ export class GanttModel extends Model {
         return result;
     }
 
+    /**
+     * O(1) record lookup by id.
+     */
+    getRecord(id) {
+        return this._recordMap.get(id);
+    }
+
     async toggleTaskFold(recordId) {
-        const record = this.data.records.find(r => r.id === recordId);
+        const record = this._recordMap.get(recordId);
         if (!record || !record._hasChildren) return;
 
         record._isFolded = !record._isFolded;
@@ -747,7 +941,7 @@ export class GanttModel extends Model {
         // Write fold state to backend (fire and forget)
         const foldField = this.archInfo.fold || "fold";
         this.orm.write(this.resModel, [recordId], { [foldField]: record._isFolded }).catch(() => {
-            this.notification.add("展開/收合狀態儲存失敗", { type: "warning" });
+            this.notification.add(_t("展開/收合狀態儲存失敗"), { type: "warning" });
         });
 
         // Phase 3: Lazy-load children when unfolding a parent whose children
@@ -818,7 +1012,7 @@ export class GanttModel extends Model {
      * Falls back to _rebuildTreeRecords() if group not found.
      */
     _rebuildTreeForGroup(groupId) {
-        const group = this.data.groups.find(g => g.id === groupId);
+        const group = this._groupMap.get(groupId);
         if (!group) {
             this._rebuildTreeRecords();
             return;
@@ -900,7 +1094,7 @@ export class GanttModel extends Model {
                 : 0;
         };
         for (const record of group.records) {
-            if (record._parentId === 0 || !group.records.some(r => r.id === record._parentId)) {
+            if (record._parentId === 0 || !this._recordMap.has(record._parentId)) {
                 computeForRecord(record);
             }
         }
@@ -939,7 +1133,12 @@ export class GanttModel extends Model {
         const parentTaskIdField = this.archInfo.predecessorParentTaskId || "parent_task_id";
         const typeField = this.archInfo.predecessorType || "type";
 
-        // Collect visible task IDs
+        // Collect visible task IDs.
+        // NOTE: Cross-project predecessors are correctly loaded because the
+        // domain uses OR (task_id OR parent_task_id in visible tasks), and
+        // taskIds is built from all loaded records regardless of project_id.
+        // The post-filter (both ends in taskIds) ensures we only keep links
+        // where both tasks are currently visible/loaded.
         const taskIds = new Set(this.data.records.map(r => r.id));
         if (taskIds.size === 0) {
             this.data.predecessors = [];
@@ -953,7 +1152,7 @@ export class GanttModel extends Model {
                 [parentTaskIdField, "in", Array.from(taskIds)],
             ];
 
-            const fields = [taskIdField, parentTaskIdField, typeField, "lag_hours"];
+            const fields = [taskIdField, parentTaskIdField, typeField, "lag_hours", "enable_blocking"];
             const results = await this.orm.searchRead(predModel, domain, fields, { limit: 1000 });
 
             // Normalize: extract [id, name] → id for many2one fields
@@ -964,12 +1163,14 @@ export class GanttModel extends Model {
                     parent_task_id: Array.isArray(r[parentTaskIdField]) ? r[parentTaskIdField][0] : r[parentTaskIdField],
                     type: r[typeField] || "FS",
                     lag_hours: r.lag_hours || 0,
+                    enable_blocking: r.enable_blocking !== false,
                 }))
                 .filter(p => taskIds.has(p.task_id) && taskIds.has(p.parent_task_id));
         } catch (error) {
             console.warn("Failed to load predecessors:", error);
             this.data.predecessors = [];
         }
+        this._rebuildPredIndexes();
     }
 
     // -------------------------------------------------------------------------
@@ -1120,13 +1321,14 @@ export class GanttModel extends Model {
                     const taskVal = r[ghostTaskIdField];
                     const displayName = (ghostNameField && r[ghostNameField]) || r.name || "";
 
-                    // Parse start date — handle date-only (YYYY-MM-DD) by assuming 08:00 workday start
+                    // Parse start date — handle date-only (YYYY-MM-DD) as local to avoid UTC→local shift
                     let dateStart = null;
                     const rawStart = r[ghostStartField];
                     if (rawStart) {
                         if (typeof rawStart === "string" && rawStart.length === 10) {
-                            // Date-only field (e.g. "2026-01-15") → start at 08:00
-                            dateStart = GanttModel.parseOdooDate(rawStart + " 08:00:00");
+                            // Date-only field (e.g. "2026-01-15") → parse as local, set to 08:00 workday start
+                            const localDate = GanttModel.parseOdooDateAsLocal(rawStart);
+                            dateStart = localDate ? localDate.set({ hour: 8, minute: 0, second: 0 }) : null;
                         } else {
                             dateStart = GanttModel.parseOdooDate(rawStart);
                         }
@@ -1228,8 +1430,8 @@ export class GanttModel extends Model {
                 // Pre-parse leave dates to Luxon DateTime
                 this.data.calendarInfo._leaveDays = new Set();
                 for (const leave of info.leaves) {
-                    const from = DateTime.fromSQL(leave.date_from);
-                    const to = DateTime.fromSQL(leave.date_to);
+                    const from = DateTime.fromSQL(leave.date_from, { zone: "utc" }).toLocal();
+                    const to = DateTime.fromSQL(leave.date_to, { zone: "utc" }).toLocal();
                     if (from.isValid && to.isValid) {
                         let cursor = from.startOf("day");
                         const end = to.startOf("day");
@@ -1245,6 +1447,29 @@ export class GanttModel extends Model {
         } catch (e) {
             console.warn("Failed to load calendar info:", e);
             this.data.calendarInfo = null;
+        }
+    }
+
+    /**
+     * Rescale virtual dates so that 1 working day = 1 virtual day on the timeline.
+     * plan_offset / plan_duration are in working hours.
+     * Virtual timeline uses 24h/day. Scale factor = 24 / hpd.
+     * Example: hpd=8 → scaleFactor=3 → 8 working hours = 24 virtual hours = 1 day column.
+     *
+     * @param {Array} [records] - Optional subset of records to rescale.
+     *        If omitted, rescales all records in this.data.records.
+     */
+    _rescaleVirtualDates(records) {
+        const hpd = this.data.calendarInfo?.hours_per_day || 8;
+        if (hpd >= 24) return; // No scaling needed
+
+        const scaleFactor = 24 / hpd;
+        const T0 = PLANNING_T0;
+
+        for (const record of (records || this.data.records)) {
+            if (!record._isVirtualDates) continue;
+            record._dateStart = T0.plus({ hours: record._planOffset * scaleFactor });
+            record._dateEnd = T0.plus({ hours: (record._planOffset + record._planDuration) * scaleFactor });
         }
     }
 
@@ -1367,15 +1592,21 @@ export class GanttModel extends Model {
     }
 
     /**
-     * Compute a sensible fallback date for a milestone with no deadline
-     * and no linked tasks. In planning mode (viewport around year 2000),
-     * uses the group's last task end; otherwise uses the visible range end.
+     * Compute a fallback date for a milestone with no deadline and no linked
+     * tasks. Planning mode → T+0; scheduled mode → last task end or range end.
      */
     _getMilestoneFallbackDate(ms) {
+        // Planning mode: unlinked milestones go to T+0
+        const isPlanningMode = this.data.records.some(
+            r => !r._isMilestoneRecord && r._isVirtualDates);
+        if (isPlanningMode) {
+            return PLANNING_T0;
+        }
+
         const projectVal = ms.project_id;
         const projectId = Array.isArray(projectVal)
             ? projectVal[0] : (projectVal || 0);
-        const group = this.data.groups.find(g => g.id === projectId);
+        const group = this._groupMap.get(projectId);
 
         // Try to find the last task end in the same project
         let lastEnd = null;
@@ -1389,7 +1620,7 @@ export class GanttModel extends Model {
         }
         if (lastEnd) return lastEnd;
 
-        // Fallback: use end of visible time range (works for both normal and planning mode)
+        // Fallback: use end of visible time range
         if (this.data.timeEnd && this.data.timeEnd.isValid) {
             return this.data.timeEnd.minus({ days: 3 }).startOf("day").set({ hour: 17 });
         }
@@ -1444,7 +1675,7 @@ export class GanttModel extends Model {
             const projectId = Array.isArray(projectVal)
                 ? projectVal[0] : (projectVal || 0);
 
-            const group = this.data.groups.find(g => g.id === projectId);
+            const group = this._groupMap.get(projectId);
             if (group) {
                 // Avoid duplicates on re-merge
                 if (!group.records.some(r => r.id === ms.id)) {
@@ -1452,8 +1683,9 @@ export class GanttModel extends Model {
                 }
             }
             // Also ensure milestone is in the flat records array
-            if (!this.data.records.some(r => r.id === ms.id)) {
+            if (!this._recordMap.has(ms.id)) {
                 this.data.records.push(ms);
+                this._recordMap.set(ms.id, ms);
             }
         }
 
@@ -1511,6 +1743,27 @@ export class GanttModel extends Model {
         this.data.milestoneLinks = links;
     }
 
+    /**
+     * Get the earliest allowed deadline for a milestone.
+     * Returns the latest end date among all tasks linked to this milestone.
+     * @param {number} milestoneId - negative ID of the milestone pseudo-record
+     * @returns {DateTime|null}
+     */
+    getMinDateForMilestone(milestoneId) {
+        const links = (this.data.milestoneLinks || []).filter(l => l.milestone_id === milestoneId);
+        if (links.length === 0) return null;
+        let maxEnd = null;
+        for (const link of links) {
+            const task = this._recordMap.get(link.task_id);
+            if (!task) continue;
+            const taskEnd = (task._hasChildren && task._summaryDateEnd) || task._dateEnd;
+            if (taskEnd && (!maxEnd || taskEnd > maxEnd)) {
+                maxEnd = taskEnd;
+            }
+        }
+        return maxEnd;
+    }
+
     // -------------------------------------------------------------------------
     // Milestone CRUD
     // -------------------------------------------------------------------------
@@ -1528,7 +1781,7 @@ export class GanttModel extends Model {
             );
 
             const ids = await this.orm.create("project.milestone", [{
-                name: "新里程碑",
+                name: _t("新里程碑"),
                 project_id: projectId,
                 sorting_seq: maxSeq + 10,
             }]);
@@ -1553,9 +1806,10 @@ export class GanttModel extends Model {
                 this._assignMilestoneNumbers();
 
                 // Insert into group and records
-                const group = this.data.groups.find(g => g.id === projectId);
+                const group = this._groupMap.get(projectId);
                 if (group) group.records.push(processed);
                 this.data.records.push(processed);
+                this._rebuildIndexes();
 
                 this._buildTree();
                 this.notify();
@@ -1584,6 +1838,7 @@ export class GanttModel extends Model {
             this.data.records = this.data.records.filter(
                 r => r.id !== negativeId
             );
+            this._rebuildIndexes();
             // Rebuild links and tree
             this._buildMilestoneLinks();
             this._buildTree();
@@ -1606,7 +1861,7 @@ export class GanttModel extends Model {
                 ms.display_name = newName;
             }
             // Also update in records
-            const rec = this.data.records.find(r => r.id === negativeId);
+            const rec = this._recordMap.get(negativeId);
             if (rec) {
                 rec.name = newName;
                 rec.display_name = newName;
@@ -1632,7 +1887,7 @@ export class GanttModel extends Model {
             ms.is_reached = newVal;
             ms._progress = newVal ? 100 : 0;
             // Also update in records
-            const rec = this.data.records.find(r => r.id === negativeId);
+            const rec = this._recordMap.get(negativeId);
             if (rec) {
                 rec.is_reached = newVal;
                 rec._progress = newVal ? 100 : 0;
@@ -1658,7 +1913,7 @@ export class GanttModel extends Model {
                 [milestoneIdField]: msId,
             });
             // Update local task record
-            const task = this.data.records.find(r => r.id === taskId);
+            const task = this._recordMap.get(taskId);
             if (task) {
                 task[milestoneIdField] = [msId, ""];
             }
@@ -1678,25 +1933,67 @@ export class GanttModel extends Model {
     // -------------------------------------------------------------------------
 
     async deleteRecord(recordId) {
-        await this.orm.unlink(this.resModel, [recordId]);
+        try {
+            await this.orm.unlink(this.resModel, [recordId]);
+        } catch (error) {
+            console.error("deleteRecord failed:", error);
+            this.notification?.add(_t("刪除失敗"), { type: "warning" });
+            return;
+        }
         // Remove from local data
         for (const group of this.data.groups) {
             group.records = group.records.filter(r => r.id !== recordId);
         }
         this.data.records = this.data.records.filter(r => r.id !== recordId);
+        // Clean up related predecessors and milestone links
+        this.data.predecessors = this.data.predecessors.filter(
+            p => p.task_id !== recordId && p.parent_task_id !== recordId
+        );
+        if (this.data.milestoneLinks) {
+            this.data.milestoneLinks = this.data.milestoneLinks.filter(
+                l => l.task_id !== recordId && l.milestone_id !== recordId
+            );
+        }
+        this._rebuildIndexes();
         this._rebuildTreeRecords();
+        // Recompute parent summaries (deleted child may shrink parent's range)
+        for (const group of this.data.groups) {
+            this._computeGroupSummaryDates(group);
+        }
+        this._recomputeMilestonePositions();
         this.notify();
     }
 
     async deleteRecords(recordIds) {
         if (!recordIds.length) return;
-        await this.orm.unlink(this.resModel, recordIds);
+        try {
+            await this.orm.unlink(this.resModel, recordIds);
+        } catch (error) {
+            console.error("deleteRecords failed:", error);
+            this.notification?.add(_t("刪除失敗"), { type: "warning" });
+            return;
+        }
         const idSet = new Set(recordIds);
         for (const group of this.data.groups) {
             group.records = group.records.filter(r => !idSet.has(r.id));
         }
         this.data.records = this.data.records.filter(r => !idSet.has(r.id));
+        // Clean up related predecessors and milestone links
+        this.data.predecessors = this.data.predecessors.filter(
+            p => !idSet.has(p.task_id) && !idSet.has(p.parent_task_id)
+        );
+        if (this.data.milestoneLinks) {
+            this.data.milestoneLinks = this.data.milestoneLinks.filter(
+                l => !idSet.has(l.task_id) && !idSet.has(l.milestone_id)
+            );
+        }
+        this._rebuildIndexes();
         this._rebuildTreeRecords();
+        // Recompute parent summaries (deleted child may shrink parent's range)
+        for (const group of this.data.groups) {
+            this._computeGroupSummaryDates(group);
+        }
+        this._recomputeMilestonePositions();
         this.notify();
     }
 
@@ -1720,7 +2017,7 @@ export class GanttModel extends Model {
      * Returns the new record ID, or null on failure.
      */
     async createSiblingRecord(referenceId) {
-        const record = this.data.records.find(r => r.id === referenceId);
+        const record = this._recordMap.get(referenceId);
         if (!record) return null;
 
         const parentField = this.archInfo.parentId || "parent_id";
@@ -1749,7 +2046,7 @@ export class GanttModel extends Model {
         }
 
         const values = {
-            [nameField]: "\u65B0\u4EFB\u52D9",
+            [nameField]: _t("新任務"),
             [parentField]: parentId,
             [sortField]: newSeq,
             display_in_project: true,
@@ -1767,22 +2064,16 @@ export class GanttModel extends Model {
         if (parentId) {
             context.default_parent_id = parentId;
         }
-        const group = this.data.groups.find(g => g.id === projectId);
+        const group = this._groupMap.get(projectId);
         if (group && group._isPlanningMode) {
             const dateStartField = this.archInfo.dateStart || "date_start";
             const dateStopField = this.archInfo.dateStop || "date_end";
             values[dateStartField] = false;
             values[dateStopField] = false;
 
-            // Auto-calculate plan_offset: place after last existing task
+            // Place new sibling at the same offset as the reference record
             const planOffsetField = this.archInfo.planOffset || "plan_offset";
-            let maxEnd = 0;
-            for (const r of (group.records || [])) {
-                if (r._isMilestoneRecord) continue;
-                const end = (r._planOffset || 0) + (r._planDuration || 0);
-                if (end > maxEnd) maxEnd = end;
-            }
-            values[planOffsetField] = maxEnd;
+            values[planOffsetField] = record._planOffset || 0;
         }
 
         const newId = await this.createRecord(values, context);
@@ -1809,20 +2100,27 @@ export class GanttModel extends Model {
         if (!raw || !raw.length) return false;
 
         const processed = this._processRecords(raw);
+        this._rescaleVirtualDates(processed);
         const newRec = processed[0];
 
         // Insert into correct group
         const groupField = this.archInfo.mainGroupIdName || "project_id";
         const groupVal = newRec[groupField];
         const groupId = Array.isArray(groupVal) ? groupVal[0] : (groupVal || 0);
-        const group = this.data.groups.find(g => g.id === groupId);
+        const group = this._groupMap.get(groupId);
         if (group) {
             group.records.push(newRec);
         }
         this.data.records.push(newRec);
+        this._rebuildIndexes();
 
         this._buildTree();
         await this._supplementPredecessors([newId]);
+        // Recompute parent summaries (new task may extend parent's range)
+        for (const group of this.data.groups) {
+            this._computeGroupSummaryDates(group);
+        }
+        this._recomputeMilestonePositions();
         this.notify();
         return true;
     }
@@ -1835,108 +2133,161 @@ export class GanttModel extends Model {
         const sortField = this.archInfo.sortingSeq || "sorting_seq";
         const parentField = this.archInfo.parentId || "parent_id";
 
-        const record = this.data.records.find(r => r.id === recordId);
-        const target = this.data.records.find(r => r.id === targetId);
+        const record = this._recordMap.get(recordId);
+        const target = this._recordMap.get(targetId);
         if (!record || !target) return false;
 
+        const _pid = (r) => {
+            const v = r[parentField];
+            return Array.isArray(v) ? v[0] : (v || 0);
+        };
+
         const values = {};
+        const isMilestone = record._isMilestoneRecord;
 
-        if (position === "child") {
-            // Move as child of target
+        if (isMilestone) {
+            // Milestones are always root-level, ignore parent changes
+            values[parentField] = false;
+        } else if (position === "child") {
             values[parentField] = targetId;
-            const children = this.data.records.filter(r => {
-                const pid = Array.isArray(r[parentField]) ? r[parentField][0] : (r[parentField] || 0);
-                return pid === targetId;
-            });
-            const maxSeq = children.reduce((max, c) => Math.max(max, c[sortField] || 0), 0);
-            values[sortField] = maxSeq + 10;
         } else if (position === "after" && target._hasChildren && !target._isFolded) {
-            // Dropping after an expanded parent → insert as its first child
-            // Visually the task lands between the parent and its first child,
-            // so the intuitive expectation is to become a child of the parent.
             values[parentField] = targetId;
-            const children = this.data.records.filter(r => {
-                const pid = Array.isArray(r[parentField]) ? r[parentField][0] : (r[parentField] || 0);
-                return pid === targetId;
-            });
-            const minSeq = children.reduce((min, c) => Math.min(min, c[sortField] || 0), Infinity);
-            values[sortField] = Number.isFinite(minSeq) ? minSeq - 5 : 0;
         } else if (position === "before") {
-            // Reference the previous task (task directly above target in tree)
-            // to determine hierarchy, matching its indent level.
-            const prevTask = this._findPreviousInTree(targetId);
-            if (prevTask) {
-                values[parentField] = prevTask._parentId || false;
-            } else {
-                // First task in the group → root level
-                values[parentField] = false;
-            }
-            const targetSeq = target[sortField] || 0;
-            values[sortField] = targetSeq - 5;
+            values[parentField] = _pid(target) || false;
         } else {
-            // "after" a leaf or collapsed parent → same level as target
-            const targetParentVal = target[parentField];
-            const targetParentId = Array.isArray(targetParentVal) ? targetParentVal[0] : (targetParentVal || 0);
-            values[parentField] = targetParentId || false;
-
-            const targetSeq = target[sortField] || 0;
-            values[sortField] = targetSeq + 5;
+            values[parentField] = _pid(target) || false;
         }
+
+        // Determine the sibling lookup parent.
+        // Milestones always live at root (parentId=0) and share the seq space
+        // with root-level tasks, so siblings must include both types.
+        const newParentId = isMilestone ? 0 : (values[parentField] || 0);
+
+        // Gather siblings under the same parent (excluding the dragged record).
+        // Tasks and milestones at the same level share sorting_seq order.
+        const siblings = this.data.records.filter(r => {
+            if (r.id === recordId) return false;
+            // Milestones are root-only; include them when looking at root siblings
+            if (r._isMilestoneRecord) return newParentId === 0;
+            return _pid(r) === newParentId;
+        });
+        siblings.sort((a, b) => (a[sortField] || 0) - (b[sortField] || 0));
+
+        // Find the target's index within siblings to determine insertion point
+        const targetIdx = siblings.findIndex(r => r.id === targetId);
+
+        let insertIdx;
+        if (!isMilestone && position === "child") {
+            insertIdx = siblings.length;
+        } else if (!isMilestone && position === "after" && target._hasChildren && !target._isFolded) {
+            insertIdx = 0;
+        } else if (position === "before") {
+            insertIdx = targetIdx >= 0 ? targetIdx : 0;
+        } else {
+            // "after"
+            insertIdx = targetIdx >= 0 ? targetIdx + 1 : siblings.length;
+        }
+
+        // Insert record into siblings and resequence all with even spacing
+        siblings.splice(insertIdx, 0, record);
+        const seqUpdates = []; // {id, model, seq} for server persist
+        siblings.forEach((r, i) => {
+            const newSeq = (i + 1) * 10;
+            if (r[sortField] !== newSeq) {
+                r[sortField] = newSeq;
+                if (r._isMilestoneRecord) {
+                    r.sorting_seq = newSeq;
+                    seqUpdates.push({ id: Math.abs(r.id), model: "project.milestone", seq: newSeq });
+                } else {
+                    seqUpdates.push({ id: r.id, model: this.resModel, seq: newSeq });
+                }
+            }
+        });
+        values[sortField] = record[sortField];
 
         // 1. Optimistic local update — instant UI
         if (record._isMilestoneRecord) {
             // Milestones cannot have parent — only update sorting_seq
-            if (values[sortField] !== undefined) {
-                record[sortField] = values[sortField];
-                record.sorting_seq = values[sortField];
-            }
         } else {
-            const newParentId = values[parentField];
-            record[parentField] = newParentId ? [newParentId, ""] : false;
-            record._parentId = newParentId || 0;
-            if (values[sortField] !== undefined) {
-                record[sortField] = values[sortField];
-            }
+            const pid = values[parentField];
+            record[parentField] = pid ? [pid, ""] : false;
+            record._parentId = pid || 0;
         }
         this._buildTree();
+        // Recompute parent summaries for both old and new parent
+        for (const group of this.data.groups) {
+            this._computeGroupSummaryDates(group);
+        }
         this.notify();
 
-        // 2. Persist to server (fire-and-forget)
-        if (record._isMilestoneRecord) {
-            // Write to project.milestone using original ID
-            const msValues = {};
-            if (values[sortField] !== undefined) {
-                msValues.sorting_seq = values[sortField];
+        // 2. Persist to server — single batch RPC
+        const taskBatch = [];
+        const msBatch = [];
+        for (const u of seqUpdates) {
+            if (u.model === "project.milestone") {
+                msBatch.push({ id: u.id, sorting_seq: u.seq });
+            } else {
+                const entry = { id: u.id, sorting_seq: u.seq };
+                if (u.id === recordId && !isMilestone) {
+                    entry.parent_id = values[parentField] || false;
+                }
+                taskBatch.push(entry);
             }
-            this.orm.write("project.milestone", [Math.abs(recordId)], msValues).catch(() => {
-                this.notification.add("里程碑排序儲存失敗", { type: "warning" });
-            });
-        } else {
-            this.orm.write(this.resModel, [recordId], values).catch(() => {
-                this.notification.add("任務排序儲存失敗", { type: "warning" });
+        }
+        if (!isMilestone && !taskBatch.some(u => u.id === recordId)) {
+            taskBatch.push({
+                id: recordId,
+                parent_id: values[parentField] || false,
+                sorting_seq: record[sortField],
             });
         }
-        return false; // Tell renderer not to reload
-    }
+        await this.batchResequence(taskBatch, msBatch);
 
-    /**
-     * Find the task directly above the given task in the flattened tree.
-     * Used by reorderRecord to determine hierarchy when dropping "before".
-     * @param {number} targetId
-     * @returns {Object|null} the previous record, or null if target is first
-     */
-    _findPreviousInTree(targetId) {
-        for (const group of this.data.groups) {
-            const treeRecords = group._treeRecords || [];
-            const idx = treeRecords.findIndex(r => r.id === targetId);
-            if (idx > 0) {
-                return treeRecords[idx - 1];
-            }
-            if (idx === 0) {
-                return null;
+        // --- Item 8: FS constraint check after vertical reorder ---
+        // After parent_id change, the moved task may now violate FS constraints
+        // in its new position. Auto-align if so.
+        if (!isMilestone) {
+            const movedRecord = this._recordMap.get(recordId);
+            if (movedRecord) {
+                const minStart = this.getMinStartForRecord(recordId);
+                if (minStart && movedRecord._dateStart && movedRecord._dateStart < minStart) {
+                    // Auto-align: push the moved task forward
+                    const _skipSnap = { context: { skip_date_snap: true } };
+                    const dateStartField = this.archInfo.dateStart || "date_start";
+                    const dateStopField = this.archInfo.dateStop || "date_end";
+                    if (movedRecord._isVirtualDates) {
+                        const hpd = this.data.calendarInfo?.hours_per_day || 8;
+                        const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
+                        const T0 = PLANNING_T0;
+                        const minVirtualHours = minStart.diff(T0, "hours").hours;
+                        const newOffset = minVirtualHours / scaleFactor;
+                        const planOffsetField = this.archInfo.planOffset || "plan_offset";
+                        await this.updateRecord(recordId, { [planOffsetField]: newOffset }, _skipSnap);
+                    } else {
+                        const fsValues = {
+                            [dateStartField]: minStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"),
+                        };
+                        if (movedRecord._dateEnd && movedRecord._dateStart) {
+                            const duration = movedRecord._dateEnd.diff(movedRecord._dateStart);
+                            fsValues[dateStopField] = minStart.plus(duration).setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
+                        }
+                        await this.updateRecord(recordId, fsValues, _skipSnap);
+                    }
+                    // Cascade
+                    const visited = new Set();
+                    await this._pushFSSuccessors(recordId, visited);
+                    await this._pushAncestorFSSuccessors(recordId, visited);
+                    await this._recalcAndUpdateLags(recordId);
+                    // Notify user
+                    this.notification.add(
+                        _t("任務已自動對齊至 FS 約束邊界"),
+                        { type: "info" }
+                    );
+                }
             }
         }
-        return null;
+
+        return false; // Tell renderer not to reload
     }
 
     // -------------------------------------------------------------------------
@@ -1952,17 +2303,16 @@ export class GanttModel extends Model {
         const sortField = this.archInfo.sortingSeq || "sorting_seq";
         const parentField = this.archInfo.parentId || "parent_id";
 
-        const record = this.data.records.find(r => r.id === recordId);
-        if (!record) return false;
+        const record = this._recordMap.get(recordId);
+        if (!record || record._isMilestoneRecord) return false;
 
-        // Find siblings (same parent, same group)
+        // Find task siblings (same parent, exclude milestones)
         const parentId = record._parentId || 0;
         const siblings = this.data.records.filter(r => {
+            if (r._isMilestoneRecord) return false;
             const pid = Array.isArray(r[parentField]) ? r[parentField][0] : (r[parentField] || 0);
             return pid === parentId && r.id !== recordId;
         });
-
-        // Sort siblings by seq
         siblings.sort((a, b) => (a[sortField] || 0) - (b[sortField] || 0));
 
         // Find previous sibling (highest seq that is still < record's seq)
@@ -1973,26 +2323,35 @@ export class GanttModel extends Model {
                 prevSibling = s;
             }
         }
-
         if (!prevSibling) return false;
 
         // Calculate new seq: max of prevSibling's children seq + 10
         const prevChildren = this.data.records.filter(r => {
+            if (r._isMilestoneRecord) return false;
             const pid = Array.isArray(r[parentField]) ? r[parentField][0] : (r[parentField] || 0);
             return pid === prevSibling.id;
         });
         const maxChildSeq = prevChildren.reduce((max, c) => Math.max(max, c[sortField] || 0), 0);
+        const newSeq = maxChildSeq + 10;
 
+        // Optimistic local update — instant UI
+        record[parentField] = [prevSibling.id, ""];
+        record._parentId = prevSibling.id;
+        record[sortField] = newSeq;
+        prevSibling._isFolded = false;
+        this._foldState.set(prevSibling.id, false);
+        this._buildTree();
+        for (const group of this.data.groups) {
+            this._computeGroupSummaryDates(group);
+        }
+        this.notify();
+
+        // Persist to server
         try {
             await this.orm.write(this.resModel, [recordId], {
                 [parentField]: prevSibling.id,
-                [sortField]: maxChildSeq + 10,
+                [sortField]: newSeq,
             });
-
-            // Unfold the new parent so the moved task is visible
-            prevSibling._isFolded = false;
-            this._foldState.set(prevSibling.id, false);
-
             return true;
         } catch (error) {
             console.error("Failed to indent task:", error);
@@ -2009,32 +2368,80 @@ export class GanttModel extends Model {
         const sortField = this.archInfo.sortingSeq || "sorting_seq";
         const parentField = this.archInfo.parentId || "parent_id";
 
-        const record = this.data.records.find(r => r.id === recordId);
-        if (!record) return false;
+        const record = this._recordMap.get(recordId);
+        if (!record || record._isMilestoneRecord) return false;
 
         const currentParentId = record._parentId || 0;
         if (currentParentId === 0) return false; // Already root
 
-        const currentParent = this.data.records.find(r => r.id === currentParentId);
+        const currentParent = this._recordMap.get(currentParentId);
         if (!currentParent) return false;
 
         // New parent = grandparent (or root if parent is root-level)
         const grandparentId = currentParent._parentId || 0;
         const newParentId = grandparentId || false;
 
-        // Place after the current parent in the grandparent's children order
-        const parentSeq = currentParent[sortField] || 0;
+        // Gather new siblings, insert record after currentParent, resequence
+        const newSiblings = this.data.records.filter(r => {
+            if (r.id === recordId) return false;
+            if (r._isMilestoneRecord) return newParentId === 0 || newParentId === false;
+            const pid = Array.isArray(r[parentField]) ? r[parentField][0] : (r[parentField] || 0);
+            return pid === (newParentId || 0);
+        });
+        newSiblings.sort((a, b) => (a[sortField] || 0) - (b[sortField] || 0));
 
-        try {
-            await this.orm.write(this.resModel, [recordId], {
-                [parentField]: newParentId,
-                [sortField]: parentSeq + 1,
-            });
-            return true;
-        } catch (error) {
-            console.error("Failed to outdent task:", error);
-            return false;
+        // Insert after the current parent in the sibling list
+        const parentIdx = newSiblings.findIndex(r => r.id === currentParentId);
+        const insertIdx = parentIdx >= 0 ? parentIdx + 1 : newSiblings.length;
+        newSiblings.splice(insertIdx, 0, record);
+
+        // Resequence all siblings with even spacing
+        const seqUpdates = [];
+        newSiblings.forEach((r, i) => {
+            const newSeq = (i + 1) * 10;
+            if (r[sortField] !== newSeq) {
+                r[sortField] = newSeq;
+                if (r._isMilestoneRecord) {
+                    r.sorting_seq = newSeq;
+                    seqUpdates.push({ id: Math.abs(r.id), model: "project.milestone", seq: newSeq });
+                } else {
+                    seqUpdates.push({ id: r.id, model: this.resModel, seq: newSeq });
+                }
+            }
+        });
+
+        // Optimistic local update — instant UI
+        record[parentField] = newParentId ? [newParentId, ""] : false;
+        record._parentId = newParentId || 0;
+        this._buildTree();
+        for (const group of this.data.groups) {
+            this._computeGroupSummaryDates(group);
         }
+        this.notify();
+
+        // Persist to server — single batch RPC
+        const taskBatch = [];
+        const msBatch = [];
+        for (const u of seqUpdates) {
+            if (u.model === "project.milestone") {
+                msBatch.push({ id: u.id, sorting_seq: u.seq });
+            } else {
+                const entry = { id: u.id, sorting_seq: u.seq };
+                if (u.id === recordId) {
+                    entry.parent_id = newParentId || false;
+                }
+                taskBatch.push(entry);
+            }
+        }
+        if (!taskBatch.some(u => u.id === recordId)) {
+            taskBatch.push({
+                id: recordId,
+                parent_id: newParentId || false,
+                sorting_seq: record[sortField],
+            });
+        }
+        await this.batchResequence(taskBatch, msBatch);
+        return true;
     }
 
     // -------------------------------------------------------------------------
@@ -2045,7 +2452,7 @@ export class GanttModel extends Model {
         const nameField = this.archInfo.name || "name";
         try {
             await this.orm.write(this.resModel, [recordId], { [nameField]: newName });
-            const record = this.data.records.find(r => r.id === recordId);
+            const record = this._recordMap.get(recordId);
             if (record) {
                 record[nameField] = newName;
                 record.display_name = newName;
@@ -2072,8 +2479,8 @@ export class GanttModel extends Model {
 
         try {
             // Auto-calculate lag from current positions
-            const source = this.data.records.find(r => r.id === parentTaskId);
-            const target = this.data.records.find(r => r.id === taskId);
+            const source = this._recordMap.get(parentTaskId);
+            const target = this._recordMap.get(taskId);
             let lagHours = 0;
 
             if (source && target) {
@@ -2082,6 +2489,15 @@ export class GanttModel extends Model {
                 if (sourceEnd && targetStart) {
                     const gapMs = targetStart.toMillis() - sourceEnd.toMillis();
                     lagHours = durationToLag(gapMs);
+                    // Planning mode: convert virtual hours to working hours
+                    const isVirtual = source._isVirtualDates || target._isVirtualDates
+                        || this._hasVirtualChild(source.id)
+                        || this._hasVirtualChild(target.id);
+                    if (isVirtual) {
+                        const hpd = this.data.calendarInfo?.hours_per_day || 8;
+                        const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
+                        lagHours = lagHours / scaleFactor;
+                    }
                 }
             }
 
@@ -2095,13 +2511,10 @@ export class GanttModel extends Model {
             // Reload predecessors FIRST so the new link is in data
             await this._loadPredecessors();
 
-            // FS link: push successor if sourceEnd overlaps targetStart, then recalc lag
-            const linkType = (type || "FS").toUpperCase();
-            if (linkType === "FS") {
-                await this._pushFSSuccessors(parentTaskId);
-                await this._pushAncestorFSSuccessors(parentTaskId);
-                await this._recalcAndUpdateLags(parentTaskId);
-            }
+            // Push successor if dependency constraint is violated, then recalc lag
+            await this._pushDependencySuccessors(parentTaskId);
+            await this._pushAncestorFSSuccessors(parentTaskId);
+            await this._recalcAndUpdateLags(parentTaskId);
 
             this.notify();
             return ids[0];
@@ -2122,105 +2535,180 @@ export class GanttModel extends Model {
     _getEffectiveSourceEnd(source, pred) {
         const sourceEnd = (source._hasChildren && source._summaryDateEnd) || source._dateEnd;
         if (!sourceEnd) return null;
-        const lag = lagToDuration(pred.lag_hours);
-        return Object.keys(lag).length > 0 ? sourceEnd.plus(lag) : sourceEnd;
+        let lagHrs = pred.lag_hours || 0;
+        if (lagHrs === 0) return sourceEnd;
+        // If source uses virtual dates (planning mode), scale working-hour lag to virtual hours
+        if (source._isVirtualDates) {
+            const hpd = this.data.calendarInfo?.hours_per_day || 8;
+            const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
+            lagHrs = lagHrs * scaleFactor;
+        }
+        return sourceEnd.plus({ hours: lagHrs });
     }
 
     /**
-     * Push all FS successors of a given task forward ONLY if the raw source end
-     * physically overlaps the target start (sourceEnd > targetStart).
+     * Push all dependency successors of a given task forward when the source
+     * physically overlaps the target according to the dependency type.
+     * Supports all 4 types: FS, SS, FF, SF.
+     *
      * Lag is NOT used as a constraint — it is dynamically recalculated by
      * _recalcAndUpdateLags() after this method.
      *
-     * When pushed, the target is moved to exactly sourceEnd (lag becomes 0).
+     * Push rules (preserving target duration):
+     *   FS: sourceEnd > targetStart  → push targetStart to sourceEnd
+     *   SS: sourceStart > targetStart → push targetStart to sourceStart
+     *   FF: sourceEnd > targetEnd    → push targetEnd to sourceEnd (start = end - duration)
+     *   SF: sourceStart > targetEnd  → push targetEnd to sourceStart (start = end - duration)
+     *
      * Cascades: if pushing successor B causes B's own successors to overlap,
      * they are also pushed.
-     * @param {number} recordId - the predecessor whose end may have changed
+     * @param {number} recordId - the predecessor whose dates may have changed
      * @param {Set} [visited] - cycle guard
      */
-    async _pushFSSuccessors(recordId, visited) {
+    async _pushDependencySuccessors(recordId, visited) {
         if (!visited) visited = new Set();
         if (visited.has(recordId)) return;
         visited.add(recordId);
 
-        const source = this.data.records.find(r => r.id === recordId);
+        const source = this._recordMap.get(recordId);
         if (!source) return;
 
-        // Raw source end WITHOUT lag — lag is not a push constraint
         const sourceEnd = (source._hasChildren && source._summaryDateEnd) || source._dateEnd;
-        if (!sourceEnd) return;
+        const sourceStart = (source._hasChildren && source._summaryDateStart) || source._dateStart;
 
-        const fsSuccessors = this.data.predecessors.filter(p =>
-            p.parent_task_id === recordId && (p.type || "FS").toUpperCase() === "FS"
-        );
+        const successors = this._predByParent.get(recordId) || [];
 
-        for (const pred of fsSuccessors) {
-            const target = this.data.records.find(r => r.id === pred.task_id);
+        for (const pred of successors) {
+            const target = this._recordMap.get(pred.task_id);
             if (!target) continue;
+
             const targetStart = (target._hasChildren && target._summaryDateStart) || target._dateStart;
-            if (!targetStart) continue;
+            const targetEnd = (target._hasChildren && target._summaryDateEnd) || target._dateEnd;
+            const linkType = (pred.type || "FS").toUpperCase();
 
-            // Only push when raw sourceEnd physically overlaps targetStart
-            if (targetStart >= sourceEnd) continue;
+            // Determine if push is needed and what the new target position should be
+            let newTargetStart = null;
+            if (linkType === "FS") {
+                if (!sourceEnd || !targetStart) continue;
+                if (targetStart >= sourceEnd) continue;
+                newTargetStart = sourceEnd;
+            } else if (linkType === "SS") {
+                if (!sourceStart || !targetStart) continue;
+                if (targetStart >= sourceStart) continue;
+                newTargetStart = sourceStart;
+            } else if (linkType === "FF") {
+                if (!sourceEnd || !targetEnd) continue;
+                if (targetEnd >= sourceEnd) continue;
+                // Push end to sourceEnd, preserve duration → derive new start
+                if (targetStart && targetEnd) {
+                    const dur = targetEnd.diff(targetStart);
+                    newTargetStart = sourceEnd.minus(dur);
+                } else {
+                    continue;
+                }
+            } else if (linkType === "SF") {
+                if (!sourceStart || !targetEnd) continue;
+                if (targetEnd >= sourceStart) continue;
+                // Push end to sourceStart, preserve duration → derive new start
+                if (targetStart && targetEnd) {
+                    const dur = targetEnd.diff(targetStart);
+                    newTargetStart = sourceStart.minus(dur);
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            }
 
-            // Push target to exactly sourceEnd (lag will be recalculated to 0)
+            if (!newTargetStart || !targetStart) continue;
+
+            // Apply the push
             const _skipSnap = { context: { skip_date_snap: true } };
             if (target._hasChildren) {
-                const shiftHours = sourceEnd.diff(targetStart, "hours").hours;
+                const anyVirtualChild = this._hasVirtualChild(target.id);
+                let shiftHours = newTargetStart.diff(targetStart, "hours").hours;
+                if (anyVirtualChild) {
+                    const hpd = this.data.calendarInfo?.hours_per_day || 8;
+                    const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
+                    shiftHours = shiftHours / scaleFactor;
+                }
                 if (Math.abs(shiftHours) > 0.01) {
                     await this.moveRecordWithChildren(target.id, shiftHours, _skipSnap);
                 }
             } else if (target._isVirtualDates) {
-                const newOffset = (source._planOffset || 0) + (source._planDuration || 0);
+                const T0 = PLANNING_T0;
+                const hpd = this.data.calendarInfo?.hours_per_day || 8;
+                const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
+                const newOffset = newTargetStart.diff(T0, "hours").hours / scaleFactor;
                 const planOffsetField = this.archInfo.planOffset || "plan_offset";
                 await this.updateRecord(target.id, { [planOffsetField]: newOffset });
             } else {
                 const dateStartField = this.archInfo.dateStart || "date_start";
                 const dateStopField = this.archInfo.dateStop || "date_end";
-                const newStart = sourceEnd;
                 const values = {
-                    [dateStartField]: newStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"),
+                    [dateStartField]: newTargetStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"),
                 };
                 if (target._dateEnd && target._dateStart) {
                     const duration = target._dateEnd.diff(target._dateStart);
-                    values[dateStopField] = newStart.plus(duration).setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
+                    values[dateStopField] = newTargetStart.plus(duration).setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                 }
                 await this.updateRecord(target.id, values, _skipSnap);
             }
 
-            // Cascade: this successor's end moved, check its own successors
-            await this._pushFSSuccessors(pred.task_id, visited);
+            // Cascade: this successor's dates moved, check its own successors
+            await this._pushDependencySuccessors(pred.task_id, visited);
         }
     }
 
     /**
-     * After pushing a record's own FS successors, walk up its parent chain
-     * and push each ancestor's FS successors too.
-     *
-     * When a child task moves/resizes, the parent's _summaryDateEnd may extend.
-     * Without this, the parent's outgoing FS successors would NOT be pushed,
-     * causing overlap and backward horizontal arrows.
+     * Backward-compatible alias for _pushDependencySuccessors.
+     * @param {number} recordId
+     * @param {Set} [visited]
      */
-    async _pushAncestorFSSuccessors(recordId) {
-        const record = this.data.records.find(r => r.id === recordId);
+    async _pushFSSuccessors(recordId, visited) {
+        return this._pushDependencySuccessors(recordId, visited);
+    }
+
+    /**
+     * After pushing a record's own dependency successors, walk up its parent
+     * chain and push each ancestor's dependency successors too (all types).
+     *
+     * When a child task moves/resizes, the parent's summary dates may change.
+     * Without this, the parent's outgoing dependency successors would NOT be
+     * pushed, causing overlap and backward horizontal arrows.
+     */
+    async _pushAncestorFSSuccessors(recordId, sharedVisited) {
+        const record = this._recordMap.get(recordId);
         if (!record) return;
 
         let current = record;
-        const visited = new Set();
+        const ancestorVisited = new Set();
+        const pushVisited = sharedVisited || new Set();
         while (current._parentId) {
-            const parent = this.data.records.find(r => r.id === current._parentId);
+            const parent = this._recordMap.get(current._parentId);
             if (!parent || !parent._hasChildren) break;
-            if (visited.has(parent.id)) break;
-            visited.add(parent.id);
+            if (ancestorVisited.has(parent.id)) break;
+            ancestorVisited.add(parent.id);
 
-            await this._pushFSSuccessors(parent.id);
+            // Refresh summary dates before checking push (child may have moved)
+            const group = this._getGroupForRecord(parent.id);
+            if (group) this._computeGroupSummaryDates(group);
+
+            await this._pushDependencySuccessors(parent.id, pushVisited);
             current = parent;
         }
     }
 
     /**
-     * Recalculate and update lag values for all FS predecessors connected to a task.
+     * Recalculate and update lag values for all predecessor links connected to a task.
+     * Supports all 4 dependency types: FS, SS, FF, SF.
      * Called after drag/resize to keep lag in sync with actual positions.
+     *
+     * Lag formulas:
+     *   FS: lag = targetStart - sourceEnd
+     *   SS: lag = targetStart - sourceStart
+     *   FF: lag = targetEnd   - sourceEnd
+     *   SF: lag = targetEnd   - sourceStart
      *
      * @param {number} recordId - The task that was moved/resized
      */
@@ -2228,25 +2716,48 @@ export class GanttModel extends Model {
         const predModel = this.archInfo.predecessorModel;
         if (!predModel) return;
 
-        // Find all FS links where this task is source (parent_task_id) or target (task_id)
-        const relatedPreds = this.data.predecessors.filter(p =>
-            (p.parent_task_id === recordId || p.task_id === recordId) &&
-            (p.type || "FS").toUpperCase() === "FS" &&
-            p.id
-        );
+        // Find all links where this task is source (parent_task_id) or target (task_id)
+        const relatedPreds = [
+            ...(this._predByParent.get(recordId) || []),
+            ...(this._predByChild.get(recordId) || []),
+        ].filter(p => p.id);
 
         const writes = [];
         for (const pred of relatedPreds) {
-            const source = this.data.records.find(r => r.id === pred.parent_task_id);
-            const target = this.data.records.find(r => r.id === pred.task_id);
+            const source = this._recordMap.get(pred.parent_task_id);
+            const target = this._recordMap.get(pred.task_id);
             if (!source || !target) continue;
 
             const sourceEnd = (source._hasChildren && source._summaryDateEnd) || source._dateEnd;
+            const sourceStart = (source._hasChildren && source._summaryDateStart) || source._dateStart;
             const targetStart = (target._hasChildren && target._summaryDateStart) || target._dateStart;
-            if (!sourceEnd || !targetStart) continue;
+            const targetEnd = (target._hasChildren && target._summaryDateEnd) || target._dateEnd;
 
-            const gapMs = targetStart.toMillis() - sourceEnd.toMillis();
-            const newLagHours = durationToLag(gapMs);
+            const linkType = (pred.type || "FS").toUpperCase();
+            let gapMs = null;
+
+            if (linkType === "FS") {
+                if (sourceEnd && targetStart) gapMs = targetStart.toMillis() - sourceEnd.toMillis();
+            } else if (linkType === "SS") {
+                if (sourceStart && targetStart) gapMs = targetStart.toMillis() - sourceStart.toMillis();
+            } else if (linkType === "FF") {
+                if (sourceEnd && targetEnd) gapMs = targetEnd.toMillis() - sourceEnd.toMillis();
+            } else if (linkType === "SF") {
+                if (sourceStart && targetEnd) gapMs = targetEnd.toMillis() - sourceStart.toMillis();
+            }
+
+            if (gapMs === null) continue;
+
+            let newLagHours = durationToLag(gapMs);
+            // Planning mode: convert virtual hours to working hours
+            const isVirtual = source._isVirtualDates || target._isVirtualDates
+                || this._hasVirtualChild(source.id)
+                || this._hasVirtualChild(target.id);
+            if (isVirtual) {
+                const hpd = this.data.calendarInfo?.hours_per_day || 8;
+                const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
+                newLagHours = newLagHours / scaleFactor;
+            }
 
             if (Math.abs(newLagHours - (pred.lag_hours || 0)) > 0.001) {
                 pred.lag_hours = newLagHours;
@@ -2261,36 +2772,226 @@ export class GanttModel extends Model {
     }
 
     /**
-     * Get the earliest allowed start DateTime for a task based on its FS predecessors.
-     * Returns the latest predecessor end date (WITHOUT lag) among all FS predecessors.
+     * Enforce dependency constraints (FS/SS/FF/SF) on all leaf tasks.
+     * For each leaf whose start violates getMinStartForRecord(), push it
+     * forward. Then cascade via _pushDependencySuccessors.
+     *
+     * Handles both real dates and virtual dates (planning mode).
+     *
+     * @param {Object} [options]
+     * @param {boolean} [options.silent] - suppress notification
+     * @param {boolean} [options.dryRun] - detect violations only, do not write
+     * @returns {number} count of aligned (or detected) tasks
+     */
+    async _enforceConstraintAlignment(options = {}) {
+        if (!this.data.predecessors || this.data.predecessors.length === 0) return 0;
+
+        const _skipSnap = { context: { skip_date_snap: true } };
+        const dateStartField = this.archInfo.dateStart || "date_start";
+        const dateStopField = this.archInfo.dateStop || "date_end";
+        const planOffsetField = this.archInfo.planOffset || "plan_offset";
+        const dryRun = !!options.dryRun;
+
+        // Leaf tasks sorted by _dateStart ascending (fix earlier tasks first
+        // so their FS successors get cascaded correctly)
+        const leafTasks = this.data.records
+            .filter(r => !r._hasChildren && !r._isMilestoneRecord && r._dateStart)
+            .sort((a, b) => a._dateStart.toMillis() - b._dateStart.toMillis());
+
+        const fixedIds = [];
+
+        for (const task of leafTasks) {
+            const minStart = this.getMinStartForRecord(task.id);
+            if (!minStart) continue;
+            if (task._dateStart >= minStart) continue;
+
+            if (dryRun) {
+                // Dry run: only collect violation IDs, do not write
+                fixedIds.push(task.id);
+                continue;
+            }
+
+            // Violation: push forward
+            if (task._isVirtualDates) {
+                const hpd = this.data.calendarInfo?.hours_per_day || 8;
+                const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
+                const minVirtualHours = minStart.diff(PLANNING_T0, "hours").hours;
+                const newOffset = minVirtualHours / scaleFactor;
+                await this.updateRecord(task.id, { [planOffsetField]: newOffset }, _skipSnap);
+            } else {
+                const values = {
+                    [dateStartField]: minStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"),
+                };
+                if (task._dateEnd && task._dateStart) {
+                    const duration = task._dateEnd.diff(task._dateStart);
+                    values[dateStopField] = minStart.plus(duration)
+                        .setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
+                }
+                await this.updateRecord(task.id, values, _skipSnap);
+            }
+            fixedIds.push(task.id);
+        }
+
+        if (fixedIds.length === 0) return 0;
+
+        // In dry-run mode, skip cascading writes and notifications
+        if (dryRun) {
+            return fixedIds.length;
+        }
+
+        // Cascade dependency successors + ancestor dependency successors
+        const visited = new Set();
+        for (const id of fixedIds) {
+            await this._pushDependencySuccessors(id, visited);
+        }
+        for (const id of fixedIds) {
+            await this._pushAncestorFSSuccessors(id, visited);
+        }
+        for (const id of fixedIds) {
+            await this._recalcAndUpdateLags(id);
+        }
+
+        // Recompute parent summaries
+        for (const group of this.data.groups) {
+            this._computeGroupSummaryDates(group);
+        }
+
+        if (!options.silent) {
+            this.notification.add(
+                _t("已自動對齊 %(count)s 個任務", { count: fixedIds.length }),
+                { type: "success" }
+            );
+        }
+
+        return fixedIds.length;
+    }
+
+    /**
+     * Get the earliest allowed start DateTime for a task based on its predecessors.
+     * Constraint rules (all preserve target duration during drag):
+     *   FS: target.start >= source.end
+     *   SS: target.start >= source.start
+     *   FF: target.end   >= source.end   → target.start >= source.end - duration
+     *   SF: target.end   >= source.start → target.start >= source.start - duration
      * Lag is dynamically recalculated after movement, not used as a constraint.
      * Works for both real dates and virtual (planning mode) dates.
      */
     getMinStartFromPredecessors(recordId) {
-        const preds = this.data.predecessors.filter(p =>
-            p.task_id === recordId && (p.type || "FS").toUpperCase() === "FS"
-        );
-        if (preds.length === 0) return null;
+        const allPreds = this._predByChild.get(recordId) || [];
+        if (allPreds.length === 0) return null;
 
-        let maxEnd = null;
-        for (const pred of preds) {
-            const source = this.data.records.find(r => r.id === pred.parent_task_id);
+        const record = this._recordMap.get(recordId);
+        if (!record) return null;
+
+        const targetStart = (record._hasChildren && record._summaryDateStart) || record._dateStart;
+        const targetEnd = (record._hasChildren && record._summaryDateEnd) || record._dateEnd;
+        // Duration needed to convert end-constraints (FF/SF) into start-constraints
+        const durationMs = (targetStart && targetEnd) ? targetEnd.toMillis() - targetStart.toMillis() : 0;
+
+        let minStart = null;
+
+        for (const pred of allPreds) {
+            const linkType = (pred.type || "FS").toUpperCase();
+            const source = this._recordMap.get(pred.parent_task_id);
             if (!source) continue;
-            // Use raw predecessor end (without lag) as the hard FS boundary
+
             const sourceEnd = (source._hasChildren && source._summaryDateEnd) || source._dateEnd;
-            if (sourceEnd && (!maxEnd || sourceEnd > maxEnd)) {
-                maxEnd = sourceEnd;
+            const sourceStart = (source._hasChildren && source._summaryDateStart) || source._dateStart;
+
+            let boundary = null;
+            if (linkType === "FS") {
+                // target.start >= source.end
+                boundary = sourceEnd;
+            } else if (linkType === "SS") {
+                // target.start >= source.start
+                boundary = sourceStart;
+            } else if (linkType === "FF" && durationMs > 0) {
+                // target.end >= source.end → target.start >= source.end - duration
+                if (sourceEnd) {
+                    boundary = sourceEnd.minus({ milliseconds: durationMs });
+                }
+            } else if (linkType === "SF" && durationMs > 0) {
+                // target.end >= source.start → target.start >= source.start - duration
+                if (sourceStart) {
+                    boundary = sourceStart.minus({ milliseconds: durationMs });
+                }
+            }
+
+            if (boundary && (!minStart || boundary > minStart)) {
+                minStart = boundary;
             }
         }
-        return maxEnd;
+
+        return minStart;
+    }
+
+    /**
+     * Get the earliest allowed end DateTime for a task based on its predecessors.
+     * Used for right-side resize (start stays fixed, end moves).
+     *   FF: target.end >= source.end
+     *   SF: target.end >= source.start
+     * FS/SS constrain the start, not the end, so they are not checked here.
+     */
+    getMinEndFromPredecessors(recordId) {
+        const allPreds = this._predByChild.get(recordId) || [];
+        if (allPreds.length === 0) return null;
+
+        let minEnd = null;
+
+        for (const pred of allPreds) {
+            const linkType = (pred.type || "FS").toUpperCase();
+            const source = this._recordMap.get(pred.parent_task_id);
+            if (!source) continue;
+
+            let boundary = null;
+            if (linkType === "FF") {
+                // target.end >= source.end
+                boundary = (source._hasChildren && source._summaryDateEnd) || source._dateEnd;
+            } else if (linkType === "SF") {
+                // target.end >= source.start
+                boundary = (source._hasChildren && source._summaryDateStart) || source._dateStart;
+            }
+
+            if (boundary && (!minEnd || boundary > minEnd)) {
+                minEnd = boundary;
+            }
+        }
+
+        return minEnd;
+    }
+
+    /**
+     * Get the earliest allowed end for a record, combining:
+     * 1. FF/SF predecessor constraints
+     * 2. Ancestor dependency constraints
+     */
+    getMinEndForRecord(recordId) {
+        const record = this._recordMap.get(recordId);
+        if (!record) return null;
+
+        let minEnd = this.getMinEndFromPredecessors(recordId);
+
+        // Walk up parent chain
+        let current = record;
+        while (current._parentId) {
+            const parent = this._recordMap.get(current._parentId);
+            if (!parent) break;
+            const parentMinEnd = this.getMinEndFromPredecessors(parent.id);
+            if (parentMinEnd && (!minEnd || parentMinEnd > minEnd)) {
+                minEnd = parentMinEnd;
+            }
+            current = parent;
+        }
+
+        return minEnd;
     }
 
     /**
      * Get the earliest allowed start for a parent task being dragged, considering
-     * EXTERNAL FS predecessor constraints only.
+     * EXTERNAL dependency constraints (FS/SS/FF/SF) only.
      *
-     * "External" means the FS source is outside the moving set (parent + all
-     * descendants). Internal FS relationships (between siblings/descendants
+     * "External" means the dependency source is outside the moving set (parent +
+     * all descendants). Internal relationships (between siblings/descendants
      * within the same parent) are preserved during uniform movement and must
      * NOT constrain the drag.
      *
@@ -2298,7 +2999,7 @@ export class GanttModel extends Model {
      * @returns {DateTime|null} the strictest (latest) min start, or null
      */
     getMinStartForParentDrag(recordId) {
-        const record = this.data.records.find(r => r.id === recordId);
+        const record = this._recordMap.get(recordId);
         if (!record) return null;
 
         const parentStart = record._summaryDateStart || record._dateStart;
@@ -2318,11 +3019,11 @@ export class GanttModel extends Model {
         };
         collect(record);
 
-        // Only consider EXTERNAL FS predecessors (source outside movingSet)
-        let minStart = this._getExternalFsMinStart(recordId, movingSet);
+        // Only consider EXTERNAL predecessors (source outside movingSet)
+        let minStart = this._getExternalMinStart(recordId, movingSet);
 
         for (const desc of descendants) {
-            const descFsMin = this._getExternalFsMinStart(desc.id, movingSet);
+            const descFsMin = this._getExternalMinStart(desc.id, movingSet);
             if (!descFsMin) continue;
 
             const descStart = (desc._hasChildren && desc._summaryDateStart) || desc._dateStart;
@@ -2336,58 +3037,128 @@ export class GanttModel extends Model {
             }
         }
 
+        // Walk up ancestor chain: ancestors' dependency predecessors also constrain
+        // this sub-parent. E.g. if grandparent A has FS predecessor B, then
+        // dragging sub-parent A1 (child of A) must not pull A's summary start
+        // before B's end time.
+        let current = record;
+        while (current._parentId) {
+            const ancestor = this._recordMap.get(current._parentId);
+            if (!ancestor) break;
+            // Ancestor's own external predecessors (outside movingSet)
+            const ancestorFsMin = this._getExternalMinStart(ancestor.id, movingSet);
+            if (ancestorFsMin) {
+                // The ancestor's summary start is driven by its children.
+                // If we move recordId left by X, the ancestor's summary start
+                // also moves left by at most X. So the constraint on the
+                // ancestor translates to a constraint on recordId.
+                const ancestorStart = (ancestor._hasChildren && ancestor._summaryDateStart) || ancestor._dateStart;
+                if (ancestorStart) {
+                    // How far is recordId's start from ancestor's start?
+                    const offsetMs = parentStart.toMillis() - ancestorStart.toMillis();
+                    // recordId's min start = ancestorFsMin + offset
+                    const constrainedStart = ancestorFsMin.plus({ milliseconds: offsetMs });
+                    if (!minStart || constrainedStart > minStart) {
+                        minStart = constrainedStart;
+                    }
+                }
+            }
+            current = ancestor;
+        }
+
         return minStart;
     }
 
     /**
-     * Like getMinStartFromPredecessors but skips FS sources that are in the
+     * Like getMinStartFromPredecessors but skips sources that are in the
      * movingSet (internal relationships preserved during uniform movement).
+     * Considers all 4 dependency types (FS/SS/FF/SF).
      */
-    _getExternalFsMinStart(recordId, movingSet) {
-        const preds = this.data.predecessors.filter(p =>
-            p.task_id === recordId &&
-            (p.type || "FS").toUpperCase() === "FS" &&
+    _getExternalMinStart(recordId, movingSet) {
+        const allPreds = (this._predByChild.get(recordId) || []).filter(p =>
             !movingSet.has(p.parent_task_id)
         );
-        if (preds.length === 0) return null;
-        let maxEnd = null;
-        for (const pred of preds) {
-            const source = this.data.records.find(r => r.id === pred.parent_task_id);
+        if (allPreds.length === 0) return null;
+
+        const record = this._recordMap.get(recordId);
+        if (!record) return null;
+
+        const targetStart = (record._hasChildren && record._summaryDateStart) || record._dateStart;
+        const targetEnd = (record._hasChildren && record._summaryDateEnd) || record._dateEnd;
+        const durationMs = (targetStart && targetEnd) ? targetEnd.toMillis() - targetStart.toMillis() : 0;
+
+        let minStart = null;
+
+        for (const pred of allPreds) {
+            const linkType = (pred.type || "FS").toUpperCase();
+            const source = this._recordMap.get(pred.parent_task_id);
             if (!source) continue;
+
             const sourceEnd = (source._hasChildren && source._summaryDateEnd) || source._dateEnd;
-            if (sourceEnd && (!maxEnd || sourceEnd > maxEnd)) {
-                maxEnd = sourceEnd;
+            const sourceStart = (source._hasChildren && source._summaryDateStart) || source._dateStart;
+
+            let boundary = null;
+            if (linkType === "FS") {
+                boundary = sourceEnd;
+            } else if (linkType === "SS") {
+                boundary = sourceStart;
+            } else if (linkType === "FF" && durationMs > 0) {
+                if (sourceEnd) boundary = sourceEnd.minus({ milliseconds: durationMs });
+            } else if (linkType === "SF" && durationMs > 0) {
+                if (sourceStart) boundary = sourceStart.minus({ milliseconds: durationMs });
+            }
+
+            if (boundary && (!minStart || boundary > minStart)) {
+                minStart = boundary;
             }
         }
-        return maxEnd;
+
+        return minStart;
     }
 
     /**
      * Get the earliest allowed start for a task, combining:
-     * 1. FS predecessor constraints (task cannot start before predecessor ends)
-     * 2. Ancestor FS constraints (walk up parent chain, collect their FS boundaries)
+     * 1. FS/SS/FF/SF predecessor constraints (all converted to min-start)
+     * 2. Ancestor dependency constraints (walk up parent chain, collect their boundaries)
+     * 3. Task constraint type (SNET/MSO enforce a minimum start date)
      * Parent summary dates auto-adjust when children move, so we only constrain
-     * by ancestor FS boundaries — NOT by the parent's current start position.
+     * by ancestor boundaries — NOT by the parent's current start position.
      * Returns the strictest (latest) DateTime, or null if unconstrained.
      */
     getMinStartForRecord(recordId) {
-        const record = this.data.records.find(r => r.id === recordId);
+        const record = this._recordMap.get(recordId);
         if (!record) return null;
 
         let minStart = this.getMinStartFromPredecessors(recordId);
 
-        // Walk up parent chain: only ancestor FS boundaries constrain this task.
+        // Walk up parent chain: only ancestor dependency boundaries constrain this task.
         // Parent summary dates auto-adjust when children move, so we don't use
         // parentStart as a hard boundary.
         let current = record;
         while (current._parentId) {
-            const parent = this.data.records.find(r => r.id === current._parentId);
+            const parent = this._recordMap.get(current._parentId);
             if (!parent) break;
-            const parentFsMin = this.getMinStartFromPredecessors(parent.id);
-            if (parentFsMin && (!minStart || parentFsMin > minStart)) {
-                minStart = parentFsMin;
+            const parentMin = this.getMinStartFromPredecessors(parent.id);
+            if (parentMin && (!minStart || parentMin > minStart)) {
+                minStart = parentMin;
             }
             current = parent;
+        }
+
+        // Enforce task constraint type (SNET / MSO push start forward)
+        const constrainTypeField = this.archInfo.constrainType || "constrain_type";
+        const constrainType = record[constrainTypeField];
+        const constrainDate = record._constrainDate;
+        if (constrainType && constrainDate) {
+            switch (constrainType) {
+                case "snet":  // Start Not Earlier Than
+                case "mso":   // Must Start On
+                    if (!minStart || constrainDate > minStart) {
+                        minStart = constrainDate;
+                    }
+                    break;
+                // snlt, fnet, fnlt, mfo do not constrain minStart (they are upper-bound constraints)
+            }
         }
 
         return minStart;
@@ -2401,15 +3172,14 @@ export class GanttModel extends Model {
      * @returns {{ source: Object, sourceEnd: DateTime }|null}
      */
     _findBlockingFsSource(recordId, excludeSourceIds) {
-        const preds = this.data.predecessors.filter(p =>
-            p.task_id === recordId &&
+        const preds = (this._predByChild.get(recordId) || []).filter(p =>
             (p.type || "FS").toUpperCase() === "FS" &&
             (!excludeSourceIds || !excludeSourceIds.has(p.parent_task_id))
         );
         let maxEnd = null;
         let blockingSource = null;
         for (const pred of preds) {
-            const source = this.data.records.find(r => r.id === pred.parent_task_id);
+            const source = this._recordMap.get(pred.parent_task_id);
             if (!source) continue;
             const sourceEnd = (source._hasChildren && source._summaryDateEnd) || source._dateEnd;
             if (sourceEnd && (!maxEnd || sourceEnd > maxEnd)) {
@@ -2427,7 +3197,7 @@ export class GanttModel extends Model {
      * @returns {{ message: string, boundaryDate: string }|null}
      */
     getBlockingFsInfo(recordId) {
-        const record = this.data.records.find(r => r.id === recordId);
+        const record = this._recordMap.get(recordId);
         if (!record) return null;
 
         const isParent = record._hasChildren;
@@ -2483,7 +3253,7 @@ export class GanttModel extends Model {
             // Ancestor FS
             let current = record;
             while (current._parentId) {
-                const parent = this.data.records.find(r => r.id === current._parentId);
+                const parent = this._recordMap.get(current._parentId);
                 if (!parent) break;
                 const parentBlock = this._findBlockingFsSource(parent.id);
                 if (parentBlock && (!bestSourceEnd || parentBlock.sourceEnd > bestSourceEnd)) {
@@ -2500,9 +3270,11 @@ export class GanttModel extends Model {
         const dateStr = bestSourceEnd.toFormat("M/d HH:mm");
         let message;
         if (throughTaskName) {
-            message = `\u4efb\u52d9\u79fb\u52d5\u53d7\u9650\uff1a\u300c${throughTaskName}\u300d\u7684\u524d\u7f6e\u4efb\u52d9\u300c${bestSourceName}\u300d(FS) \u7d50\u675f\u65bc ${dateStr}`;
+            message = _t("任務移動受限：「%(through)s」的前置任務「%(source)s」(FS) 結束於 %(date)s",
+                { through: throughTaskName, source: bestSourceName, date: dateStr });
         } else {
-            message = `\u4efb\u52d9\u79fb\u52d5\u53d7\u9650\uff1a\u524d\u7f6e\u4efb\u52d9\u300c${bestSourceName}\u300d(FS) \u7d50\u675f\u65bc ${dateStr}`;
+            message = _t("任務移動受限：前置任務「%(source)s」(FS) 結束於 %(date)s",
+                { source: bestSourceName, date: dateStr });
         }
         return { message, boundaryDate: dateStr };
     }
@@ -2514,6 +3286,200 @@ export class GanttModel extends Model {
     async moveRecordWithChildren(recordId, shiftHours, options = {}) {
         const kwargs = options.context ? { context: options.context } : {};
         await this.orm.call(this.resModel, "action_move_with_descendants", [[recordId], shiftHours], kwargs);
+        // Sync local records so subsequent logic sees updated dates
+        const { Duration } = luxon;
+        const shift = Duration.fromObject({ hours: shiftHours });
+        // Pre-build parent->children map for O(n) traversal
+        const childMap = new Map();
+        for (const r of this.data.records) {
+            if (r._parentId != null) {
+                if (!childMap.has(r._parentId)) childMap.set(r._parentId, []);
+                childMap.get(r._parentId).push(r);
+            }
+        }
+        // In planning mode, shiftHours is in working hours but _dateStart/_dateEnd
+        // are on the virtual timeline (scaled by 24/hpd). Compute both shifts.
+        const hpd = this.data.calendarInfo?.hours_per_day || 8;
+        const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
+        const virtualShift = Duration.fromObject({ hours: shiftHours * scaleFactor });
+
+        const stack = [recordId];
+        const visited = new Set();
+        while (stack.length) {
+            const id = stack.pop();
+            if (visited.has(id)) continue;
+            visited.add(id);
+            const rec = this._recordMap.get(id);
+            if (!rec) continue;
+            // Use virtual shift for virtual dates, regular shift for real dates
+            const effectiveShift = rec._isVirtualDates ? virtualShift : shift;
+            if (rec._dateStart) rec._dateStart = rec._dateStart.plus(effectiveShift);
+            if (rec._dateEnd) rec._dateEnd = rec._dateEnd.plus(effectiveShift);
+            if (rec._summaryDateStart) rec._summaryDateStart = rec._summaryDateStart.plus(effectiveShift);
+            if (rec._summaryDateEnd) rec._summaryDateEnd = rec._summaryDateEnd.plus(effectiveShift);
+            if (rec._isVirtualDates) {
+                rec._planOffset = (rec._planOffset || 0) + shiftHours;
+            }
+            // Find children via pre-built map
+            for (const child of (childMap.get(id) || [])) {
+                stack.push(child.id);
+            }
+        }
+        // Recompute summary dates for all affected groups (ancestors may need update)
+        for (const group of this.data.groups) {
+            this._computeGroupSummaryDates(group);
+        }
+    }
+
+    /**
+     * Single-RPC: write/move → FS cascade → recalc lags → apply diff locally.
+     * Replaces the old pattern of updateRecord + pushFS + pushAncestor + recalcLags + reload.
+     */
+    async moveAndCascade(recordId, vals, shiftHours, options = {}) {
+        // Item 11: snapshot before state for undo
+        const beforeState = this._snapshotRecord(recordId);
+        try {
+            const kwargs = {
+                vals: vals || null,
+                shift_hours: shiftHours ?? null,
+            };
+            if (options.context) kwargs.context = options.context;
+
+            const diff = await this.orm.call(
+                this.resModel, "action_move_and_cascade",
+                [[recordId]], kwargs);
+
+            this._applyServerDiff(diff);
+
+            // Item 11: record after state and push to undo stack
+            if (beforeState) {
+                const afterState = this._snapshotRecord(recordId);
+                if (afterState) {
+                    this._pushUndoState({
+                        type: "move",
+                        recordId,
+                        before: beforeState,
+                        after: afterState,
+                    });
+                }
+            }
+            return true;
+        } catch (error) {
+            console.error("moveAndCascade failed, fallback to reload:", error);
+            return false;
+        }
+    }
+
+    /**
+     * Single-RPC batch sorting_seq + parent_id update.
+     */
+    async batchResequence(taskUpdates, milestoneUpdates = []) {
+        try {
+            const projectId = this._lastLoadProps?.context?.default_project_id
+                || this._lastLoadProps?.context?.active_id || null;
+            await this.orm.call(
+                this.resModel, "action_batch_resequence",
+                [taskUpdates, milestoneUpdates, projectId]);
+        } catch (error) {
+            console.error("batchResequence failed:", error);
+            this.notification?.add(_t("排序儲存失敗"), { type: "warning" });
+        }
+    }
+
+    /**
+     * Zero all lags and compact tasks left (CPM Early Start).
+     */
+    async compactLeft(projectId) {
+        await this.orm.call(
+            this.resModel, "action_compact_left", [projectId]);
+    }
+
+    /**
+     * Mark task infos (critical path ES/LS/EF/LF) as stale.
+     * Triggers a deferred refresh after 2 seconds of inactivity.
+     */
+    _markTaskInfosStale() {
+        this._taskInfosStale = true;
+        if (this._taskInfosRefreshTimer) {
+            clearTimeout(this._taskInfosRefreshTimer);
+        }
+        this._taskInfosRefreshTimer = setTimeout(async () => {
+            this._taskInfosRefreshTimer = null;
+            if (!this._taskInfosStale) return;
+            try {
+                await this._loadTaskInfos();
+                this._taskInfosStale = false;
+                this.notify();
+            } catch (e) {
+                console.warn("Deferred task infos refresh failed:", e);
+            }
+        }, 2000);
+    }
+
+    /**
+     * Apply server diff to local records without full reload.
+     */
+    _applyServerDiff(diff) {
+        if (!diff) return;
+        const dateStartField = this.archInfo.dateStart || "date_start";
+        const dateStopField = this.archInfo.dateStop || "date_end";
+        const planDurField = this.archInfo.planDuration || "plan_duration";
+        const planOffField = this.archInfo.planOffset || "plan_offset";
+        const wdField = this.archInfo.workingDuration || "working_duration";
+
+        if (diff.tasks) {
+            for (const [idStr, fields] of Object.entries(diff.tasks)) {
+                const record = this._recordMap.get(parseInt(idStr));
+                if (!record) continue;
+                Object.assign(record, fields);
+                // Re-parse dates
+                if (fields[dateStartField]) {
+                    record._dateStart = GanttModel.parseOdooDate(fields[dateStartField]);
+                }
+                if (fields[dateStopField]) {
+                    record._dateEnd = GanttModel.parseOdooDate(fields[dateStopField]);
+                }
+                if (fields[planDurField] != null) {
+                    record._planDuration = Number(fields[planDurField]) || 0;
+                }
+                if (fields[planOffField] != null) {
+                    record._planOffset = Number(fields[planOffField]) || 0;
+                }
+                if (fields[wdField] != null) {
+                    record[wdField] = Number(fields[wdField]) || 0;
+                }
+                // Re-parse constraint date
+                const constrainDateField = this.archInfo.constrainDate || "constrain_date";
+                if (constrainDateField in fields) {
+                    record._constrainDate = fields[constrainDateField]
+                        ? GanttModel.parseOdooDate(fields[constrainDateField])
+                        : null;
+                }
+                // Regenerate virtual dates if in planning mode
+                if (record._isVirtualDates) {
+                    const T0 = PLANNING_T0;
+                    const hpd = this.data.calendarInfo?.hours_per_day || 8;
+                    const sf = (hpd < 24) ? (24 / hpd) : 1;
+                    record._dateStart = T0.plus({ hours: record._planOffset * sf });
+                    record._dateEnd = T0.plus({ hours: (record._planOffset + record._planDuration) * sf });
+                }
+            }
+        }
+        if (diff.predecessors) {
+            for (const [idStr, fields] of Object.entries(diff.predecessors)) {
+                const pred = this._predById.get(parseInt(idStr));
+                if (pred && fields.lag_hours != null) {
+                    pred.lag_hours = fields.lag_hours;
+                }
+            }
+        }
+        // Recompute summaries
+        for (const group of this.data.groups) {
+            this._computeGroupSummaryDates(group);
+        }
+        this._recomputeMilestonePositions();
+        this._markTaskInfosStale();
+        this.notify();
     }
 
     async updatePredecessor(predId, values) {
@@ -2531,20 +3497,35 @@ export class GanttModel extends Model {
 
             // If lag changed, move the successor to the new effective position
             if (lagChanged) {
-                const pred = this.data.predecessors.find(p => p.id === numericId);
+                const pred = this._predById.get(numericId);
                 if (pred && (pred.type || "FS").toUpperCase() === "FS") {
-                    const source = this.data.records.find(r => r.id === pred.parent_task_id);
-                    const target = this.data.records.find(r => r.id === pred.task_id);
+                    const source = this._recordMap.get(pred.parent_task_id);
+                    const target = this._recordMap.get(pred.task_id);
                     if (source && target) {
                         const effectiveEnd = this._getEffectiveSourceEnd(source, pred);
                         const targetStart = (target._hasChildren && target._summaryDateStart) || target._dateStart;
                         if (effectiveEnd && targetStart && Math.abs(effectiveEnd.toMillis() - targetStart.toMillis()) > 60000) {
                             const _skipSnap = { context: { skip_date_snap: true } };
                             if (target._hasChildren) {
-                                const shiftHours = effectiveEnd.diff(targetStart, "hours").hours;
+                                let shiftHours = effectiveEnd.diff(targetStart, "hours").hours;
+                                // Virtual timeline hours → working hours for backend
+                                const anyVirtualChild = this._hasVirtualChild(target.id);
+                                if (anyVirtualChild) {
+                                    const hpd = this.data.calendarInfo?.hours_per_day || 8;
+                                    const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
+                                    shiftHours = shiftHours / scaleFactor;
+                                }
                                 if (Math.abs(shiftHours) > 0.01) {
                                     await this.moveRecordWithChildren(target.id, shiftHours, _skipSnap);
                                 }
+                            } else if (target._isVirtualDates) {
+                                // Planning mode leaf: write plan_offset instead of real dates
+                                const T0 = PLANNING_T0;
+                                const hpd = this.data.calendarInfo?.hours_per_day || 8;
+                                const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
+                                const newOffset = effectiveEnd.diff(T0, "hours").hours / scaleFactor;
+                                const planOffsetField = this.archInfo.planOffset || "plan_offset";
+                                await this.updateRecord(target.id, { [planOffsetField]: newOffset }, _skipSnap);
                             } else {
                                 const dateStartField = this.archInfo.dateStart || "date_start";
                                 const dateStopField = this.archInfo.dateStop || "date_end";
@@ -2561,11 +3542,15 @@ export class GanttModel extends Model {
                             // Cascade to this successor's own successors
                             await this._pushFSSuccessors(pred.task_id);
                             await this._pushAncestorFSSuccessors(pred.task_id);
+                            await this._recalcAndUpdateLags(pred.task_id);
                         }
                     }
                 }
             }
 
+            for (const group of this.data.groups) {
+                this._computeGroupSummaryDates(group);
+            }
             this.notify();
             return true;
         } catch (error) {
@@ -2700,7 +3685,7 @@ export class GanttModel extends Model {
     async updateRecord(recordId, values, options = {}) {
         try {
             // Milestone records use negative IDs → write to project.milestone
-            const record = this.data.records.find(r => r.id === recordId);
+            const record = this._recordMap.get(recordId);
             if (record && record._isMilestoneRecord) {
                 const msId = Math.abs(recordId);
                 await this.orm.write("project.milestone", [msId], values);
@@ -2744,18 +3729,23 @@ export class GanttModel extends Model {
                 return true;
             }
             const kwargs = options.context ? { context: options.context } : {};
+            const dateStartField = this.archInfo.dateStart || "date_start";
+            const dateStopField = this.archInfo.dateStop || "date_end";
+            const planDurationField = this.archInfo.planDuration || "plan_duration";
+            const planOffsetField = this.archInfo.planOffset || "plan_offset";
             await this.orm.write(this.resModel, [recordId], values, kwargs);
             // Update local record
             if (record) {
                 Object.assign(record, values);
-                // Re-process dates if changed
-                const dateStartField = this.archInfo.dateStart || "date_start";
-                const dateStopField = this.archInfo.dateStop || "date_end";
-                if (values[dateStartField]) {
-                    record._dateStart = GanttModel.parseOdooDate(values[dateStartField]);
+                if (dateStartField in values) {
+                    record._dateStart = values[dateStartField]
+                        ? GanttModel.parseOdooDate(values[dateStartField])
+                        : null;
                 }
-                if (values[dateStopField]) {
-                    record._dateEnd = GanttModel.parseOdooDate(values[dateStopField]);
+                if (dateStopField in values) {
+                    record._dateEnd = values[dateStopField]
+                        ? GanttModel.parseOdooDate(values[dateStopField])
+                        : null;
                 }
                 // Re-process progress if changed, and recompute parent summary progress
                 const progressField = this.archInfo.progress || "";
@@ -2765,24 +3755,29 @@ export class GanttModel extends Model {
                         this._computeGroupSummaryDates(group);
                     }
                 }
+                // Re-process on_gantt (bar label visibility) if changed
+                const onGanttField = this.archInfo.onGantt || "on_gantt";
+                if (onGanttField in values) {
+                    record._showLabel = Boolean(values[onGanttField]);
+                }
                 // Re-process plan fields and virtual dates if changed
-                const planDurationField = this.archInfo.planDuration || "plan_duration";
-                const planOffsetField = this.archInfo.planOffset || "plan_offset";
                 if (values[planDurationField] != null) {
                     record._planDuration = Number(values[planDurationField]) || 0;
                 }
                 if (values[planOffsetField] != null) {
                     record._planOffset = Number(values[planOffsetField]) || 0;
                 }
-                // Regenerate virtual dates if still in planning mode
+                // Regenerate virtual dates if still in planning mode (with calendar scaling)
                 if (record._isVirtualDates && (values[planDurationField] != null || values[planOffsetField] != null)) {
                     const T0 = PLANNING_T0;
-                    record._dateStart = T0.plus({ hours: record._planOffset });
-                    record._dateEnd = T0.plus({ hours: record._planOffset + record._planDuration });
+                    const hpd = this.data.calendarInfo?.hours_per_day || 8;
+                    const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
+                    record._dateStart = T0.plus({ hours: record._planOffset * scaleFactor });
+                    record._dateEnd = T0.plus({ hours: (record._planOffset + record._planDuration) * scaleFactor });
                 }
             }
             // Recompute dependent data if date fields changed
-            if (values[dateStartField] || values[dateStopField] ||
+            if ((dateStartField in values) || (dateStopField in values) ||
                 values[planDurationField] != null || values[planOffsetField] != null) {
                 this._recomputeMilestonePositions();
                 // Recompute parent summary dates (child dates may have changed)
@@ -2803,16 +3798,49 @@ export class GanttModel extends Model {
     // -------------------------------------------------------------------------
 
     async updatePlanDuration(recordId, hours) {
-        const planField = this.archInfo.planDuration || "plan_duration";
-        const values = { [planField]: hours };
-        // If the record has actual dates (not virtual), also update the end date
-        const record = this.data.records.find(r => r.id === recordId);
-        if (record && record._dateStart && !record._isVirtualDates) {
-            const dateEndField = this.archInfo.dateStop || "date_end";
-            const newEnd = record._dateStart.plus({ hours });
-            values[dateEndField] = newEnd.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
+        const record = this._recordMap.get(recordId);
+        if (!record) return false;
+
+        // Virtual dates (planning mode): no real dates, just update plan_duration locally
+        if (record._isVirtualDates || !record._dateStart) {
+            const planField = this.archInfo.planDuration || "plan_duration";
+            return this.updateRecord(recordId, { [planField]: hours });
         }
-        return this.updateRecord(recordId, values);
+
+        // Real dates: use server-side calendar to compute correct date_end
+        try {
+            const result = await this.orm.call(
+                this.resModel, "action_update_plan_duration",
+                [[recordId], hours]
+            );
+            // Sync local record with server result
+            const planField = this.archInfo.planDuration || "plan_duration";
+            record[planField] = hours;
+            record._planDuration = hours;
+            if (result.date_end) {
+                const dateEndField = this.archInfo.dateStop || "date_end";
+                record[dateEndField] = result.date_end;
+                record._dateEnd = GanttModel.parseOdooDate(result.date_end);
+            }
+            // Sync working_duration so getInfoDuration displays correctly
+            const wdField = this.archInfo.workingDuration || "working_duration";
+            if (result.working_duration != null) {
+                record[wdField] = result.working_duration;
+            }
+            this._recomputeMilestonePositions();
+            for (const group of this.data.groups) {
+                this._computeGroupSummaryDates(group);
+            }
+            // Push FS successors if date_end changed (cascade constraint)
+            await this._pushFSSuccessors(recordId);
+            await this._pushAncestorFSSuccessors(recordId);
+            await this._recalcAndUpdateLags(recordId);
+            this.notify();
+            return true;
+        } catch (error) {
+            console.error("Failed to update plan duration:", error);
+            return false;
+        }
     }
 
     async updatePlanOffset(recordId, offsetHours) {
@@ -2823,14 +3851,146 @@ export class GanttModel extends Model {
     async setProjectScheduleStart(groupId, dateStr) {
         const groupModel = this.archInfo.mainGroupModel;
         if (!groupModel) return false;
-        await this.orm.call(groupModel, "action_set_schedule_start", [groupId, dateStr]);
+        try {
+            await this.orm.call(groupModel, "action_set_schedule_start", [groupId, dateStr]);
+            return true;
+        } catch (error) {
+            this.notification.add(error.data?.message || _t("設定排程起始日失敗"), { type: "danger" });
+            return false;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Item 10: Multi-select drag (move multiple records by same cellsDelta)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Move multiple selected records by the same cellsDelta.
+     * Each record is independently constrained by its own FS boundaries.
+     * @param {number[]} recordIds
+     * @param {number} cellsDelta - fractional cells
+     * @param {string} scale
+     * @param {Object} [dragContext] - { calHpd, calDpw, shiftDate, isHidingNonWorking }
+     */
+    async moveMultipleRecords(recordIds, shiftHours, options = {}) {
+        if (!recordIds || recordIds.length === 0) return;
+        try {
+            const kwargs = {
+                shift_hours: shiftHours,
+            };
+            if (options.context) kwargs.context = options.context;
+            const diff = await this.orm.call(
+                this.resModel, "action_move_multiple_and_cascade",
+                [recordIds], kwargs
+            );
+            this._applyServerDiff(diff);
+        } catch (error) {
+            // Fallback: move individually
+            console.warn("Batch move failed, falling back to individual moves:", error);
+            for (const id of recordIds) {
+                await this.moveAndCascade(id, null, shiftHours, options);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Item 11: Undo / Redo
+    // -------------------------------------------------------------------------
+
+    _snapshotRecord(recordId) {
+        const record = this._recordMap.get(recordId);
+        if (!record) return null;
+        const dateStartField = this.archInfo.dateStart || "date_start";
+        const dateStopField = this.archInfo.dateStop || "date_end";
+        const planDurField = this.archInfo.planDuration || "plan_duration";
+        const planOffField = this.archInfo.planOffset || "plan_offset";
+        const snap = {
+            [dateStartField]: record[dateStartField] || null,
+            [dateStopField]: record[dateStopField] || null,
+            [planDurField]: record[planDurField] ?? null,
+            [planOffField]: record[planOffField] ?? null,
+        };
+        // Snapshot predecessor lags (for undo/redo)
+        const predLags = {};
+        const relatedPreds = [
+            ...(this._predByParent.get(recordId) || []),
+            ...(this._predByChild.get(recordId) || []),
+        ].filter(p => p.id);
+        for (const pred of relatedPreds) {
+            predLags[pred.id] = pred.lag_hours || 0;
+        }
+        snap._predLags = predLags;
+        return snap;
+    }
+
+    _pushUndoState(operation) {
+        this._undoStack.push(operation);
+        if (this._undoStack.length > this._maxHistory) this._undoStack.shift();
+        this._redoStack = [];
+    }
+
+    async undo() {
+        if (this._undoStack.length === 0) return false;
+        const op = this._undoStack.pop();
+        await this._applyUndoRedoState(op, "undo");
+        this._redoStack.push(op);
         return true;
     }
+
+    async redo() {
+        if (this._redoStack.length === 0) return false;
+        const op = this._redoStack.pop();
+        await this._applyUndoRedoState(op, "redo");
+        this._undoStack.push(op);
+        return true;
+    }
+
+    async _applyUndoRedoState(op, direction) {
+        const state = direction === "undo" ? op.before : op.after;
+        if (!state || !op.recordId) return;
+        // Restore task fields
+        const fields = { ...state };
+        const predLags = fields._predLags;
+        delete fields._predLags;
+        if (op.type === "move" || op.type === "resize") {
+            await this.updateRecord(op.recordId, fields, { context: { skip_date_snap: true } });
+        }
+        // Restore predecessor lags
+        if (predLags) {
+            const predModel = this.archInfo.predecessorModel;
+            if (predModel) {
+                const writes = [];
+                for (const [predIdStr, lagHours] of Object.entries(predLags)) {
+                    const predId = parseInt(predIdStr);
+                    const pred = this._predById.get(predId);
+                    if (pred && Math.abs((pred.lag_hours || 0) - lagHours) > 0.001) {
+                        pred.lag_hours = lagHours;
+                        writes.push(this.orm.write(predModel, [predId], { lag_hours: lagHours }));
+                    }
+                }
+                if (writes.length) await Promise.all(writes);
+            }
+        }
+        // Recompute everything
+        for (const group of this.data.groups) {
+            this._computeGroupSummaryDates(group);
+        }
+        this._recomputeMilestonePositions();
+        this.notify();
+    }
+
+    canUndo() { return this._undoStack.length > 0; }
+    canRedo() { return this._redoStack.length > 0; }
 
     async clearProjectScheduleDates(groupId, clearTasks) {
         const groupModel = this.archInfo.mainGroupModel;
         if (!groupModel) return false;
-        await this.orm.call(groupModel, "action_clear_schedule_dates", [groupId, clearTasks]);
-        return true;
+        try {
+            await this.orm.call(groupModel, "action_clear_schedule_dates", [groupId, clearTasks]);
+            return true;
+        } catch (error) {
+            this.notification.add(error.data?.message || _t("清除排程日期失敗"), { type: "danger" });
+            return false;
+        }
     }
 }

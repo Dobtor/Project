@@ -35,6 +35,7 @@
 
     // System Colors (Accent)
     --gantt-accent-blue: #007AFF;
+    --gantt-accent-blue-rgb: 0, 122, 255;
     --gantt-accent-green: #34C759;
     --gantt-accent-indigo: #5856D6;
     --gantt-accent-orange: #FF9500;
@@ -176,8 +177,13 @@
     overflow-y: auto;
     overflow-x: auto;
     padding-bottom: calc(var(--gantt-row-height) * 1.5);
+    contain: layout style;
+    will-change: scroll-position;
+    // Firefox scrollbar
+    scrollbar-width: thin;
+    scrollbar-color: var(--gantt-fill-tertiary) transparent;
 
-    // Custom scrollbar (WebKit)
+    // WebKit scrollbar (Chrome, Safari, Edge)
     &::-webkit-scrollbar {
         width: 8px;
     }
@@ -355,6 +361,27 @@
     border: 1px solid rgba(255, 255, 255, 0.4);
 }
 
+// Activity button (always visible, before avatar)
+.o_gantt_activity_btn {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: var(--gantt-radius-sm);
+    cursor: pointer;
+    transition: background var(--gantt-transition-fast), color var(--gantt-transition-fast);
+
+    &:hover {
+        background: var(--gantt-fill-tertiary);
+    }
+
+    .fa {
+        font-size: 14px;
+    }
+}
+
 // Indent / Outdent buttons
 .o_gantt_indent_btns {
     display: none;
@@ -391,6 +418,54 @@
 
     .fa {
         font-size: 11px;
+    }
+}
+
+.o_gantt_task_state {
+    flex-shrink: 0;
+    cursor: pointer;
+    font-size: 14px;
+    margin-right: 4px;
+    opacity: 0.7;
+    transition: opacity 0.15s;
+
+    &:hover {
+        opacity: 1;
+    }
+}
+
+.o_gantt_state_menu {
+    position: absolute;
+    z-index: 10001;
+    min-width: 150px;
+    background: var(--gantt-surface-elevated, #fff);
+    border-radius: var(--gantt-radius-md, 8px);
+    box-shadow: var(--gantt-shadow-xl, 0 4px 24px rgba(0,0,0,0.15));
+    padding: 4px 0;
+    margin-top: 2px;
+    margin-left: -4px;
+}
+
+.o_gantt_state_menu_item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.1s;
+
+    &:hover:not(.disabled) {
+        background: var(--gantt-fill-secondary, #f0f0f0);
+    }
+
+    &.active {
+        font-weight: 600;
+    }
+
+    &.disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
     }
 }
 
@@ -570,8 +645,11 @@
     overflow-y: auto;
     overflow-x: hidden;
     padding-bottom: calc(var(--gantt-row-height) * 1.5);
+    contain: layout style;
+    // Firefox: hide scrollbar
+    scrollbar-width: none;
 
-    // Custom scrollbar (WebKit) — hide to avoid double scrollbar
+    // WebKit: hide scrollbar to avoid double scrollbar
     &::-webkit-scrollbar {
         width: 0;
         height: 0;
@@ -622,8 +700,11 @@
     overflow: auto;
     position: relative;
     background: var(--gantt-bg-primary);
+    // Firefox scrollbar
+    scrollbar-width: thin;
+    scrollbar-color: var(--gantt-fill-tertiary) transparent;
 
-    // Custom scrollbar
+    // WebKit scrollbar
     &::-webkit-scrollbar {
         width: 8px;
         height: 8px;
@@ -733,6 +814,7 @@
     position: relative;
     flex-shrink: 0; // Prevent flex column from compressing — let parent scroll
     padding-bottom: calc(var(--gantt-row-height) * 1.5);
+    contain: layout style;
 
     // Quick-create crosshair cursor on empty row areas
     > .o_gantt_timeline_row:not(.o_gantt_group_row) {
@@ -744,6 +826,7 @@
     height: var(--gantt-row-height);
     border-bottom: 1px solid var(--gantt-separator);
     position: relative;
+    contain: layout style;
     transition: background var(--gantt-transition-fast);
 
     &:hover,
@@ -782,11 +865,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     background: var(--gantt-accent-blue);
-    box-shadow: var(--gantt-shadow-sm);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
     transition:
         transform var(--gantt-transition-fast),
-        box-shadow var(--gantt-transition-fast),
-        filter var(--gantt-transition-fast);
+        box-shadow var(--gantt-transition-fast);
 
     // Subtle gradient overlay for depth
     &::before {
@@ -808,14 +890,12 @@
 
     &:hover {
         transform: translateY(-2px);
-        box-shadow: var(--gantt-shadow-md);
-        filter: brightness(1.05);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
     }
 
     &:active {
         transform: translateY(0);
-        box-shadow: var(--gantt-shadow-sm);
-        filter: brightness(0.95);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
     }
 
     // Status color variants
@@ -837,20 +917,15 @@
         background: #FFFFFF;
         color: var(--gantt-label-primary);
         border: 1.5px solid var(--gantt-label-tertiary);
-        box-shadow: none;
+        filter: none;
         &::before { display: none; }
-
-        // Connector active glow — override box-shadow: none
-        &.o_gantt_connector_active {
-            box-shadow: 0 0 0 2px var(--gantt-accent-blue), 0 0 8px rgba(0, 122, 255, 0.3);
-        }
     }
 
     // No-color milestone
     &.o_gantt_milestone.o_gantt_bar_no_color {
         background: #FFFFFF;
         border: 1.5px solid var(--gantt-label-tertiary);
-        box-shadow: none;
+        filter: none;
     }
 
     // No-color summary: bracket outline via two clip-path layers
@@ -868,7 +943,7 @@
         // (progress right edge = natural stop, no premature right foot)
         background: transparent;
         border: none;
-        box-shadow: none;
+        filter: none;
 
         // Border layer — outer bracket shape
         &::before {
@@ -909,17 +984,6 @@
             z-index: 1;
         }
 
-        &:hover {
-            filter: brightness(0.95);
-        }
-
-        &.o_gantt_connector_active {
-            filter: drop-shadow(0 0 1px var(--gantt-accent-blue))
-                    drop-shadow(0 0 1px var(--gantt-accent-blue))
-                    drop-shadow(0 0 1px var(--gantt-accent-blue))
-                    drop-shadow(0 0 6px rgba(0, 122, 255, 0.3));
-            transform: none;
-        }
     }
 }
 
@@ -1067,14 +1131,14 @@
     }
 }
 
-// Dragging state for bars (elevated lift effect)
+// Unified dragging state for bars (elevated lift effect)
 .o_gantt_bar_dragging {
     cursor: grabbing !important;
     z-index: 100;
     opacity: 0.92;
     transform: scale(1.02);
-    box-shadow: var(--gantt-shadow-xl);
-    filter: brightness(1.05);
+    box-shadow: none;
+    filter: brightness(1.05) drop-shadow(0 4px 8px rgba(0, 0, 0, 0.3));
     transition: none; // Disable transitions during drag for responsiveness
 
     .o_gantt_bar_resize_handle,
@@ -1083,10 +1147,13 @@
     }
 }
 
-// Boundary hit: red glow while dragging at the FS constraint edge
+// Unified boundary hit: red glow while dragging at the FS constraint edge
 .o_gantt_bar_at_boundary {
-    box-shadow: 0 0 0 2px rgba(238, 45, 45, 0.6), 0 0 12px rgba(238, 45, 45, 0.3) !important;
-    filter: brightness(0.95) !important;
+    box-shadow: none !important;
+    filter: brightness(0.95)
+            drop-shadow(0 0 0 rgba(238, 45, 45, 0.6))
+            drop-shadow(0 0 2px rgba(238, 45, 45, 0.6))
+            drop-shadow(0 0 6px rgba(238, 45, 45, 0.3)) !important;
 }
 
 // Boundary snap: shake animation on release when clamped
@@ -1103,16 +1170,19 @@
     100% { transform: translateX(0); }
 }
 
-// Focus pulse: highlight bar when scrolled to via focus button
+// Unified focus pulse: drop-shadow animation for both leaf and parent bars
 .o_gantt_bar_focus_pulse {
     animation: gantt-focus-pulse 1s ease-out;
 }
 
 @keyframes gantt-focus-pulse {
-    0%   { box-shadow: 0 0 0 0 rgba(0, 122, 255, 0.6); }
-    30%  { box-shadow: 0 0 0 6px rgba(0, 122, 255, 0.3); }
-    60%  { box-shadow: 0 0 0 8px rgba(0, 122, 255, 0.1); }
-    100% { box-shadow: 0 0 0 0 rgba(0, 122, 255, 0); }
+    0%   { filter: drop-shadow(0 0 0 rgba(0, 122, 255, 0.6))
+                   drop-shadow(0 0 0 rgba(0, 122, 255, 0.6)); }
+    30%  { filter: drop-shadow(0 0 4px rgba(0, 122, 255, 0.4))
+                   drop-shadow(0 0 8px rgba(0, 122, 255, 0.2)); }
+    60%  { filter: drop-shadow(0 0 6px rgba(0, 122, 255, 0.15))
+                   drop-shadow(0 0 10px rgba(0, 122, 255, 0.08)); }
+    100% { filter: drop-shadow(0 0 0 rgba(0, 122, 255, 0)); }
 }
 
 // Vertical dragging state (reorder)
@@ -1478,19 +1548,17 @@
 
 .o_gantt_bar.o_gantt_critical_path {
     background: var(--gantt-accent-red) !important;
-
-    // Pulsing animation for critical tasks
-    animation: critical-pulse 2s ease-in-out infinite;
+    animation: critical-pulse 2s ease-in-out 3;
 }
 
 @keyframes critical-pulse {
     0%, 100% {
-        box-shadow: var(--gantt-shadow-sm);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
     }
     50% {
-        box-shadow:
-            var(--gantt-shadow-md),
-            0 0 0 3px rgba(255, 59, 48, 0.2);
+        box-shadow: 0 0 0 2px rgba(255, 59, 48, 0.3),
+                    0 0 6px rgba(255, 59, 48, 0.2),
+                    0 2px 4px rgba(0, 0, 0, 0.15);
     }
 }
 
@@ -1505,21 +1573,20 @@
 //   │╱                ╲│  ← bevel: height = barHeight / 2
 .o_gantt_bar.o_gantt_summary {
     $bar-h: 28px;
-    $bevel-h: 14px; // half of bar height
+    $foot-h: 10px;
 
-    height: calc(#{$bar-h} + #{$bevel-h}); // 42px total
+    height: calc(#{$bar-h} + #{$foot-h});
     border-radius: 0;
     padding: 0;
-    box-shadow: none;
     cursor: grab;
     clip-path: polygon(
         0 0,                                /* top-left */
         100% 0,                             /* top-right */
         100% #{$bar-h},                     /* right edge at bar bottom */
-        100% 100%,                          /* right foot tip (bottom-right) */
-        calc(100% - #{$bevel-h}) #{$bar-h}, /* right foot inner */
-        #{$bevel-h} #{$bar-h},              /* left foot inner */
-        0 100%,                             /* left foot tip (bottom-left) */
+        100% 100%,                          /* right foot tip = bar right edge */
+        calc(100% - 6px) #{$bar-h},         /* right foot inner (small bevel) */
+        6px #{$bar-h},                      /* left foot inner (small bevel) */
+        0 100%,                             /* left foot tip = bar left edge */
         0 #{$bar-h}                         /* left edge at bar bottom */
     );
 
@@ -1540,15 +1607,6 @@
         top: calc(#{$bar-h} / 2);
     }
 
-    &.o_gantt_connector_active {
-        filter: drop-shadow(0 0 1px var(--gantt-accent-blue))
-                drop-shadow(0 0 1px var(--gantt-accent-blue))
-                drop-shadow(0 0 1px var(--gantt-accent-blue))
-                drop-shadow(0 0 6px rgba(0, 122, 255, 0.3));
-        transform: none;
-        box-shadow: none;
-    }
-
     // Drop target: shift connector dots inward so clip-path doesn't clip them
     &.o_gantt_connector_drop_target .o_gantt_connector_left {
         left: 0;
@@ -1556,6 +1614,7 @@
     &.o_gantt_connector_drop_target .o_gantt_connector_right {
         right: 0;
     }
+
 }
 
 .o_gantt_summary_end {
@@ -1696,7 +1755,11 @@
 
 // Active connector (being dragged from)
 .o_gantt_bar.o_gantt_connector_active {
-    box-shadow: 0 0 0 2px var(--gantt-accent-blue), 0 0 8px rgba(0, 122, 255, 0.3);
+    box-shadow: none;
+    filter: drop-shadow(0 0 0 var(--gantt-accent-blue))
+            drop-shadow(0 0 1px var(--gantt-accent-blue))
+            drop-shadow(0 0 1px var(--gantt-accent-blue))
+            drop-shadow(0 0 6px rgba(0, 122, 255, 0.3));
 }
 
 // Drop target: reveal blue connector endpoint dots
@@ -1709,32 +1772,17 @@
 // Selection & Focus States
 // -----------------------------------------------------------------------------
 
-.o_gantt_bar.o_gantt_selected {
-    box-shadow:
-        var(--gantt-shadow-md),
-        0 0 0 3px var(--gantt-accent-blue),
-        0 0 0 5px rgba(0, 122, 255, 0.2);
+// Selected bar — no outline/glow on bar itself (row highlight only)
+// Elevate row for potential future effects
+.o_gantt_timeline_row:has(> .o_gantt_bar.o_gantt_selected) {
+    z-index: 2;
 }
 
-.o_gantt_list_row.o_gantt_selected {
-    position: relative;
-    background: rgba(0, 122, 255, 0.08);
-
-    &::before {
-        content: '';
-        position: absolute;
-        left: 0;
-        top: 0;
-        bottom: 0;
-        width: 3px;
-        background: var(--gantt-accent-blue);
-        border-radius: 0 2px 2px 0;
-    }
-}
-
-// Selected row highlight on the timeline side
+// Unified selected row highlight — same background across list, duration, timeline
+.o_gantt_list_row.o_gantt_selected,
+.o_gantt_duration_row.o_gantt_row_selected,
 .o_gantt_timeline_row.o_gantt_row_selected {
-    background: rgba(0, 122, 255, 0.04);
+    background: rgba(0, 122, 255, 0.05) !important;
 }
 
 // -----------------------------------------------------------------------------
@@ -1984,8 +2032,11 @@
     align-items: center;
     justify-content: center;
     background: var(--gantt-vibrancy-bg);
-    backdrop-filter: blur(var(--gantt-vibrancy-blur));
     z-index: 100;
+    @supports (backdrop-filter: blur(20px)) {
+        backdrop-filter: blur(var(--gantt-vibrancy-blur));
+        -webkit-backdrop-filter: blur(var(--gantt-vibrancy-blur));
+    }
 }
 
 .o_gantt_loading_spinner {
@@ -2173,7 +2224,7 @@
     align-items: center;
     gap: 1px;
     padding: 3px 8px;
-    border-bottom: 1px solid var(--gantt-border-color);
+    border-bottom: 1px solid var(--gantt-separator);
     background: var(--gantt-surface-elevated);
     flex-shrink: 0;
     flex-wrap: wrap;
@@ -2221,7 +2272,7 @@
 .o_gantt_tb_sep {
     width: 1px;
     height: 18px;
-    background: var(--gantt-border-color);
+    background: var(--gantt-separator);
     margin: 0 3px;
     flex-shrink: 0;
 }
@@ -2305,7 +2356,7 @@
     }
 }
 
-.o_gantt_tb_dropdown_empty {
+.o_gantt_tb_dropdown_hint {
     padding: 8px 12px;
     font-size: 11px;
     color: var(--gantt-label-tertiary);
@@ -2459,6 +2510,23 @@
     background: var(--gantt-accent-green);
     opacity: 0.5;
     border-radius: inherit;
+}
+
+// Selected group bar (parent task) - same style as .o_gantt_bar.o_gantt_selected
+.o_gantt_group_bar.o_gantt_group_bar_selected {
+    filter: drop-shadow(0 0 0 var(--gantt-accent-blue))
+            drop-shadow(0 0 0 var(--gantt-accent-blue))
+            drop-shadow(0 0 1.5px var(--gantt-accent-blue))
+            drop-shadow(0 0 5px rgba(0, 122, 255, 0.3));
+    z-index: 100;
+    overflow: visible;
+
+    .o_gantt_group_bar_progress {
+        background: rgba(0, 0, 0, 0.35);
+        border-radius: inherit;
+    }
+
+    transition: filter 0.15s ease;
 }
 
 // Resource level badge
@@ -2691,17 +2759,165 @@
 // Constraint date marker (flag shape on timeline)
 .o_gantt_constraint_marker {
     position: absolute;
-    top: 2px;
-    width: 0;
-    height: 0;
-    border-left: 6px solid var(--gantt-accent-orange);
-    border-top: 5px solid var(--gantt-accent-orange);
-    border-right: 6px solid transparent;
-    border-bottom: 5px solid transparent;
-    z-index: 5;
+    top: 0;
+    bottom: 0;
+    z-index: 8;  // Above task bar (z-index ~3-5) so line is always visible
+    pointer-events: auto;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    transform: translateX(-50%);
+
+    .o_gantt_constraint_label {
+        font-size: 9px;
+        font-weight: 700;
+        padding: 0 3px;
+        border-radius: 3px;
+        background: var(--gantt-accent-orange);
+        color: #fff;
+        line-height: 14px;
+        white-space: nowrap;
+        flex-shrink: 0;
+        position: relative;
+        z-index: 2;
+    }
+
+    .o_gantt_constraint_line {
+        flex: 1;
+        width: 0;
+        border-left: 1.5px dashed var(--gantt-accent-orange);
+        opacity: 0.7;
+    }
+
+    // Horizontal connector to task bar edge
+    .o_gantt_constraint_connector {
+        position: absolute;
+        top: 50%;
+        height: 0;
+        border-top: 1.5px dashed var(--gantt-accent-orange);
+        opacity: 0.5;
+
+        // Arrow at the end pointing toward task bar
+        &::after {
+            content: "";
+            position: absolute;
+            top: -4px;
+            width: 0;
+            height: 0;
+            border-top: 4px solid transparent;
+            border-bottom: 4px solid transparent;
+        }
+
+        // Arrow pointing right → (constraint is left of bar start)
+        &.o_gantt_constraint_connector_right::after {
+            right: -1px;
+            border-left: 5px solid var(--gantt-accent-orange);
+        }
+
+        // Arrow pointing left ← (constraint is right of bar end)
+        &.o_gantt_constraint_connector_left::after {
+            left: -1px;
+            border-right: 5px solid var(--gantt-accent-orange);
+        }
+    }
+
+    &:hover {
+        .o_gantt_constraint_label {
+            transform: scale(1.1);
+        }
+        .o_gantt_constraint_line {
+            opacity: 1;
+            border-left-style: solid;
+        }
+        .o_gantt_constraint_connector {
+            opacity: 1;
+            border-top-style: solid;
+        }
+    }
+
+    // Hard constraints (MSO/MFO) — red
+    &.o_gantt_constraint_hard {
+        .o_gantt_constraint_label {
+            background: var(--gantt-accent-red, #e74c3c);
+        }
+        .o_gantt_constraint_line {
+            border-left-color: var(--gantt-accent-red, #e74c3c);
+        }
+        .o_gantt_constraint_connector {
+            border-top-color: var(--gantt-accent-red, #e74c3c);
+            &::after {
+                border-left-color: var(--gantt-accent-red, #e74c3c);
+                border-right-color: var(--gantt-accent-red, #e74c3c);
+            }
+        }
+    }
+
+    // Violated constraint — pulsing
+    &.o_gantt_constraint_violated {
+        .o_gantt_constraint_label {
+            animation: constraint-pulse 1.5s ease-in-out infinite;
+        }
+    }
+
+    // Start-type direction hint: label has right arrow
+    &.o_gantt_constraint_start .o_gantt_constraint_label::after {
+        content: "→";
+        margin-left: 2px;
+        font-size: 8px;
+    }
+
+    // End-type direction hint: label has left arrow
+    &.o_gantt_constraint_end .o_gantt_constraint_label::before {
+        content: "←";
+        margin-right: 2px;
+        font-size: 8px;
+    }
+}
+
+@keyframes constraint-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+// Constraint custom tooltip (positioned fixed)
+.o_gantt_constraint_tooltip {
+    position: fixed;
+    z-index: 10002;
+    min-width: 160px;
+    background: var(--gantt-surface-elevated, #fff);
+    border-radius: var(--gantt-radius-md, 8px);
+    box-shadow: var(--gantt-shadow-xl, 0 4px 24px rgba(0,0,0,0.15));
+    padding: 8px 12px;
+    font-size: 12px;
     pointer-events: none;
-    opacity: 0.85;
-    transform: translateX(-3px);
+
+    .o_gantt_constraint_tooltip_type {
+        font-weight: 600;
+        margin-bottom: 4px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .o_gantt_constraint_tooltip_date {
+        color: var(--gantt-label-secondary, #666);
+        margin-bottom: 4px;
+    }
+
+    .o_gantt_constraint_tooltip_warn {
+        color: var(--gantt-accent-red, #e74c3c);
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-bottom: 4px;
+    }
+
+    .o_gantt_constraint_tooltip_current {
+        color: var(--gantt-label-tertiary, #999);
+        font-size: 11px;
+    }
 }
 
 // Constraint hint style during Shift+drag
@@ -2839,11 +3055,13 @@
     width: 320px;
     height: 100%;
     background: var(--gantt-vibrancy-bg);
-    backdrop-filter: blur(var(--gantt-vibrancy-blur));
-    -webkit-backdrop-filter: blur(var(--gantt-vibrancy-blur));
     border-left: 1px solid var(--gantt-separator);
     box-shadow: var(--gantt-shadow-lg);
     z-index: 50;
+    @supports (backdrop-filter: blur(20px)) {
+        backdrop-filter: blur(var(--gantt-vibrancy-blur));
+        -webkit-backdrop-filter: blur(var(--gantt-vibrancy-blur));
+    }
     transform: translateX(100%);
     transition: transform var(--gantt-transition-spring);
     overflow-y: auto;
@@ -2879,7 +3097,7 @@
     border-radius: var(--gantt-radius-sm);
     cursor: pointer;
     color: var(--gantt-label-secondary);
-    transition: all var(--gantt-transition-fast);
+    transition: background var(--gantt-transition-fast), color var(--gantt-transition-fast);
     margin-left: 4px;
 
     &:hover {
@@ -3071,7 +3289,7 @@
     color: var(--gantt-label-secondary);
     cursor: pointer;
     white-space: nowrap;
-    transition: all var(--gantt-transition-fast);
+    transition: background var(--gantt-transition-fast), color var(--gantt-transition-fast);
 
     &:hover {
         background: var(--gantt-fill-secondary);
@@ -3105,7 +3323,7 @@
     cursor: pointer;
     color: var(--gantt-label-tertiary);
     flex-shrink: 0;
-    transition: all var(--gantt-transition-fast);
+    transition: background var(--gantt-transition-fast), color var(--gantt-transition-fast);
 
     &:hover {
         background: rgba(255, 59, 48, 0.1);
@@ -3202,7 +3420,7 @@
     background: var(--gantt-fill-secondary);
     color: var(--gantt-label-secondary);
     cursor: pointer;
-    transition: all var(--gantt-transition-fast);
+    transition: background var(--gantt-transition-fast), color var(--gantt-transition-fast), border-color var(--gantt-transition-fast);
 
     &:hover {
         background: var(--gantt-accent-blue);
@@ -3329,11 +3547,11 @@
 @keyframes ganttRowAppear {
     from {
         opacity: 0;
-        max-height: 0;
+        transform: translateY(-8px);
     }
     to {
         opacity: 1;
-        max-height: var(--gantt-row-height);
+        transform: translateY(0);
     }
 }
 
@@ -3341,9 +3559,11 @@
 // Phase 3: Multi-select highlighting
 // =============================================================================
 
+// Unified multi-selected: drop-shadow for both leaf and parent bars
 .o_gantt_bar.o_gantt_multi_selected {
-    outline: 2px solid var(--gantt-accent-blue);
-    outline-offset: 1px;
+    outline: none;
+    filter: drop-shadow(0 0 0 var(--gantt-accent-blue))
+            drop-shadow(0 0 1px var(--gantt-accent-blue));
 }
 
 // =============================================================================
@@ -3456,8 +3676,8 @@
     align-items: center;
     padding: 4px 8px;
     gap: 6px;
-    border-bottom: 1px solid var(--gantt-border-light);
-    &:hover { background: var(--gantt-bg-hover); }
+    border-bottom: 1px solid var(--gantt-separator);
+    &:hover { background: var(--gantt-fill-quaternary); }
 }
 .o_gantt_inspector_milestone_task_wbs {
     font-size: 11px;
