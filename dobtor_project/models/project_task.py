@@ -3,10 +3,15 @@ from odoo import models, fields, api, _
 from datetime import timedelta
 from dateutil.relativedelta import relativedelta
 from odoo.exceptions import UserError
+from odoo.addons.project.models.project_task import CLOSED_STATES
 import pytz
 import logging
 
 _logger = logging.getLogger(__name__)
+
+# Fixed namespace (classid) for pg_advisory_xact_lock(classid, objid) used to
+# serialize concurrent scheduler runs per project. Arbitrary but stable.
+_SCHEDULER_LOCK_NAMESPACE = 19847001
 
 
 class ProjectTaskNative(models.Model):
@@ -140,13 +145,21 @@ class ProjectTaskNative(models.Model):
         store=True,
         compute_sudo=True
     )
-    # Design note: predecessor_parent is a hybrid field — computed via
-    # _compute_predecessor_count for initial/batch population, but also
-    # manually written by project.task.predecessor's create/write/unlink
-    # to maintain accuracy without side effects in compute methods.
-    # This avoids Odoo 18's restriction on write() inside compute.
+    # Inverse relation: links where this task acts as the predecessor (parent).
+    # Provides proper ORM dependency tracking so predecessor_parent recomputes
+    # automatically when a link pointing at this task is created/removed —
+    # no manual writes, no compute/write race (see _compute_predecessor_parent).
+    as_predecessor_ids = fields.One2many(
+        'project.task.predecessor',
+        'parent_task_id',
+        string='被依賴關聯'
+    )
+    # Number of links in which this task is the predecessor (i.e. how many
+    # successors depend on it). The scheduler treats predecessor_parent == 0
+    # as a "terminal" task during the backward pass, so this must be an
+    # accurate count maintained by a single source of truth (the compute).
     predecessor_parent = fields.Integer(
-        compute='_compute_predecessor_count',
+        compute='_compute_predecessor_parent',
         string='被依賴數量',
         store=True,
         compute_sudo=True
@@ -295,7 +308,8 @@ class ProjectTaskNative(models.Model):
     )
     sorting_seq = fields.Integer(
         string='排序序號',
-        default=0
+        default=0,
+        index=True,
     )
     sorting_level = fields.Integer(
         string='排序層級',
@@ -414,32 +428,24 @@ class ProjectTaskNative(models.Model):
 
     @api.depends("predecessor_ids")
     def _compute_predecessor_count(self):
-        """Compute predecessor count - Odoo 18 best practice: no write() in compute.
-
-        Note: predecessor_parent is now maintained by project.task.predecessor
-        model's create/write/unlink methods to avoid side effects in compute.
-        """
-        if not self:
-            return
-
-        # Raw SQL for performance: single GROUP BY query instead of
-        # per-record ORM search_count on the predecessor table.
-        # Filter out NewId records (unsaved) that cannot be used in SQL queries.
-        task_ids = [tid for tid in self.ids if isinstance(tid, int)]
-        parent_counts = {}
-        if task_ids:
-            self.env.cr.execute("""
-                SELECT parent_task_id, COUNT(*)
-                FROM project_task_predecessor
-                WHERE parent_task_id IN %s
-                GROUP BY parent_task_id
-            """, (tuple(task_ids),))
-            parent_counts = dict(self.env.cr.fetchall())
-
-        # Update current tasks - only set computed values, no write() to other records
+        """Count the predecessor links owned by each task (its dependencies)."""
         for task in self:
             task.predecessor_count = len(task.predecessor_ids)
-            task.predecessor_parent = parent_counts.get(task.id, 0)
+
+    @api.depends("as_predecessor_ids")
+    def _compute_predecessor_parent(self):
+        """Count the links in which this task is the predecessor (successors).
+
+        Single source of truth: the value is driven purely by the
+        as_predecessor_ids inverse relation, so creating or removing a
+        predecessor link that points at this task recomputes it automatically.
+        The previous design wrote a hard-coded 1 from
+        project.task.predecessor.create/write while the compute wrote the real
+        count, letting the stored value drift between "1" and "N" and breaking
+        the scheduler's predecessor_parent == 0 terminal-task detection.
+        """
+        for task in self:
+            task.predecessor_parent = len(task.as_predecessor_ids)
 
     # ------------------------------------------------------------------
     # Unified dependency: predecessor-driven state management
@@ -460,8 +466,6 @@ class ProjectTaskNative(models.Model):
         A task is 'waiting' if any predecessor with enable_blocking=True
         has a parent_task that is not in a closed state.
         """
-        # Import here to avoid circular import at module level
-        from odoo.addons.project.models.project_task import CLOSED_STATES
         for task in self:
             if task.allow_task_dependencies:
                 has_open_blocker = any(
@@ -478,7 +482,6 @@ class ProjectTaskNative(models.Model):
 
     def is_blocked_by_dependences(self):
         """Override native method to check predecessor-based blocking."""
-        from odoo.addons.project.models.project_task import CLOSED_STATES
         return any(
             pred.enable_blocking and pred.parent_task_id.state not in CLOSED_STATES
             for pred in self.predecessor_ids
@@ -509,10 +512,14 @@ class ProjectTaskNative(models.Model):
         # Verify caller has write access to the project
         search_project.check_access('write')
 
-        # Advisory lock to prevent concurrent scheduling on same project
+        # Advisory lock to prevent concurrent scheduling on same project.
+        # Use the two-int form pg_advisory_xact_lock(classid, objid) with a
+        # fixed namespace + project_id. Python's hash() is salted per process
+        # (PYTHONHASHSEED), so different workers would derive different keys for
+        # the same project and the lock would not actually serialize them.
         self.env.cr.execute(
-            "SELECT pg_advisory_xact_lock(%s)",
-            (abs(hash(('scheduler_plan', project_id))) % (2**31),))
+            "SELECT pg_advisory_xact_lock(%s, %s)",
+            (_SCHEDULER_LOCK_NAMESPACE, project_id))
 
         scheduling_type = search_project.scheduling_type
 
@@ -891,7 +898,6 @@ class ProjectTaskNative(models.Model):
         - Recurses upward through ancestor chain
         - Uses skip_auto_complete context to prevent infinite recursion
         """
-        from odoo.addons.project.models.project_task import CLOSED_STATES
         parents_to_check = self.mapped('parent_id').filtered(
             lambda p: p.state not in CLOSED_STATES
         )
@@ -995,7 +1001,24 @@ class ProjectTaskNative(models.Model):
             if update_vals:
                 parent.with_context(skip_date_snap=True).write(update_vals)  # recursive — triggers grandparent
 
-    def _cascade_dependency_push(self, visited=None):
+    def _build_outbound_pred_map(self):
+        """Prefetch outbound predecessor links keyed by parent_task_id.
+
+        A date cascade never changes the dependency topology (only task dates),
+        so the link graph can be loaded once and reused across the whole
+        traversal instead of issuing one Pred.search() per visited task (N+1).
+        """
+        project_ids = self.mapped('project_id').ids
+        if not project_ids:
+            return {}
+        Pred = self.env['project.task.predecessor']
+        preds = Pred.search([('parent_task_id.project_id', 'in', project_ids)])
+        ids_by_parent = {}
+        for pred in preds:
+            ids_by_parent.setdefault(pred.parent_task_id.id, []).append(pred.id)
+        return {pid: Pred.browse(ids) for pid, ids in ids_by_parent.items()}
+
+    def _cascade_dependency_push(self, visited=None, pred_map=None):
         """Push dependent tasks when date changes create overlap.
         Called from write() for non-gantt operations (e.g. list view edits).
 
@@ -1005,6 +1028,8 @@ class ProjectTaskNative(models.Model):
         """
         if visited is None:
             visited = set()
+        if pred_map is None:
+            pred_map = self._build_outbound_pred_map()
         Pred = self.env['project.task.predecessor']
         tasks_to_cascade = self.env['project.task']
 
@@ -1013,8 +1038,8 @@ class ProjectTaskNative(models.Model):
                 continue
             visited.add(task.id)
 
-            # Find all predecessors where this task is the source
-            outbound = Pred.search([('parent_task_id', '=', task.id)])
+            # Outbound predecessors where this task is the source (prefetched)
+            outbound = pred_map.get(task.id)
             if not outbound:
                 continue
 
@@ -1067,9 +1092,10 @@ class ProjectTaskNative(models.Model):
                 if target.parent_id:
                     target._update_ancestor_dates()
 
-        # Recursively cascade from pushed targets
+        # Recursively cascade from pushed targets (reuse the prefetched map)
         if tasks_to_cascade:
-            tasks_to_cascade._cascade_dependency_push(visited=visited)
+            tasks_to_cascade._cascade_dependency_push(
+                visited=visited, pred_map=pred_map)
 
     def _get_ancestor_fs_min_start(self, task):
         """Get the strictest predecessor boundary for a task's start date,
@@ -1386,7 +1412,9 @@ class ProjectTaskNative(models.Model):
         if visited is None:
             visited = set()
         stack = deque([self])
-        Pred = self.env['project.task.predecessor']
+        # Prefetch the static link graph once (avoids per-node N+1 search).
+        pred_map = self._build_outbound_pred_map()
+        empty_preds = self.env['project.task.predecessor']
 
         while stack:
             current = stack.popleft()
@@ -1394,9 +1422,8 @@ class ProjectTaskNative(models.Model):
                 continue
             visited.add(current.id)
 
-            # Search ALL dependency types where current is the source
-            all_preds = Pred.search([
-                ('parent_task_id', '=', current.id)])
+            # All dependency types where current is the source (prefetched)
+            all_preds = pred_map.get(current.id, empty_preds)
 
             is_planning = self._is_planning_mode(current)
 

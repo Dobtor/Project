@@ -51,6 +51,28 @@
                                 <field name="detail_plan_work" widget="float_time" readonly="1"/>
                             </group>
                         </group>
+                        <group string="成本與賺得值 (EVM)">
+                            <group>
+                                <field name="currency_id" invisible="1"/>
+                                <field name="cost_hourly_rate" widget="monetary" readonly="1"/>
+                                <field name="planned_cost" widget="monetary" readonly="1"/>
+                                <field name="actual_cost" widget="monetary" readonly="1"/>
+                                <field name="earned_value" widget="monetary" readonly="1"/>
+                            </group>
+                            <group>
+                                <field name="planned_value" widget="monetary" readonly="1"/>
+                                <field name="cost_variance" widget="monetary" readonly="1"
+                                       decoration-danger="cost_variance &lt; 0"/>
+                                <field name="schedule_variance" widget="monetary" readonly="1"
+                                       decoration-danger="schedule_variance &lt; 0"/>
+                                <field name="cpi" readonly="1"
+                                       decoration-danger="cpi &lt; 1 and cpi &gt; 0"
+                                       decoration-success="cpi &gt;= 1"/>
+                                <field name="spi" readonly="1"
+                                       decoration-danger="spi &lt; 1 and spi &gt; 0"
+                                       decoration-success="spi &gt;= 1"/>
+                            </group>
+                        </group>
                         <!-- Hidden fields -->
                         <field name="duration_scale" invisible="1"/>
                         <field name="duration_work_scale" invisible="1"/>

@@ -17,19 +17,29 @@ class ProjectMilestone(models.Model):
         default=0
     )
 
+    def _deadline_date_from_datetime(self, value):
+        """Derive the local-calendar date from a UTC deadline_datetime.
+
+        Datetime fields are stored in UTC; taking .date() directly would drop a
+        day for users east of UTC (e.g. a 02:00 local milestone in UTC+8 is the
+        previous day in UTC). Convert to the user's timezone first.
+        """
+        dt = fields.Datetime.from_string(value)
+        return fields.Datetime.context_timestamp(self, dt).date()
+
     @api.model_create_multi
     def create(self, vals_list):
         for vals in vals_list:
             if 'deadline_datetime' in vals and vals['deadline_datetime']:
-                dt = fields.Datetime.from_string(vals['deadline_datetime'])
-                vals['deadline'] = dt.date()
+                vals['deadline'] = self._deadline_date_from_datetime(
+                    vals['deadline_datetime'])
         return super().create(vals_list)
 
     def write(self, vals):
         if 'deadline_datetime' in vals:
             if vals['deadline_datetime']:
-                dt = fields.Datetime.from_string(vals['deadline_datetime'])
-                vals['deadline'] = dt.date()
+                vals['deadline'] = self._deadline_date_from_datetime(
+                    vals['deadline_datetime'])
             else:
                 vals['deadline'] = False
         return super().write(vals)

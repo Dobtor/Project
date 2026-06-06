@@ -55,6 +55,34 @@
                             </group>
                         </group>
                     </page>
+                    <page string="成本與賺得值" name="evm_settings">
+                        <group>
+                            <group string="設定">
+                                <field name="status_date"/>
+                                <field name="currency_id" invisible="1"/>
+                            </group>
+                            <group string="成本">
+                                <field name="total_planned_cost" widget="monetary"/>
+                                <field name="total_actual_cost" widget="monetary"/>
+                                <field name="total_cost_variance" widget="monetary"
+                                       decoration-danger="total_cost_variance &lt; 0"/>
+                            </group>
+                            <group string="賺得值">
+                                <field name="total_earned_value" widget="monetary"/>
+                                <field name="total_planned_value" widget="monetary"/>
+                                <field name="total_schedule_variance" widget="monetary"
+                                       decoration-danger="total_schedule_variance &lt; 0"/>
+                            </group>
+                            <group string="績效指數">
+                                <field name="project_cpi"
+                                       decoration-danger="project_cpi &lt; 1 and project_cpi &gt; 0"
+                                       decoration-success="project_cpi &gt;= 1"/>
+                                <field name="project_spi"
+                                       decoration-danger="project_spi &lt; 1 and project_spi &gt; 0"
+                                       decoration-success="project_spi &gt;= 1"/>
+                            </group>
+                        </group>
+                    </page>
                 </xpath>
             </field>
         </record>

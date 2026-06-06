@@ -520,14 +520,14 @@
 
                     <!-- Tooltip -->
                     <GanttTooltip archInfo="props.archInfo"
-                                  getRecord="(id) => this.props.model.data?.records?.find(r => r.id === id)"
+                                  getRecord="getModelRecord"
                                   getPredecessorCount="(id) => this.getPredecessorCount(id)"
                                   isPlanningMode="isPlanningMode"
                                   hoursPerDay="this.props.model.data?.calendarInfo?.hours_per_day"/>
 
                     <!-- Context Menu -->
                     <GanttContextMenu archInfo="props.archInfo"
-                                      getRecord="(id) => this.props.model.data?.records?.find(r => r.id === id)"
+                                      getRecord="getModelRecord"
                                       onAction="(rid, action) => this.onContextAction(rid, action)"/>
 
                     <!-- Timeline Rows (always render all — bars are position:absolute, arrows depend on full row indices) -->

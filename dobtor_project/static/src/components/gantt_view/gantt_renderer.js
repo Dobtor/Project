@@ -66,6 +66,11 @@ export class GanttRenderer extends Component {
 
     setup() {
         this.displayDialog = useOwnedDialogs();
+        // Stable bound reference so child components (tooltip / context menu)
+        // receive the same getRecord function every render (preserves their
+        // props memoization) and use the model's O(1) lookup instead of an
+        // O(n) .find() over the records array.
+        this.getModelRecord = (id) => this.props.model.getRecord(id);
         this.timelineRef = useRef("timeline");
         this.timelineDataRef = useRef("timelineData");
         this.listRowsRef = useRef("listRows");
@@ -641,8 +646,11 @@ export class GanttRenderer extends Component {
         });
 
         onWillPatch(() => {
-            // Clear _dateToPx cache before each render pass
+            // Clear per-render caches before each render pass
             this._dateToPxCache = null;
+            this._ghostBarsByTask = null;
+            this._loadBarsByTask = null;
+            this._recordsByResource = null;
         });
 
         onPatched(() => {
@@ -2155,8 +2163,20 @@ export class GanttRenderer extends Component {
     // -------------------------------------------------------------------------
 
     getGhostBars(record) {
-        const ghostBars = this.props.model.data?.ghostBars || [];
-        return ghostBars.filter(gb => gb.taskId === record.id);
+        // Build a taskId → ghostBars map once per render instead of filtering
+        // the full array for every row (was O(rows × ghostBars)).
+        if (!this._ghostBarsByTask) {
+            this._ghostBarsByTask = new Map();
+            for (const gb of this.props.model.data?.ghostBars || []) {
+                let list = this._ghostBarsByTask.get(gb.taskId);
+                if (!list) {
+                    list = [];
+                    this._ghostBarsByTask.set(gb.taskId, list);
+                }
+                list.push(gb);
+            }
+        }
+        return this._ghostBarsByTask.get(record.id) || [];
     }
 
     getGhostBarStyle(ghostBar) {
@@ -2220,24 +2240,41 @@ export class GanttRenderer extends Component {
         const resourceId = Array.isArray(resourceVal) ? resourceVal[0] : resourceVal;
         if (!resourceId || !this._isValidDt(record._dateStart) || !this._isValidDt(record._dateEnd)) return [];
 
-        // Find all other records that share same resource and overlap in time
-        const records = this.props.model.data?.records || [];
+        // Use a resourceId → records index built once per render so each row
+        // only scans tasks sharing its resource, not the whole project.
+        // hasResourceConflict() calls this per row, so the naive full scan was
+        // O(rows²).
+        const sameResource = this._getRecordsByResource(resourceField).get(resourceId) || [];
         const conflicts = [];
-
-        for (const other of records) {
+        for (const other of sameResource) {
             if (other.id === record.id) continue;
-            const otherRes = other[resourceField];
-            const otherId = Array.isArray(otherRes) ? otherRes[0] : otherRes;
-            if (otherId !== resourceId) continue;
-            if (!this._isValidDt(other._dateStart) || !this._isValidDt(other._dateEnd)) continue;
-
-            // Check time overlap
+            // Time overlap (both already validated when indexed).
             if (record._dateStart < other._dateEnd && record._dateEnd > other._dateStart) {
                 conflicts.push(other);
             }
         }
-
         return conflicts;
+    }
+
+    _getRecordsByResource(resourceField) {
+        if (!this._recordsByResource) {
+            const index = new Map();
+            for (const rec of this.props.model.data?.records || []) {
+                const val = rec[resourceField];
+                if (!val) continue;
+                const id = Array.isArray(val) ? val[0] : val;
+                if (!id) continue;
+                if (!this._isValidDt(rec._dateStart) || !this._isValidDt(rec._dateEnd)) continue;
+                let list = index.get(id);
+                if (!list) {
+                    list = [];
+                    index.set(id, list);
+                }
+                list.push(rec);
+            }
+            this._recordsByResource = index;
+        }
+        return this._recordsByResource;
     }
 
     hasResourceConflict(record) {
@@ -2837,8 +2874,19 @@ export class GanttRenderer extends Component {
     // -------------------------------------------------------------------------
 
     getLoadBars(record) {
-        const loadBars = this.props.model.data?.loadBars || [];
-        return loadBars.filter(lb => lb.taskId === record.id);
+        // taskId → loadBars map, built once per render (was O(rows × loadBars)).
+        if (!this._loadBarsByTask) {
+            this._loadBarsByTask = new Map();
+            for (const lb of this.props.model.data?.loadBars || []) {
+                let list = this._loadBarsByTask.get(lb.taskId);
+                if (!list) {
+                    list = [];
+                    this._loadBarsByTask.set(lb.taskId, list);
+                }
+                list.push(lb);
+            }
+        }
+        return this._loadBarsByTask.get(record.id) || [];
     }
 
     // -------------------------------------------------------------------------

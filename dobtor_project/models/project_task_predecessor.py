@@ -12,13 +12,15 @@ class ProjectTaskPredecessor(models.Model):
     task_id = fields.Many2one(
         'project.task',
         string='任務',
-        ondelete='cascade'
+        ondelete='cascade',
+        index=True,
     )
     parent_task_id = fields.Many2one(
         'project.task',
         string='前置任務',
         required=True,
         ondelete='restrict',
+        index=True,
         domain="[('project_id','=', parent.project_id)]"
     )
     type = fields.Selection(
@@ -49,9 +51,8 @@ class ProjectTaskPredecessor(models.Model):
 
     def write(self, vals):
         res = super().write(vals)
-        # Update predecessor_parent on parent tasks after write
-        if res and "parent_task_id" in vals:
-            self._update_parent_task_predecessor_parent()
+        # predecessor_parent on parent tasks is recomputed automatically via the
+        # project.task.as_predecessor_ids inverse relation — no manual write here.
         # Sync depend_on_ids when blocking-related fields change
         if res and any(f in vals for f in ('parent_task_id', 'task_id', 'enable_blocking')):
             self._sync_depend_on_ids()
@@ -64,27 +65,10 @@ class ProjectTaskPredecessor(models.Model):
             if 'enable_blocking' not in v:
                 v['enable_blocking'] = self._default_enable_blocking(v.get('type', 'FS'))
         records = super().create(vals_list)
-        # Update predecessor_parent on parent tasks after create
-        records._update_parent_task_predecessor_parent()
+        # predecessor_parent recomputes via the as_predecessor_ids inverse.
         # Sync depend_on_ids
         records._sync_depend_on_ids()
         return records
-
-    def _update_parent_task_predecessor_parent(self):
-        """Update predecessor_parent field on parent tasks.
-
-        This method is called from create/write to maintain the predecessor_parent
-        field, avoiding side effects in compute methods (Odoo 18 best practice).
-        """
-        parent_task_ids = self.mapped('parent_task_id').ids
-        if parent_task_ids:
-            # Set predecessor_parent = 1 as a boolean flag (0/1) indicating
-            # this task is a parent in at least one predecessor link.
-            # The actual count is maintained by _compute_predecessor_count;
-            # this write is a fast-path signal for UI/scheduling checks.
-            self.env['project.task'].browse(parent_task_ids).write({
-                'predecessor_parent': 1,
-            })
 
     @api.constrains('task_id', 'parent_task_id')
     def _check_circular_dependency(self):
@@ -182,30 +166,13 @@ class ProjectTaskPredecessor(models.Model):
             })
 
     def unlink(self):
-        """Delete predecessors and update parent tasks - optimized"""
-        # Collect affected task/parent IDs before deletion
-        parent_task_ids = self.mapped('parent_task_id').ids
-        affected_task_ids = self.mapped('task_id').ids
+        """Delete predecessors and re-sync native depend_on_ids."""
+        # Collect affected task IDs before deletion. predecessor_parent on the
+        # parent tasks is recomputed automatically via the as_predecessor_ids
+        # inverse relation when these links are removed.
         had_blocking = self.filtered('enable_blocking').mapped('task_id').ids
 
         res = super().unlink()
-
-        if res and parent_task_ids:
-            # Raw SQL for performance: avoids ORM search() + mapped() on
-            # potentially large predecessor table after bulk unlink.
-            self.env.cr.execute("""
-                SELECT DISTINCT parent_task_id
-                FROM project_task_predecessor
-                WHERE parent_task_id IN %s
-            """, (tuple(parent_task_ids),))
-            still_parents = {row[0] for row in self.env.cr.fetchall()}
-
-            # Tasks that no longer have predecessors
-            tasks_to_reset = set(parent_task_ids) - still_parents
-            if tasks_to_reset:
-                self.env['project.task'].browse(list(tasks_to_reset)).write({
-                    'predecessor_parent': 0
-                })
 
         # Re-sync depend_on_ids for affected tasks (blocking links removed)
         if res and had_blocking:

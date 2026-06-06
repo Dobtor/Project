@@ -15,3 +15,4 @@ from . import project_task_critical_path
 from . import resource_resource
 from . import project_baseline
 from . import project_milestone
+from . import project_cost

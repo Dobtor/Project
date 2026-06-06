@@ -613,45 +613,113 @@ class Project(models.Model):
                     'severity': 'info',
                 })
 
-        # 5. Resource overload detection
-        # Prefetch resource links to avoid N+1 queries in the loop
+        # 5. Resource overload detection (capacity- and load_factor-aware).
+        # A resource is overloaded only when the SUM of load_factors of tasks
+        # running at the same instant exceeds its max_capacity — two 0.5-load
+        # tasks on the same resource are legal and must not be flagged.
+        # Prefetch resource links to avoid N+1 queries in the loop.
         tasks.mapped('task_resource_ids.resource_id')
         resource_tasks = {}
         for task in tasks:
             if not task.date_end:
                 continue
             for res_link in task.task_resource_ids:
-                rid = res_link.resource_id.id
-                rname = res_link.resource_id.name
-                resource_tasks.setdefault(rid, {'name': rname, 'intervals': []})
-                resource_tasks[rid]['intervals'].append({
-                    'task': task, 'start': task.date_start, 'end': task.date_end,
+                resource = res_link.resource_id
+                rid = resource.id
+                resource_tasks.setdefault(rid, {
+                    'name': resource.name,
+                    'capacity': resource.max_capacity or 1.0,
+                    'intervals': [],
                 })
+                resource_tasks[rid]['intervals'].append({
+                    'task': task,
+                    'start': task.date_start,
+                    'end': task.date_end,
+                    'load': res_link.load_factor or 0.0,
+                })
+        eps = 1e-6
         for rid, data in resource_tasks.items():
-            intervals = sorted(data['intervals'], key=lambda x: x['start'])
-            if not intervals:
-                continue
-            max_end = intervals[0]['end']
-            max_end_task = intervals[0]['task']
-            for i in range(1, len(intervals)):
-                if intervals[i]['start'] < max_end:
-                    violations.append({
-                        'type': 'resource_overload',
-                        'task_id': intervals[i]['task'].id,
-                        'task_name': intervals[i]['task'].name,
-                        'message': _('資源「%(resource)s」與 %(task)s 重疊',
-                            resource=data['name'], task=max_end_task.name),
-                        'severity': 'warning',
-                    })
-                if intervals[i]['end'] > max_end:
-                    max_end = intervals[i]['end']
-                    max_end_task = intervals[i]['task']
+            capacity = data['capacity']
+            intervals = data['intervals']
+            # Sweep events: end (0) sorted before start (1) at the same instant
+            # so back-to-back tasks do not count as overlapping.
+            events = []
+            for idx, iv in enumerate(intervals):
+                events.append((iv['start'], 1, idx))
+                events.append((iv['end'], 0, idx))
+            events.sort(key=lambda e: (e[0], e[1]))
+            running = 0.0
+            active = set()
+            reported = set()
+            for _ts, kind, idx in events:
+                if kind == 1:
+                    running += intervals[idx]['load']
+                    active.add(idx)
+                    if running > capacity + eps and idx not in reported:
+                        others = [intervals[a]['task'].name
+                                  for a in active if a != idx][:3]
+                        violations.append({
+                            'type': 'resource_overload',
+                            'task_id': intervals[idx]['task'].id,
+                            'task_name': intervals[idx]['task'].name,
+                            'message': _(
+                                '資源「%(resource)s」負載 %(load).0f%% 超過容量 '
+                                '%(cap).0f%%（與 %(tasks)s 同時段）',
+                                resource=data['name'],
+                                load=running * 100,
+                                cap=capacity * 100,
+                                tasks=', '.join(others) or _('其他任務'),
+                            ),
+                            'severity': 'warning',
+                        })
+                        reported.add(idx)
+                else:
+                    running -= intervals[idx]['load']
+                    active.discard(idx)
 
         return violations
 
     # -------------------------------------------------------------------------
     # Resource Leveling (Phase 3B)
     # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _level_earliest_slot(committed, est, duration, load, capacity):
+        """Earliest start >= est where committed load + `load` stays within capacity.
+
+        committed: list of {'start','end','load'} already-placed intervals.
+        Returns the earliest feasible start datetime for an interval of the
+        given duration and load that keeps peak concurrent load <= capacity.
+        """
+        eps = 1e-6
+        if load <= eps:
+            return est
+        # Candidate starts: the requested time plus every committed end after it
+        # (the moments at which capacity frees up).
+        candidates = sorted({est} | {c['end'] for c in committed if c['end'] > est})
+        for cand in candidates:
+            cand_end = cand + duration
+            # Peak load can only change at cand or at a committed start inside
+            # the window; sample those points.
+            sample_points = [cand]
+            for c in committed:
+                if cand < c['start'] < cand_end:
+                    sample_points.append(c['start'])
+            feasible = True
+            for p in sample_points:
+                concurrent = load
+                for c in committed:
+                    if c['start'] <= p < c['end']:
+                        concurrent += c['load']
+                if concurrent > capacity + eps:
+                    feasible = False
+                    break
+            if feasible:
+                return cand
+        # No feasible overlapping slot: place after everything committed.
+        if committed:
+            return max(c['end'] for c in committed)
+        return est
 
     def action_level_resources(self):
         """Level resources: delay non-critical tasks to resolve overloads."""
@@ -668,34 +736,43 @@ class Project(models.Model):
             ('date_end', '!=', False),
         ])
         resource_tasks = {}
+        resource_caps = {}
         for task in tasks:
             for res_link in task.task_resource_ids:
-                rid = res_link.resource_id.id
+                resource = res_link.resource_id
+                rid = resource.id
+                resource_caps[rid] = resource.max_capacity or 1.0
                 resource_tasks.setdefault(rid, []).append({
                     'task': task,
                     'start': task.date_start,
                     'end': task.date_end,
+                    'load': res_link.load_factor or 0.0,
                     'critical': task.critical_path,
                 })
 
-        # Step 3: Sort per resource, delay non-critical overlapping tasks
-        # Use sweep-line max_end tracking instead of comparing only previous task
+        # Step 3: capacity- and load_factor-aware leveling. Commit critical
+        # tasks at their scheduled time; delay each non-critical task to the
+        # earliest slot where the resource has enough free capacity for it.
         changes = {}  # task_id → constrain_date (keep latest if multiple resources)
         for rid, task_list in resource_tasks.items():
+            capacity = resource_caps.get(rid, 1.0)
+            # Critical first (kept fixed), then earliest start.
             task_list.sort(key=lambda t: (not t['critical'], t['start']))
-            max_end = task_list[0]['end']
-            for i in range(1, len(task_list)):
-                cur = task_list[i]
-                if cur['start'] < max_end and not cur['critical']:
+            committed = []  # [{'start','end','load'}]
+            for cur in task_list:
+                duration = cur['end'] - cur['start']
+                if cur['critical']:
+                    committed.append({'start': cur['start'], 'end': cur['end'],
+                                      'load': cur['load']})
+                    continue
+                new_start = self._level_earliest_slot(
+                    committed, cur['start'], duration, cur['load'], capacity)
+                if new_start > cur['start']:
                     tid = cur['task'].id
-                    # Keep the latest constrain_date across resources
-                    if tid not in changes or max_end > changes[tid]:
-                        changes[tid] = max_end
-                    cur['start'] = max_end  # cascade for subsequent checks
-                    cur_new_end = max_end + (cur['end'] - cur['task'].date_start)
-                    cur['end'] = cur_new_end
-                if cur['end'] > max_end:
-                    max_end = cur['end']
+                    if tid not in changes or new_start > changes[tid]:
+                        changes[tid] = new_start
+                committed.append({'start': new_start, 'end': new_start + duration,
+                                  'load': cur['load']})
 
         # Step 4: Apply SNET constraints (batch write grouped by task)
         if changes:

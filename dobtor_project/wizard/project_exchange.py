@@ -192,9 +192,9 @@ class ProjectExchangeImport(models.TransientModel):
         }))
 
         # Parse tasks preview
-        tasks_el = root.find("Tasks") or root.find(f"{{{NS}}}Tasks")
+        tasks_el = self._find_el(root, "Tasks")
         if tasks_el is not None:
-            task_els = tasks_el.findall("Task") or tasks_el.findall(f"{{{NS}}}Task")
+            task_els = self._findall_el(tasks_el, "Task")
             for idx, task_el in enumerate(task_els[:20]):  # Preview first 20
                 name = self._get_text(task_el, "Name")
                 uid = self._get_text(task_el, "UID")
@@ -235,6 +235,31 @@ class ProjectExchangeImport(models.TransientModel):
 
         errors = []
 
+        # The whole import runs inside a savepoint: any unexpected (uncaught)
+        # failure rolls back the project and every task created so far, so a
+        # crash never leaves a half-built project behind. Per-row failures are
+        # still caught individually below and reported without aborting.
+        try:
+            with self.env.cr.savepoint():
+                self._do_import(root, errors)
+        except UserError:
+            raise
+        except Exception as e:
+            self.errors = _("匯入失敗，已復原所有變更：%s") % e
+            _logger.exception("Project XML import failed")
+            return self._return_form()
+
+        if errors:
+            self.errors = "\n".join(errors)
+        return self._return_form()
+
+    def _do_import(self, root, errors):
+        """Create the project, tasks, hierarchy, predecessors and tags.
+
+        Runs inside a savepoint (see action_import). Appends per-row failures
+        to ``errors`` rather than raising, so a single bad row does not abort
+        the whole import.
+        """
         # Create project
         proj_vals = {
             "name": self._get_text(root, "Name") or "Imported Project",
@@ -252,12 +277,12 @@ class ProjectExchangeImport(models.TransientModel):
         self.project_id = project
 
         # Parse and create tasks
-        tasks_el = root.find("Tasks") or root.find(f"{{{NS}}}Tasks")
+        tasks_el = self._find_el(root, "Tasks")
         if tasks_el is None:
             self.errors = _("No Tasks section found in XML.")
-            return self._return_form()
+            return
 
-        task_els = tasks_el.findall("Task") or tasks_el.findall(f"{{{NS}}}Task")
+        task_els = self._findall_el(tasks_el, "Task")
         uid_to_task = {}  # XML UID → task record
         task_data = []  # Ordered list of (xml_el, task_vals, uid)
 
@@ -308,8 +333,7 @@ class ProjectExchangeImport(models.TransientModel):
             if not task:
                 continue
 
-            pred_els = (task_el.findall("PredecessorLink") or
-                        task_el.findall(f"{{{NS}}}PredecessorLink"))
+            pred_els = self._findall_el(task_el, "PredecessorLink")
             for pred_el in pred_els:
                 pred_uid = self._get_text(pred_el, "PredecessorUID")
                 parent_task = uid_to_task.get(pred_uid)
@@ -339,8 +363,7 @@ class ProjectExchangeImport(models.TransientModel):
             if not task:
                 continue
 
-            tag_els = (task_el.findall("TaskTag") or
-                       task_el.findall(f"{{{NS}}}TaskTag"))
+            tag_els = self._findall_el(task_el, "TaskTag")
             tag_ids = []
             for tag_el in tag_els:
                 tag_name = self._get_text(tag_el, "TagName")
@@ -357,11 +380,6 @@ class ProjectExchangeImport(models.TransientModel):
 
             if tag_ids:
                 task.write({"tag_ids": [Command.link(tid) for tid in tag_ids]})
-
-        if errors:
-            self.errors = "\n".join(errors)
-
-        return self._return_form()
 
     def _parse_task_vals(self, task_el, project, idx):
         vals = {
@@ -418,11 +436,28 @@ class ProjectExchangeImport(models.TransientModel):
 
         return vals
 
-    def _get_text(self, parent, tag):
-        """Get text from child element, handling namespace."""
+    def _find_el(self, parent, tag):
+        """Namespace-aware single-element find.
+
+        Must test ``is None`` rather than truthiness: an lxml element with no
+        children is falsy, so ``parent.find("Tasks") or parent.find(ns)`` would
+        wrongly fall through when a non-namespaced but empty <Tasks> exists.
+        """
         el = parent.find(tag)
         if el is None:
             el = parent.find(f"{{{NS}}}{tag}")
+        return el
+
+    def _findall_el(self, parent, tag):
+        """Namespace-aware findall (tries non-namespaced first, then NS)."""
+        els = parent.findall(tag)
+        if not els:
+            els = parent.findall(f"{{{NS}}}{tag}")
+        return els
+
+    def _get_text(self, parent, tag):
+        """Get text from child element, handling namespace."""
+        el = self._find_el(parent, tag)
         return el.text if el is not None and el.text else ""
 
     def _return_form(self):

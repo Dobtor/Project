@@ -8,6 +8,11 @@
             <field name="inherit_id" ref="resource.resource_resource_form"/>
             <field name="arch" type="xml">
                 <xpath expr="//sheet" position="inside">
+                    <group string="容量與成本">
+                        <field name="max_capacity"/>
+                        <field name="cost_rate"/>
+                        <field name="cost_currency_id" groups="base.group_multi_currency"/>
+                    </group>
                     <notebook>
                         <page string="任務指派" name="task_assignments">
                             <field name="resource_task_ids" nolabel="1">
