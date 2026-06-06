@@ -221,11 +221,33 @@
             <!-- Left Panel: Task List -->
             <div class="o_gantt_list" t-att-style="'width: ' + state.gutterWidth + 'px;'">
                 <div class="o_gantt_list_header">
+                    <span class="o_gantt_viewmode_btn" t-on-click.stop="() => this.setViewMode('resource')"
+                          title="切換檢視（資源 / 網路圖 / 日曆）">
+                        <i class="fa fa-th-large"/>
+                    </span>
                     <span class="o_gantt_list_header_cell">任務</span>
                     <t t-if="props.showListDetail">
                         <span class="o_gantt_list_header_date">開始</span>
                         <span class="o_gantt_list_header_date">結束</span>
                     </t>
+                    <t t-foreach="activeOptionalColumns" t-as="col" t-key="col.key">
+                        <span class="o_gantt_list_header_col" t-esc="col.label"/>
+                    </t>
+                    <span class="o_gantt_col_chooser">
+                        <span class="o_gantt_col_chooser_btn" t-on-click.stop="toggleColMenu"
+                              title="選擇欄位">
+                            <i class="fa fa-columns"/>
+                        </span>
+                        <div class="o_gantt_col_chooser_menu" t-if="state.showColMenu">
+                            <t t-foreach="OPTIONAL_COLUMNS" t-as="col" t-key="col.key">
+                                <label class="o_gantt_col_chooser_item"
+                                       t-on-click.stop="() => this.toggleOptionalColumn(col.key)">
+                                    <input type="checkbox" t-att-checked="isColumnActive(col.key)"/>
+                                    <span t-esc="col.label"/>
+                                </label>
+                            </t>
+                        </div>
+                    </span>
                 </div>
                 <div class="o_gantt_list_rows" t-ref="listRows">
                   <div t-att-style="_shouldUseVirtualScroll ? (_virtualScrollTotalHeightStyle + _virtualScrollOffsetStyle) : ''">
@@ -395,6 +417,9 @@
                                     <span class="o_gantt_task_date" t-esc="getInfoStartDate(row)"/>
                                     <span class="o_gantt_task_date" t-esc="getInfoEndDate(row)"/>
                                 </t>
+                                <t t-foreach="activeOptionalColumns" t-as="col" t-key="col.key">
+                                    <span class="o_gantt_task_col" t-esc="getOptionalColumnValue(row, col.key)"/>
+                                </t>
                                 <t t-set="resourceLevel" t-value="getResourceLevel(row)"/>
                                 <span class="o_gantt_resource_level" t-if="resourceLevel"
                                       t-esc="resourceLevel"/>
@@ -530,8 +555,12 @@
                                       getRecord="getModelRecord"
                                       onAction="(rid, action) => this.onContextAction(rid, action)"/>
 
-                    <!-- Timeline Rows (always render all — bars are position:absolute, arrows depend on full row indices) -->
-                    <t t-foreach="flattenedRows" t-as="row" t-key="row._rowKey">
+                    <!-- Timeline Rows. Virtualized the same way as the left list:
+                         a padding-top/bottom spacer keeps each visible row at its
+                         true Y, while arrows (separate SVG) still position from the
+                         full flattenedRows indices, so they stay correct. -->
+                    <div t-att-style="_shouldUseVirtualScroll ? _virtualScrollOffsetStyle : ''">
+                    <t t-foreach="_shouldUseVirtualScroll ? visibleRows : flattenedRows" t-as="row" t-key="row._rowKey">
                         <div t-att-class="getTimelineRowClass(row)"
                              t-att-data-row-id="row.id"
                              t-on-click="(ev) => this.onRowClick(row, ev)"
@@ -694,6 +723,7 @@
                             </t>
                         </div>
                     </t>
+                    </div>
                 </div>
             </div>
 
@@ -748,6 +778,15 @@
             <div class="o_gantt_scrollmap_container">
                 <GanttScrollMap t-props="scrollMapProps"/>
             </div>
+
+            <!-- Alternate views overlay (resource / network / calendar).
+                 Rendered on top of the gantt; the gantt DOM is left intact. -->
+            <GanttAltView t-if="state.viewMode !== 'gantt'"
+                          mode="state.viewMode"
+                          model="props.model"
+                          archInfo="props.archInfo"
+                          onSetMode="(m) => this.setViewMode(m)"
+                          onClose="() => this.setViewMode('gantt')"/>
         </div>
     </t>
 
@@ -1193,6 +1232,113 @@
                 </t>
             </t>
         </svg>
+    </t>
+
+    <!-- Alternate views overlay (resource / network / calendar) -->
+    <t t-name="dobtor_project.GanttAltView">
+        <div class="o_gantt_altview">
+            <div class="o_gantt_altview_bar">
+                <span class="o_gantt_altview_tabs">
+                    <span class="o_gantt_altview_tab" t-on-click="() => this.close()" title="甘特圖">
+                        <i class="fa fa-tasks"/> 甘特圖
+                    </span>
+                    <span t-att-class="'o_gantt_altview_tab' + (props.mode === 'resource' ? ' active' : '')"
+                          t-on-click="() => this.setMode('resource')" title="資源">
+                        <i class="fa fa-users"/> 資源
+                    </span>
+                    <span t-att-class="'o_gantt_altview_tab' + (props.mode === 'network' ? ' active' : '')"
+                          t-on-click="() => this.setMode('network')" title="網路圖">
+                        <i class="fa fa-sitemap"/> 網路圖
+                    </span>
+                    <span t-att-class="'o_gantt_altview_tab' + (props.mode === 'calendar' ? ' active' : '')"
+                          t-on-click="() => this.setMode('calendar')" title="日曆">
+                        <i class="fa fa-calendar"/> 日曆
+                    </span>
+                </span>
+                <span class="o_gantt_altview_close" t-on-click="() => this.close()" title="關閉">
+                    <i class="fa fa-times"/>
+                </span>
+            </div>
+
+            <!-- Resource view -->
+            <t t-if="props.mode === 'resource'">
+                <div class="o_gantt_altview_body o_gantt_resview">
+                    <div t-if="!resourceLanes.length" class="o_gantt_altview_empty">無資源指派資料</div>
+                    <t t-foreach="resourceLanes" t-as="lane" t-key="lane.id">
+                        <div class="o_gantt_resview_lane">
+                            <div class="o_gantt_resview_name" t-esc="lane.name"/>
+                            <div class="o_gantt_resview_track" t-att-style="'width:' + timelineWidth + 'px;'">
+                                <t t-foreach="lane.overloads" t-as="ov" t-key="ov_index">
+                                    <div class="o_gantt_resview_overload"
+                                         t-att-style="'left:' + ov.left + 'px;width:' + ov.width + 'px;'"
+                                         title="資源過載（時段重疊）"/>
+                                </t>
+                                <t t-foreach="lane.tasks" t-as="task" t-key="task.id">
+                                    <div class="o_gantt_resview_bar" t-att-style="_barStyle(task)"
+                                         t-att-title="recName(task)">
+                                        <span t-esc="recName(task)"/>
+                                    </div>
+                                </t>
+                            </div>
+                        </div>
+                    </t>
+                </div>
+            </t>
+
+            <!-- Network / PERT view -->
+            <t t-if="props.mode === 'network'">
+                <div class="o_gantt_altview_body o_gantt_netview">
+                    <t t-set="net" t-value="networkLayout"/>
+                    <svg class="o_gantt_net_svg" t-att-width="net.width" t-att-height="net.height">
+                        <defs>
+                            <marker id="gantt_net_arrow" markerWidth="8" markerHeight="8"
+                                    refX="7" refY="3" orient="auto">
+                                <path d="M0,0 L7,3 L0,6 Z" fill="#8e8e93"/>
+                            </marker>
+                        </defs>
+                        <t t-foreach="net.links" t-as="lk" t-key="lk_index">
+                            <line t-att-x1="lk.x1" t-att-y1="lk.y1" t-att-x2="lk.x2" t-att-y2="lk.y2"
+                                  stroke="#8e8e93" stroke-width="1.5" marker-end="url(#gantt_net_arrow)"/>
+                        </t>
+                        <t t-foreach="net.nodes" t-as="nd" t-key="nd.id">
+                            <g>
+                                <rect t-att-x="nd.x" t-att-y="nd.y" t-att-width="nd.w" t-att-height="nd.h"
+                                      rx="8" t-att-class="'o_gantt_net_node' + (nd.critical ? ' critical' : '')"/>
+                                <text t-att-x="nd.x + 10" t-att-y="nd.y + 22"
+                                      class="o_gantt_net_label" t-esc="nd.name"/>
+                                <text t-att-x="nd.x + 10" t-att-y="nd.y + 42"
+                                      class="o_gantt_net_sub" t-esc="nd.progress + '%'"/>
+                            </g>
+                        </t>
+                    </svg>
+                    <div t-if="!net.nodes.length" class="o_gantt_altview_empty">無任務資料</div>
+                </div>
+            </t>
+
+            <!-- Calendar view -->
+            <t t-if="props.mode === 'calendar'">
+                <div class="o_gantt_altview_body o_gantt_calview">
+                    <div class="o_gantt_cal_title" t-esc="calendarTitle"/>
+                    <div class="o_gantt_cal_grid">
+                        <t t-foreach="weekdayLabels" t-as="wd" t-key="wd_index">
+                            <div class="o_gantt_cal_weekday" t-esc="wd"/>
+                        </t>
+                        <t t-foreach="calendarWeeks" t-as="week" t-key="week.key">
+                            <t t-foreach="week.days" t-as="day" t-key="day.key">
+                                <div t-att-class="'o_gantt_cal_cell' + (day.inMonth ? '' : ' o_gantt_cal_out')">
+                                    <div class="o_gantt_cal_daynum" t-esc="day.label"/>
+                                    <t t-foreach="day.tasks" t-as="task" t-key="task.id">
+                                        <div class="o_gantt_cal_task" t-att-title="recName(task)"
+                                             t-esc="recName(task)"/>
+                                    </t>
+                                    <div t-if="day.more" class="o_gantt_cal_more" t-esc="'+' + day.more"/>
+                                </div>
+                            </t>
+                        </t>
+                    </div>
+                </div>
+            </t>
+        </div>
     </t>
 
 </templates>

@@ -1,0 +1,260 @@
+/** @odoo-module **/
+
+import { Component } from "@odoo/owl";
+
+const { DateTime } = luxon;
+
+/**
+ * Alternate visualisations for the native Gantt, rendered as an overlay so the
+ * main Gantt DOM is never touched (default "gantt" mode is unaffected):
+ *
+ *   - resource : OmniPlan-style resource view — one lane per resource with its
+ *                assigned task bars and over-allocation (overlap) highlighting.
+ *   - network  : PERT / network diagram — a node per task laid out in
+ *                dependency layers, with dependency links drawn as SVG lines.
+ *   - calendar : month grid with tasks placed on the days they span.
+ *
+ * All three reuse `model.data` (records already carry _dateStart / _dateEnd and
+ * the resourceField), so no extra RPC is needed.
+ *
+ * Props:
+ *   mode      : "resource" | "network" | "calendar"
+ *   model     : the GanttModel instance
+ *   archInfo  : parsed arch (for field names)
+ *   onClose   : () => void
+ */
+export class GanttAltView extends Component {
+    static template = "dobtor_project.GanttAltView";
+    static props = {
+        mode: { type: String },
+        model: { type: Object },
+        archInfo: { type: Object },
+        onClose: { type: Function, optional: true },
+        onSetMode: { type: Function, optional: true },
+    };
+
+    setMode(mode) {
+        if (this.props.onSetMode) this.props.onSetMode(mode);
+    }
+
+    close() {
+        if (this.props.onClose) this.props.onClose();
+    }
+
+    // --- shared helpers -----------------------------------------------------
+
+    get records() {
+        return (this.props.model.data?.records || []).filter(
+            r => !r._isGroup && !r._isMilestoneRecord && r._dateStart && r._dateEnd
+                 && r._dateStart.isValid && r._dateEnd.isValid);
+    }
+
+    get timeStart() {
+        const recs = this.records;
+        if (!recs.length) return DateTime.now().startOf("month");
+        return recs.reduce((m, r) => (r._dateStart < m ? r._dateStart : m),
+            recs[0]._dateStart).startOf("day");
+    }
+
+    get timeEnd() {
+        const recs = this.records;
+        if (!recs.length) return DateTime.now().endOf("month");
+        return recs.reduce((m, r) => (r._dateEnd > m ? r._dateEnd : m),
+            recs[0]._dateEnd).endOf("day");
+    }
+
+    get dayWidth() {
+        return 24;
+    }
+
+    get totalDays() {
+        return Math.max(1, Math.ceil(this.timeEnd.diff(this.timeStart, "days").days));
+    }
+
+    get timelineWidth() {
+        return this.totalDays * this.dayWidth;
+    }
+
+    /** Days header for resource / network background grid. */
+    get dayColumns() {
+        const cols = [];
+        const start = this.timeStart;
+        for (let i = 0; i < this.totalDays; i++) {
+            const d = start.plus({ days: i });
+            cols.push({ index: i, label: d.day, isWeekend: d.weekday >= 6 });
+        }
+        return cols;
+    }
+
+    _xOf(dt) {
+        if (!dt || !dt.isValid) return 0;
+        return Math.max(0, dt.diff(this.timeStart, "days").days * this.dayWidth);
+    }
+
+    _barStyle(rec) {
+        const left = this._xOf(rec._dateStart);
+        const right = this._xOf(rec._dateEnd);
+        const width = Math.max(right - left, 4);
+        return `left:${left}px;width:${width}px;`;
+    }
+
+    recName(rec) {
+        return rec.display_name || rec[this.props.archInfo.name] || "";
+    }
+
+    // --- resource view ------------------------------------------------------
+
+    /** [{id, name, tasks:[rec], overloads:[{left,width}]}] */
+    get resourceLanes() {
+        const field = this.props.archInfo.resourceField || "user_id";
+        const byRes = new Map();
+        for (const rec of this.records) {
+            const v = rec[field];
+            if (!v) continue;
+            const id = Array.isArray(v) ? v[0] : v;
+            const name = Array.isArray(v) ? (v[1] || String(id)) : String(v);
+            if (!byRes.has(id)) byRes.set(id, { id, name, tasks: [] });
+            byRes.get(id).tasks.push(rec);
+        }
+        const lanes = [...byRes.values()];
+        for (const lane of lanes) {
+            lane.tasks.sort((a, b) => a._dateStart - b._dateStart);
+            lane.overloads = this._computeOverloads(lane.tasks);
+        }
+        lanes.sort((a, b) => a.name.localeCompare(b.name));
+        return lanes;
+    }
+
+    /** Time spans where 2+ of a resource's tasks overlap (capacity 1). */
+    _computeOverloads(tasks) {
+        const events = [];
+        for (const t of tasks) {
+            events.push({ t: t._dateStart, d: 1 });
+            events.push({ t: t._dateEnd, d: -1 });
+        }
+        events.sort((a, b) => (a.t - b.t) || (a.d - b.d));
+        const spans = [];
+        let running = 0;
+        let segStart = null;
+        for (const ev of events) {
+            const prev = running;
+            running += ev.d;
+            if (prev < 2 && running >= 2) segStart = ev.t;
+            else if (prev >= 2 && running < 2 && segStart) {
+                const left = this._xOf(segStart);
+                const width = Math.max(this._xOf(ev.t) - left, 2);
+                spans.push({ left, width });
+                segStart = null;
+            }
+        }
+        return spans;
+    }
+
+    // --- calendar view ------------------------------------------------------
+
+    get calendarWeeks() {
+        const first = this.timeStart.startOf("month");
+        const gridStart = first.minus({ days: (first.weekday % 7) });
+        const weeks = [];
+        const recs = this.records;
+        for (let w = 0; w < 6; w++) {
+            const days = [];
+            for (let d = 0; d < 7; d++) {
+                const day = gridStart.plus({ days: w * 7 + d });
+                const tasks = recs.filter(
+                    r => r._dateStart <= day.endOf("day") && r._dateEnd >= day.startOf("day"));
+                days.push({
+                    key: day.toISODate(),
+                    label: day.day,
+                    inMonth: day.month === first.month,
+                    tasks: tasks.slice(0, 4),
+                    more: Math.max(0, tasks.length - 4),
+                });
+            }
+            weeks.push({ key: `w${w}`, days });
+        }
+        return weeks;
+    }
+
+    get calendarTitle() {
+        return this.timeStart.toFormat("yyyy LLLL");
+    }
+
+    get weekdayLabels() {
+        return ["日", "一", "二", "三", "四", "五", "六"];
+    }
+
+    // --- network / PERT view ------------------------------------------------
+
+    /** Nodes laid out in dependency layers (longest-path depth). */
+    get networkLayout() {
+        const recs = this.records;
+        const preds = this.props.model.data?.predecessors || [];
+        const idSet = new Set(recs.map(r => r.id));
+        // adjacency: parent_task_id -> [task_id]
+        const succ = new Map();
+        const indeg = new Map();
+        for (const r of recs) indeg.set(r.id, 0);
+        const taskField = this.props.archInfo.predecessorTaskId || "task_id";
+        const parentField = this.props.archInfo.predecessorParentTaskId || "parent_task_id";
+        const edges = [];
+        for (const p of preds) {
+            const from = Array.isArray(p[parentField]) ? p[parentField][0] : p[parentField];
+            const to = Array.isArray(p[taskField]) ? p[taskField][0] : p[taskField];
+            if (!idSet.has(from) || !idSet.has(to)) continue;
+            if (!succ.has(from)) succ.set(from, []);
+            succ.get(from).push(to);
+            indeg.set(to, (indeg.get(to) || 0) + 1);
+            edges.push({ from, to });
+        }
+        // longest-path layering via Kahn's algorithm
+        const layer = new Map();
+        const queue = [];
+        for (const r of recs) {
+            if ((indeg.get(r.id) || 0) === 0) { layer.set(r.id, 0); queue.push(r.id); }
+        }
+        const indegWork = new Map(indeg);
+        while (queue.length) {
+            const cur = queue.shift();
+            for (const nxt of (succ.get(cur) || [])) {
+                layer.set(nxt, Math.max(layer.get(nxt) || 0, (layer.get(cur) || 0) + 1));
+                indegWork.set(nxt, indegWork.get(nxt) - 1);
+                if (indegWork.get(nxt) === 0) queue.push(nxt);
+            }
+        }
+        // assign positions per layer
+        const NODE_W = 150, NODE_H = 56, GAP_X = 60, GAP_Y = 24;
+        const byLayer = new Map();
+        for (const r of recs) {
+            const l = layer.get(r.id) || 0;
+            if (!byLayer.has(l)) byLayer.set(l, []);
+            byLayer.get(l).push(r);
+        }
+        const pos = new Map();
+        const nodes = [];
+        for (const [l, group] of [...byLayer.entries()].sort((a, b) => a[0] - b[0])) {
+            group.forEach((r, i) => {
+                const x = l * (NODE_W + GAP_X) + 20;
+                const y = i * (NODE_H + GAP_Y) + 20;
+                pos.set(r.id, { x, y });
+                nodes.push({
+                    id: r.id, name: this.recName(r), x, y, w: NODE_W, h: NODE_H,
+                    critical: !!r[this.props.archInfo.criticalPath],
+                    progress: Math.round(r._progress || 0),
+                });
+            });
+        }
+        const links = [];
+        for (const e of edges) {
+            const a = pos.get(e.from), b = pos.get(e.to);
+            if (!a || !b) continue;
+            links.push({
+                x1: a.x + NODE_W, y1: a.y + NODE_H / 2,
+                x2: b.x, y2: b.y + NODE_H / 2,
+            });
+        }
+        const width = Math.max(...nodes.map(n => n.x + n.w), 200) + 40;
+        const height = Math.max(...nodes.map(n => n.y + n.h), 200) + 40;
+        return { nodes, links, width, height };
+    }
+}

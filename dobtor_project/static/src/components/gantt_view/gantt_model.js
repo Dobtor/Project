@@ -2137,6 +2137,8 @@ export class GanttModel extends Model {
         const target = this._recordMap.get(targetId);
         if (!record || !target) return false;
 
+        const _treeBefore = this._snapshotTree();
+
         const _pid = (r) => {
             const v = r[parentField];
             return Array.isArray(v) ? v[0] : (v || 0);
@@ -2242,6 +2244,7 @@ export class GanttModel extends Model {
             });
         }
         await this.batchResequence(taskBatch, msBatch);
+        this._pushTreeUndo(_treeBefore);
 
         // --- Item 8: FS constraint check after vertical reorder ---
         // After parent_id change, the moved task may now violate FS constraints
@@ -2306,6 +2309,8 @@ export class GanttModel extends Model {
         const record = this._recordMap.get(recordId);
         if (!record || record._isMilestoneRecord) return false;
 
+        const _treeBefore = this._snapshotTree();
+
         // Find task siblings (same parent, exclude milestones)
         const parentId = record._parentId || 0;
         const siblings = this.data.records.filter(r => {
@@ -2352,6 +2357,7 @@ export class GanttModel extends Model {
                 [parentField]: prevSibling.id,
                 [sortField]: newSeq,
             });
+            this._pushTreeUndo(_treeBefore);
             return true;
         } catch (error) {
             console.error("Failed to indent task:", error);
@@ -2373,6 +2379,8 @@ export class GanttModel extends Model {
 
         const currentParentId = record._parentId || 0;
         if (currentParentId === 0) return false; // Already root
+
+        const _treeBefore = this._snapshotTree();
 
         const currentParent = this._recordMap.get(currentParentId);
         if (!currentParent) return false;
@@ -2441,6 +2449,7 @@ export class GanttModel extends Model {
             });
         }
         await this.batchResequence(taskBatch, msBatch);
+        this._pushTreeUndo(_treeBefore);
         return true;
     }
 
@@ -3929,6 +3938,67 @@ export class GanttModel extends Model {
         this._redoStack = [];
     }
 
+    /**
+     * Snapshot the outline structure (parent_id + sorting_seq for every row).
+     * Used to make reorder / indent / outdent undoable: restoring these two
+     * fields fully reverses a structural move without recreating any record.
+     */
+    _snapshotTree() {
+        const sortField = this.archInfo.sortingSeq || "sorting_seq";
+        const parentField = this.archInfo.parentId || "parent_id";
+        const pid = (r) => {
+            const v = r[parentField];
+            return Array.isArray(v) ? v[0] : (v || false);
+        };
+        return this.data.records.map(r => ({
+            id: r.id,
+            isMilestone: !!r._isMilestoneRecord,
+            parent: r._isMilestoneRecord ? false : pid(r),
+            seq: r[sortField] || 0,
+        }));
+    }
+
+    /** Push a structural-undo entry if the tree actually changed. */
+    _pushTreeUndo(before) {
+        const after = this._snapshotTree();
+        const beforeMap = new Map(before.map(s => [s.id, s]));
+        const changed = after.some(a => {
+            const b = beforeMap.get(a.id);
+            return !b || b.parent !== a.parent || b.seq !== a.seq;
+        });
+        if (changed) {
+            this._pushUndoState({ type: "tree", before, after });
+        }
+    }
+
+    /** Restore an outline snapshot (parent_id + sorting_seq) and persist it. */
+    async _restoreTree(snap) {
+        const sortField = this.archInfo.sortingSeq || "sorting_seq";
+        const parentField = this.archInfo.parentId || "parent_id";
+        const taskBatch = [];
+        const msBatch = [];
+        for (const s of snap) {
+            const rec = this._recordMap.get(s.id);
+            if (!rec) continue;
+            rec[sortField] = s.seq;
+            if (s.isMilestone) {
+                rec.sorting_seq = s.seq;
+                msBatch.push({ id: Math.abs(s.id), sorting_seq: s.seq });
+            } else {
+                rec[parentField] = s.parent ? [s.parent, ""] : false;
+                rec._parentId = s.parent || 0;
+                taskBatch.push({ id: s.id, sorting_seq: s.seq, parent_id: s.parent || false });
+            }
+        }
+        this._buildTree();
+        for (const group of this.data.groups) {
+            this._computeGroupSummaryDates(group);
+        }
+        this._recomputeMilestonePositions();
+        await this.batchResequence(taskBatch, msBatch);
+        this.notify();
+    }
+
     async undo() {
         if (this._undoStack.length === 0) return false;
         const op = this._undoStack.pop();
@@ -3946,6 +4016,11 @@ export class GanttModel extends Model {
     }
 
     async _applyUndoRedoState(op, direction) {
+        // Structural (reorder / indent / outdent) undo restores the outline.
+        if (op.type === "tree") {
+            await this._restoreTree(direction === "undo" ? op.before : op.after);
+            return;
+        }
         const state = direction === "undo" ? op.before : op.after;
         if (!state || !op.recordId) return;
         // Restore task fields

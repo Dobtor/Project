@@ -13,12 +13,14 @@ import { useGanttDeadlineDrag } from "./gantt_deadline_drag_hook";
 import { useGanttTreeDrag } from "./gantt_tree_drag_hook";
 import { useGanttArrowDraw } from "./gantt_arrow_draw_hook";
 import { useGanttProgressDrag } from "./gantt_progress_drag_hook";
+import { useGanttMarquee } from "./gantt_marquee_hook";
 import { cellsDeltaToDuration, toOdooDatetime, humanizeDays, humanizeHours } from "./gantt_utils";
 import { GanttArrows } from "./gantt_arrows";
 import { GanttTooltip } from "./gantt_tooltip";
 import { GanttContextMenu } from "./gantt_context_menu";
 import { GanttScrollMap } from "./gantt_scrollmap";
 import { GanttInspector, GANTT_COLORS } from "./gantt_inspector";
+import { GanttAltView } from "./gantt_alt_views";
 import { ActivityListPopover } from "@mail/core/web/activity_list_popover";
 
 const { DateTime } = luxon;
@@ -28,7 +30,7 @@ const PLANNING_T0 = DateTime.fromObject({ year: 2000, month: 1, day: 1 });
 
 export class GanttRenderer extends Component {
     static template = "dobtor_project.GanttRenderer";
-    static components = { GanttArrows, GanttTooltip, GanttContextMenu, GanttScrollMap, GanttInspector };
+    static components = { GanttArrows, GanttTooltip, GanttContextMenu, GanttScrollMap, GanttInspector, GanttAltView };
 
     static props = {
         onRendererReady: { type: Function, optional: true },
@@ -135,6 +137,21 @@ export class GanttRenderer extends Component {
         const savedGutterWidth = parseInt(localStorage.getItem("gantt_gutter_width"), 10);
         const savedDurationWidth = parseInt(localStorage.getItem("gantt_duration_width"), 10);
 
+        // Optional outline columns the user can show/hide (OmniPlan-style column
+        // chooser). Persisted per browser.
+        this.OPTIONAL_COLUMNS = [
+            { key: "duration", label: _t("工期") },
+            { key: "progress", label: _t("進度") },
+            { key: "resource", label: _t("資源") },
+        ];
+        let savedCols = [];
+        try {
+            savedCols = JSON.parse(localStorage.getItem("gantt_optional_cols") || "[]");
+            if (!Array.isArray(savedCols)) savedCols = [];
+        } catch (_e) {
+            savedCols = [];
+        }
+
         this.state = useState({
             gutterWidth: (savedGutterWidth > 0) ? savedGutterWidth : 300,
             durationWidth: (savedDurationWidth > 0) ? savedDurationWidth : 80,
@@ -143,6 +160,9 @@ export class GanttRenderer extends Component {
             stateMenuRecordId: null,
             constraintTooltipId: null,
             constraintTooltipStyle: "",
+            optionalCols: savedCols,
+            showColMenu: false,
+            viewMode: "gantt",  // "gantt" | "resource" | "network" | "calendar"
         });
 
         // Reactive drag state for live arrow updates via OWL re-render
@@ -611,6 +631,15 @@ export class GanttRenderer extends Component {
                 await this.props.model.updateRecord(recordId, { [progressField]: newProgress });
             },
         });
+
+        // Rubber-band (marquee) selection over empty timeline space.
+        useGanttMarquee({
+            getTimelineEl: () => this.timelineDataRef.el,
+            setSelection: (ids, additive) => this.setSelection(ids, additive),
+        });
+
+        // Anchor row for Shift+click range selection.
+        this._selectionAnchorId = null;
 
         // Inline rename state
         this._editingRecordId = null;
@@ -1612,22 +1641,116 @@ export class GanttRenderer extends Component {
     /**
      * Handle click on any row (task or group) - sets selection
      */
+    /**
+     * Unified selection-click logic shared by row / bar / task clicks.
+     *  - Ctrl/Cmd : toggle this id in/out of the selection
+     *  - Shift    : select the contiguous range from the anchor to this id
+     *               (in flattenedRows order)
+     *  - plain    : single-select and set a new anchor
+     */
+    _applySelectionClick(id, ev) {
+        if (ev && (ev.ctrlKey || ev.metaKey)) {
+            if (this.state.selectedRowIds[id]) {
+                const { [id]: _omit, ...rest } = this.state.selectedRowIds;
+                this.state.selectedRowIds = rest;
+            } else {
+                this.state.selectedRowIds = { ...this.state.selectedRowIds, [id]: true };
+            }
+            this._selectionAnchorId = id;
+        } else if (ev && ev.shiftKey && this._selectionAnchorId != null) {
+            this._selectRange(this._selectionAnchorId, id);
+        } else {
+            this.state.selectedRowIds = { [id]: true };
+            this._selectionAnchorId = id;
+        }
+        this.state.selectedRowId = id;
+    }
+
+    /** Select every row between two ids inclusive, by flattenedRows order. */
+    _selectRange(fromId, toId) {
+        const rows = this.flattenedRows;
+        const a = rows.findIndex(r => r.id === fromId);
+        const b = rows.findIndex(r => r.id === toId);
+        if (a === -1 || b === -1) {
+            this.state.selectedRowIds = { [toId]: true };
+            return;
+        }
+        const [lo, hi] = a <= b ? [a, b] : [b, a];
+        const sel = {};
+        for (let i = lo; i <= hi; i++) sel[rows[i].id] = true;
+        this.state.selectedRowIds = sel;
+    }
+
+    // -------------------------------------------------------------------------
+    // View mode (gantt / resource / network / calendar)
+    // -------------------------------------------------------------------------
+
+    setViewMode(mode) {
+        this.state.viewMode = mode;
+    }
+
+    // -------------------------------------------------------------------------
+    // Optional columns (column chooser)
+    // -------------------------------------------------------------------------
+
+    /** Column defs currently selected for display, in canonical order. */
+    get activeOptionalColumns() {
+        const sel = this.state.optionalCols || [];
+        return this.OPTIONAL_COLUMNS.filter(c => sel.includes(c.key));
+    }
+
+    isColumnActive(key) {
+        return (this.state.optionalCols || []).includes(key);
+    }
+
+    toggleColMenu() {
+        this.state.showColMenu = !this.state.showColMenu;
+    }
+
+    toggleOptionalColumn(key) {
+        const cur = this.state.optionalCols || [];
+        const next = cur.includes(key) ? cur.filter(k => k !== key) : [...cur, key];
+        this.state.optionalCols = next;
+        try {
+            localStorage.setItem("gantt_optional_cols", JSON.stringify(next));
+        } catch (_e) { /* ignore quota errors */ }
+    }
+
+    /** Value of an optional column for a task row (string). */
+    getOptionalColumnValue(row, key) {
+        if (row._isGroup) return "";
+        switch (key) {
+            case "duration":
+                return this.getInfoDuration(row) || "";
+            case "progress":
+                return row._isMilestoneRecord ? "" : `${Math.round(row._progress || 0)}%`;
+            case "resource": {
+                const field = this.props.archInfo.resourceField;
+                if (!field) return "";
+                const v = row[field];
+                if (!v) return "";
+                return Array.isArray(v) ? (v[1] || "") : String(v);
+            }
+            default:
+                return "";
+        }
+    }
+
+    /** Apply a marquee result. additive keeps the existing selection. */
+    setSelection(ids, additive) {
+        const sel = additive ? { ...this.state.selectedRowIds } : {};
+        for (const id of ids) sel[id] = true;
+        this.state.selectedRowIds = sel;
+        if (ids.length) {
+            this.state.selectedRowId = ids[ids.length - 1];
+            this._selectionAnchorId = ids[0];
+        }
+    }
+
     onRowClick(row, ev) {
         // Close state menu on any row click
         this.state.stateMenuRecordId = null;
-        // Always set the selected row
-        if (ev && (ev.ctrlKey || ev.metaKey)) {
-            // Multi-select with Ctrl/Cmd key
-            if (this.state.selectedRowIds[row.id]) {
-                const { [row.id]: _, ...rest } = this.state.selectedRowIds;
-                this.state.selectedRowIds = rest;
-            } else {
-                this.state.selectedRowIds = { ...this.state.selectedRowIds, [row.id]: true };
-            }
-        } else {
-            this.state.selectedRowIds = {};
-        }
-        this.state.selectedRowId = row.id;
+        this._applySelectionClick(row.id, ev);
     }
 
     onRecordClick(record) {
@@ -1635,31 +1758,11 @@ export class GanttRenderer extends Component {
     }
 
     onBarClick(record, ev) {
-        // Multi-select with Ctrl/Cmd key
-        if (ev && (ev.ctrlKey || ev.metaKey)) {
-            if (this.state.selectedRowIds[record.id]) {
-                delete this.state.selectedRowIds[record.id];
-            } else {
-                this.state.selectedRowIds[record.id] = true;
-            }
-        } else {
-            this.state.selectedRowIds = {};
-        }
-        this.state.selectedRowId = record.id;
+        this._applySelectionClick(record.id, ev);
     }
 
     onTaskSelect(record, ev) {
-        // Multi-select with Ctrl/Cmd key
-        if (ev && (ev.ctrlKey || ev.metaKey)) {
-            if (this.state.selectedRowIds[record.id]) {
-                delete this.state.selectedRowIds[record.id];
-            } else {
-                this.state.selectedRowIds[record.id] = true;
-            }
-        } else {
-            this.state.selectedRowIds = {};
-        }
-        this.state.selectedRowId = record.id;
+        this._applySelectionClick(record.id, ev);
     }
 
     async onTaskFoldClick(record) {

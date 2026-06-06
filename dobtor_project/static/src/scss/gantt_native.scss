@@ -3778,3 +3778,144 @@
     border-radius: 50%;
     object-fit: cover;
 }
+
+/* ============================================================
+   Marquee (rubber-band) selection
+   ============================================================ */
+.o_gantt_marquee {
+    border: 1px solid var(--gantt-accent-blue, #007AFF);
+    background: rgba(0, 122, 255, 0.12);
+    border-radius: 2px;
+}
+
+/* ============================================================
+   Optional columns + column chooser
+   ============================================================ */
+.o_gantt_list_header_col,
+.o_gantt_task_col {
+    flex: 0 0 auto;
+    min-width: 64px;
+    padding: 0 var(--gantt-space-xs, 4px);
+    font-size: 12px;
+    color: var(--gantt-label-secondary, #6e6e73);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.o_gantt_col_chooser {
+    position: relative;
+    margin-left: auto;
+}
+.o_gantt_col_chooser_btn {
+    cursor: pointer;
+    padding: 0 var(--gantt-space-xs, 4px);
+    color: var(--gantt-label-tertiary, #8e8e93);
+}
+.o_gantt_col_chooser_btn:hover {
+    color: var(--gantt-accent-blue, #007AFF);
+}
+.o_gantt_col_chooser_menu {
+    position: absolute;
+    right: 0;
+    top: 100%;
+    z-index: 60;
+    min-width: 140px;
+    background: var(--gantt-bg-primary, #fff);
+    border: 1px solid var(--gantt-separator, #d2d2d7);
+    border-radius: var(--gantt-radius-sm, 6px);
+    box-shadow: var(--gantt-shadow-md, 0 4px 12px rgba(0,0,0,0.12));
+    padding: var(--gantt-space-xs, 4px) 0;
+}
+.o_gantt_col_chooser_item {
+    display: flex;
+    align-items: center;
+    gap: var(--gantt-space-xs, 4px);
+    padding: var(--gantt-space-xs, 4px) var(--gantt-space-sm, 8px);
+    cursor: pointer;
+    font-size: 13px;
+    white-space: nowrap;
+}
+.o_gantt_col_chooser_item:hover {
+    background: var(--gantt-bg-secondary, #f5f5f7);
+}
+
+/* ============================================================
+   Alternate views overlay (resource / network / calendar)
+   ============================================================ */
+.o_gantt_viewmode_btn {
+    cursor: pointer;
+    padding: 0 var(--gantt-space-xs, 4px);
+    color: var(--gantt-label-tertiary, #8e8e93);
+}
+.o_gantt_viewmode_btn:hover { color: var(--gantt-accent-blue, #007AFF); }
+
+.o_gantt_altview {
+    position: absolute;
+    inset: 0;
+    z-index: 70;
+    display: flex;
+    flex-direction: column;
+    background: var(--gantt-bg-primary, #fff);
+}
+.o_gantt_altview_bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: var(--gantt-header-height, 44px);
+    padding: 0 var(--gantt-space-sm, 8px);
+    border-bottom: 1px solid var(--gantt-separator, #d2d2d7);
+    background: var(--gantt-bg-secondary, #f5f5f7);
+}
+.o_gantt_altview_tabs { display: flex; gap: var(--gantt-space-xs, 4px); }
+.o_gantt_altview_tab {
+    cursor: pointer;
+    padding: 4px 12px;
+    border-radius: var(--gantt-radius-sm, 6px);
+    font-size: 13px;
+    color: var(--gantt-label-secondary, #6e6e73);
+}
+.o_gantt_altview_tab.active {
+    background: var(--gantt-accent-blue, #007AFF);
+    color: #fff;
+}
+.o_gantt_altview_tab:hover:not(.active) { background: var(--gantt-fill-tertiary, #e5e5ea); }
+.o_gantt_altview_close { cursor: pointer; padding: 4px 8px; color: var(--gantt-label-tertiary, #8e8e93); }
+.o_gantt_altview_close:hover { color: var(--gantt-accent-red, #FF3B30); }
+.o_gantt_altview_body { flex: 1; overflow: auto; padding: var(--gantt-space-sm, 8px); }
+.o_gantt_altview_empty { padding: var(--gantt-space-lg, 24px); color: var(--gantt-label-tertiary, #8e8e93); text-align: center; }
+
+/* Resource lanes */
+.o_gantt_resview_lane { display: flex; align-items: stretch; border-bottom: 1px solid var(--gantt-separator, #d2d2d7); min-height: 36px; }
+.o_gantt_resview_name {
+    flex: 0 0 160px; position: sticky; left: 0; z-index: 2;
+    display: flex; align-items: center; padding: 0 var(--gantt-space-sm, 8px);
+    background: var(--gantt-bg-secondary, #f5f5f7); font-size: 13px; font-weight: 500;
+    border-right: 1px solid var(--gantt-separator, #d2d2d7);
+}
+.o_gantt_resview_track { position: relative; flex: 0 0 auto; min-height: 36px; }
+.o_gantt_resview_bar {
+    position: absolute; top: 6px; height: 24px; line-height: 24px;
+    background: var(--gantt-accent-blue, #007AFF); color: #fff; border-radius: 4px;
+    font-size: 11px; padding: 0 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.o_gantt_resview_overload {
+    position: absolute; top: 0; bottom: 0;
+    background: rgba(255, 59, 48, 0.18); border-left: 1px solid var(--gantt-accent-red, #FF3B30);
+}
+
+/* Network / PERT */
+.o_gantt_netview { background: var(--gantt-bg-tertiary, #fafafa); }
+.o_gantt_net_node { fill: var(--gantt-bg-primary, #fff); stroke: var(--gantt-separator-opaque, #c7c7cc); stroke-width: 1.5; }
+.o_gantt_net_node.critical { stroke: var(--gantt-accent-red, #FF3B30); stroke-width: 2.5; }
+.o_gantt_net_label { font-size: 12px; font-weight: 600; fill: var(--gantt-label-primary, #1d1d1f); }
+.o_gantt_net_sub { font-size: 11px; fill: var(--gantt-label-tertiary, #8e8e93); }
+
+/* Calendar */
+.o_gantt_cal_title { font-size: 16px; font-weight: 600; margin-bottom: var(--gantt-space-sm, 8px); }
+.o_gantt_cal_grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--gantt-separator, #d2d2d7); border: 1px solid var(--gantt-separator, #d2d2d7); }
+.o_gantt_cal_weekday { background: var(--gantt-bg-secondary, #f5f5f7); text-align: center; padding: 4px; font-size: 12px; font-weight: 600; }
+.o_gantt_cal_cell { background: var(--gantt-bg-primary, #fff); min-height: 84px; padding: 4px; font-size: 11px; }
+.o_gantt_cal_out { background: var(--gantt-bg-tertiary, #fafafa); color: var(--gantt-label-tertiary, #8e8e93); }
+.o_gantt_cal_daynum { font-weight: 600; margin-bottom: 2px; }
+.o_gantt_cal_task { background: var(--gantt-accent-blue, #007AFF); color: #fff; border-radius: 3px; padding: 1px 4px; margin-bottom: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.o_gantt_cal_more { color: var(--gantt-label-tertiary, #8e8e93); }
