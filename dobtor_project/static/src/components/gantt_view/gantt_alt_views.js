@@ -1,6 +1,6 @@
 /** @odoo-module **/
 
-import { Component } from "@odoo/owl";
+import { Component, useState, onWillStart, onWillUpdateProps } from "@odoo/owl";
 
 const { DateTime } = luxon;
 
@@ -33,12 +33,64 @@ export class GanttAltView extends Component {
         onSetMode: { type: Function, optional: true },
     };
 
+    setup() {
+        // Names for resource ids (res.users / resource.resource) resolved lazily,
+        // because m2m fields (e.g. user_ids) only carry ids in the gantt records.
+        this.resNames = useState({});
+        onWillStart(() => this._loadResourceNames());
+        onWillUpdateProps(() => this._loadResourceNames());
+    }
+
     setMode(mode) {
         if (this.props.onSetMode) this.props.onSetMode(mode);
     }
 
     close() {
         if (this.props.onClose) this.props.onClose();
+    }
+
+    /** The field carrying resource assignment (explicit resourceField, else userId). */
+    get _resourceField() {
+        return this.props.archInfo.resourceField || this.props.archInfo.userId || "";
+    }
+
+    /** Normalise a record's resource value to a list of {id, name}. */
+    _resourceRefs(rec) {
+        const field = this._resourceField;
+        if (!field) return [];
+        const v = rec[field];
+        if (!v) return [];
+        // many2one pair [id, name]
+        if (Array.isArray(v) && v.length === 2 && typeof v[1] === "string") {
+            return [{ id: v[0], name: v[1] }];
+        }
+        // many2many: array of ids
+        if (Array.isArray(v)) {
+            return v.filter(x => typeof x === "number")
+                    .map(id => ({ id, name: this.resNames[id] || ("#" + id) }));
+        }
+        return [{ id: v, name: this.resNames[v] || String(v) }];
+    }
+
+    async _loadResourceNames() {
+        const field = this._resourceField;
+        if (!field) return;
+        const ids = new Set();
+        for (const rec of this.records) {
+            const v = rec[field];
+            if (Array.isArray(v) && !(v.length === 2 && typeof v[1] === "string")) {
+                for (const id of v) if (typeof id === "number") ids.add(id);
+            }
+        }
+        const missing = [...ids].filter(id => !(id in this.resNames));
+        if (!missing.length) return;
+        const model = (field === this.props.archInfo.userId)
+            ? "res.users"
+            : (this.props.archInfo.resourceModel || "resource.resource");
+        try {
+            const recs = await this.props.model.orm.read(model, missing, ["display_name"]);
+            for (const r of recs) this.resNames[r.id] = r.display_name;
+        } catch (_e) { /* names are best-effort */ }
     }
 
     // --- shared helpers -----------------------------------------------------
@@ -106,15 +158,12 @@ export class GanttAltView extends Component {
 
     /** [{id, name, tasks:[rec], overloads:[{left,width}]}] */
     get resourceLanes() {
-        const field = this.props.archInfo.resourceField || "user_id";
         const byRes = new Map();
         for (const rec of this.records) {
-            const v = rec[field];
-            if (!v) continue;
-            const id = Array.isArray(v) ? v[0] : v;
-            const name = Array.isArray(v) ? (v[1] || String(id)) : String(v);
-            if (!byRes.has(id)) byRes.set(id, { id, name, tasks: [] });
-            byRes.get(id).tasks.push(rec);
+            for (const ref of this._resourceRefs(rec)) {
+                if (!byRes.has(ref.id)) byRes.set(ref.id, { id: ref.id, name: ref.name, tasks: [] });
+                byRes.get(ref.id).tasks.push(rec);
+            }
         }
         const lanes = [...byRes.values()];
         for (const lane of lanes) {

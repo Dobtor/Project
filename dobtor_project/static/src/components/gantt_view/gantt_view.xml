@@ -240,11 +240,12 @@
                         </span>
                         <div class="o_gantt_col_chooser_menu" t-if="state.showColMenu">
                             <t t-foreach="OPTIONAL_COLUMNS" t-as="col" t-key="col.key">
-                                <label class="o_gantt_col_chooser_item"
-                                       t-on-click.stop="() => this.toggleOptionalColumn(col.key)">
-                                    <input type="checkbox" t-att-checked="isColumnActive(col.key)"/>
+                                <div class="o_gantt_col_chooser_item"
+                                     t-on-click.stop="() => this.toggleOptionalColumn(col.key)">
+                                    <input type="checkbox" t-att-checked="isColumnActive(col.key)"
+                                           style="pointer-events:none;"/>
                                     <span t-esc="col.label"/>
-                                </label>
+                                </div>
                             </t>
                         </div>
                     </span>
