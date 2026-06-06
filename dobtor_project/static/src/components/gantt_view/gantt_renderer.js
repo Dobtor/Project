@@ -177,7 +177,12 @@ export class GanttRenderer extends Component {
         });
 
         // Reactive drag state for live arrow updates via OWL re-render
-        this._dragState = useState({ recordId: null, deltaX: 0 });
+        // Live gesture state shared by BOTH the bar rendering (getBarStyle) and
+        // the dependency arrows, so a re-render mid-drag/resize never desyncs
+        // them. ids: {id: true} of bars being moved; deltaLeft/deltaRight: px
+        // offsets applied to each bar's left/right edge (drag moves both edges
+        // equally, left-resize moves only left, right-resize only right).
+        this._dragState = useState({ ids: {}, deltaLeft: 0, deltaRight: 0 });
 
         // Cell width per column unit for each scale
         this.cellWidths = {
@@ -239,14 +244,25 @@ export class GanttRenderer extends Component {
                     });
                 }
             },
-            // Live arrow update during drag — update reactive state for OWL re-render
+            // Live update during drag — drives both the bar and its arrows.
             onDragMove: (recordId, deltaX) => {
-                this._dragState.recordId = recordId;
-                this._dragState.deltaX = deltaX;
+                // Multi-select drag moves every selected bar together.
+                const sel = this.state.selectedRowIds || {};
+                const selIds = Object.keys(sel).filter(k => sel[k]).map(Number);
+                const ids = {};
+                if (sel[recordId] && selIds.length > 1) {
+                    for (const id of selIds) ids[id] = true;
+                } else {
+                    ids[recordId] = true;
+                }
+                this._dragState.ids = ids;
+                this._dragState.deltaLeft = deltaX;
+                this._dragState.deltaRight = deltaX;
             },
             onDragEnd: async (recordId, cellsDelta) => {
-                this._dragState.recordId = null;
-                this._dragState.deltaX = 0;
+                this._dragState.ids = {};
+                this._dragState.deltaLeft = 0;
+                this._dragState.deltaRight = 0;
                 const record = this.props.model.getRecord(recordId);
                 if (!record) return;
 
@@ -413,7 +429,19 @@ export class GanttRenderer extends Component {
                 }
                 return dt.plus(cellsDeltaToDuration(cellsDelta, this.props.scale));
             },
+            // Live update during resize — moves only the dragged edge so the
+            // arrows attached to that edge track it in real time.
+            onResizeMove: (recordId, side, delta) => {
+                this._dragState.ids = { [recordId]: true };
+                this._dragState.deltaLeft = side === "left" ? delta : 0;
+                this._dragState.deltaRight = side === "right" ? delta : 0;
+            },
             onResizeEnd: async (recordId, side, cellsDelta) => {
+                // Clear live gesture state first so the final render uses the
+                // committed dates, not the transient offset.
+                this._dragState.ids = {};
+                this._dragState.deltaLeft = 0;
+                this._dragState.deltaRight = 0;
                 const record = this.props.model.getRecord(recordId);
                 if (!record) return;
 
@@ -2769,16 +2797,18 @@ export class GanttRenderer extends Component {
             return "display: none;";
         }
 
-        const left = this._dateToPx(dateStart);
+        let left = this._dateToPx(dateStart);
+        let right = dateEnd ? this._dateToPx(dateEnd) : left + 50;
 
-        let width;
-        if (dateEnd) {
-            const right = this._dateToPx(dateEnd);
-            width = Math.max(right - left, 20);
-        } else {
-            width = 50;
+        // Apply the live drag/resize offset so a re-render mid-gesture keeps the
+        // bar exactly where the pointer put it (and aligned with its arrows).
+        const drag = this._dragState;
+        if (drag.ids[record.id]) {
+            left += drag.deltaLeft;
+            right += drag.deltaRight;
         }
 
+        const width = Math.max(right - left, 20);
         return `left: ${left}px; width: ${width}px;`;
     }
 

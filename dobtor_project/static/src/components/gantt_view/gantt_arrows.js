@@ -119,16 +119,18 @@ export class GanttArrows extends Component {
             let childLeft = dateToPx(cStart);
             let childRight = cEnd ? dateToPx(cEnd) : childLeft + 20;
 
-            // Drag-time live offset: shift endpoints of the dragged record
+            // Live drag/resize offset: shift the moved record's endpoints.
+            // deltaLeft/deltaRight let a left-resize move only the start edge and
+            // a right-resize only the end edge (drag sets them equal).
             const drag = this.props.dragState;
-            if (drag && drag.deltaX) {
-                if (pred.parent_task_id === drag.recordId) {
-                    parentLeft += drag.deltaX;
-                    parentRight += drag.deltaX;
+            if (drag && drag.ids) {
+                if (drag.ids[pred.parent_task_id]) {
+                    parentLeft += drag.deltaLeft;
+                    parentRight += drag.deltaRight;
                 }
-                if (pred.task_id === drag.recordId) {
-                    childLeft += drag.deltaX;
-                    childRight += drag.deltaX;
+                if (drag.ids[pred.task_id]) {
+                    childLeft += drag.deltaLeft;
+                    childRight += drag.deltaRight;
                 }
             }
 
@@ -305,13 +307,21 @@ export class GanttArrows extends Component {
             if (taskIdx === undefined || msIdx === undefined) continue;
 
             // Task: from right edge (FS style) — use dateToPx
-            const fromX = taskRecord._dateEnd
+            let fromX = taskRecord._dateEnd
                 ? dateToPx(taskRecord._dateEnd)
                 : dateToPx(taskRecord._dateStart) + 20;
             const fromY = taskIdx * rowHeight + rowHeight / 2;
 
             // Milestone: diamond visual center = dateToPx(start) + half box
-            const msCenterX = dateToPx(msRecord._dateStart) + halfBox;
+            let msCenterX = dateToPx(msRecord._dateStart) + halfBox;
+
+            // Live drag/resize offset (end edge for the task, center for the
+            // milestone) so the connector tracks the gesture.
+            const drag = this.props.dragState;
+            if (drag && drag.ids) {
+                if (drag.ids[link.task_id]) fromX += drag.deltaRight;
+                if (drag.ids[link.milestone_id]) msCenterX += drag.deltaLeft;
+            }
             const toY = msIdx * rowHeight + rowHeight / 2;
 
             const vertDir = toY > fromY ? 1 : -1;

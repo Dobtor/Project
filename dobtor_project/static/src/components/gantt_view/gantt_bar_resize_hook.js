@@ -48,6 +48,7 @@ export function useGanttBarResize(params) {
         const minWidth = 4; // minimum visible bar width in px
 
         // Pixel-level resize (no grid snap) for minute-level precision
+        let reportDelta = deltaX;
         if (side === "left") {
             const newLeft = originalLeft + deltaX;
             const newWidth = originalWidth - deltaX;
@@ -71,9 +72,15 @@ export function useGanttBarResize(params) {
             if (newWidth >= minWidth) {
                 resizeBar.style.width = `${newWidth}px`;
             }
+            reportDelta = clampedDelta;
         }
 
         _updateHint(deltaX);
+        // Live update so the bar's re-render and the dependency arrows follow
+        // the resized edge instead of snapping back / detaching.
+        if (params.onResizeMove) {
+            params.onResizeMove(recordId, side, reportDelta);
+        }
     });
 
     function onPointerDown(ev) {
