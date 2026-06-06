@@ -51,7 +51,7 @@
                                 <field name="detail_plan_work" widget="float_time" readonly="1"/>
                             </group>
                         </group>
-                        <group string="成本與賺得值 (EVM)">
+                        <group string="成本與賺得值 (EVM)" groups="dobtor_project.group_project_cost_manager">
                             <group>
                                 <field name="currency_id" invisible="1"/>
                                 <field name="cost_hourly_rate" widget="monetary" readonly="1"/>

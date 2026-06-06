@@ -41,6 +41,7 @@ export class GanttAltView extends Component {
         // Names for resource ids (res.users / resource.resource) resolved lazily,
         // because m2m fields (e.g. user_ids) only carry ids in the gantt records.
         this.resNames = useState({});
+        this._nameToken = 0;
         onWillStart(() => this._loadResourceNames());
         onWillUpdateProps(() => this._loadResourceNames());
     }
@@ -91,8 +92,12 @@ export class GanttAltView extends Component {
         const model = (field === this.props.archInfo.userId)
             ? "res.users"
             : (this.props.archInfo.resourceModel || "resource.resource");
+        const token = ++this._nameToken;
         try {
             const recs = await this.props.model.orm.read(model, missing, ["display_name"]);
+            // Drop the result if a newer load started meanwhile (e.g. project
+            // switched), so stale ids/names don't leak in.
+            if (token !== this._nameToken) return;
             for (const r of recs) this.resNames[r.id] = r.display_name;
         } catch (_e) { /* names are best-effort */ }
     }
@@ -260,8 +265,13 @@ export class GanttAltView extends Component {
             if (e < s) e = s;
             return { rec: r, s, e };
         });
-        const minOff = Math.min(...spans.map(sp => sp.s));
-        const maxOff = Math.max(...spans.map(sp => sp.e));
+        // reduce (not Math.min(...spread)) — spread of a task-sized array would
+        // overflow the call stack on large projects.
+        let minOff = Infinity, maxOff = -Infinity;
+        for (const sp of spans) {
+            if (sp.s < minOff) minOff = sp.s;
+            if (sp.e > maxOff) maxOff = sp.e;
+        }
         const PER_ROW = 7;
         const rows = [];
         for (let base = minOff; base <= maxOff; base += PER_ROW) {
@@ -315,8 +325,10 @@ export class GanttAltView extends Component {
             if ((indeg.get(r.id) || 0) === 0) { layer.set(r.id, 0); queue.push(r.id); }
         }
         const indegWork = new Map(indeg);
-        while (queue.length) {
-            const cur = queue.shift();
+        // Index pointer instead of Array.shift() (O(1) vs O(n) per dequeue).
+        let head = 0;
+        while (head < queue.length) {
+            const cur = queue[head++];
             for (const nxt of (succ.get(cur) || [])) {
                 layer.set(nxt, Math.max(layer.get(nxt) || 0, (layer.get(cur) || 0) + 1));
                 indegWork.set(nxt, indegWork.get(nxt) - 1);
@@ -354,8 +366,8 @@ export class GanttAltView extends Component {
                 x2: b.x, y2: b.y + NODE_H / 2,
             });
         }
-        const width = Math.max(...nodes.map(n => n.x + n.w), 200) + 40;
-        const height = Math.max(...nodes.map(n => n.y + n.h), 200) + 40;
+        const width = nodes.reduce((m, n) => Math.max(m, n.x + n.w), 200) + 40;
+        const height = nodes.reduce((m, n) => Math.max(m, n.y + n.h), 200) + 40;
         return { nodes, links, width, height };
     }
 }

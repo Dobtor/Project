@@ -1,6 +1,6 @@
 /** @odoo-module **/
 
-import { onMounted, onWillUnmount } from "@odoo/owl";
+import { onMounted, onWillUnmount, onPatched } from "@odoo/owl";
 
 /**
  * Rubber-band (marquee) selection over the timeline, OmniPlan-style.
@@ -107,14 +107,23 @@ export function useGanttMarquee(params) {
         }
     };
 
-    onMounted(() => {
+    // Track the element we actually bound to, so we can rebind if OWL rebuilds
+    // the timeline (e.g. after toggling an alternate view and back).
+    let boundEl = null;
+    const bind = () => {
         const el = params.getTimelineEl();
+        if (el === boundEl) return;
+        if (boundEl) boundEl.removeEventListener("pointerdown", onPointerDown);
         if (el) el.addEventListener("pointerdown", onPointerDown);
-    });
+        boundEl = el;
+    };
+
+    onMounted(bind);
+    onPatched(bind);
 
     onWillUnmount(() => {
-        const el = params.getTimelineEl();
-        if (el) el.removeEventListener("pointerdown", onPointerDown);
+        if (boundEl) boundEl.removeEventListener("pointerdown", onPointerDown);
+        boundEl = null;
         document.removeEventListener("pointermove", onPointerMove);
         if (rectEl) {
             rectEl.remove();

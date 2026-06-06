@@ -498,13 +498,19 @@ class Project(models.Model):
         completed = tasks.filtered(lambda t: t.date_end <= now)
         if completed:
             completed.write({'progress': 100})
-        # Partial progress: compute individually then batch by value
+        # Partial progress: compute each, then group identical values into one
+        # write (avoids a per-task write + cascade in the loop).
         partial = tasks.filtered(lambda t: t.date_start <= now < t.date_end)
+        by_progress = {}
         for task in partial:
             total = (task.date_end - task.date_start).total_seconds()
             elapsed = (now - task.date_start).total_seconds()
             if total > 0:
-                task.progress = min(round(elapsed / total * 100, 1), 100)
+                val = min(round(elapsed / total * 100, 1), 100)
+                by_progress.setdefault(val, self.env['project.task'])
+                by_progress[val] |= task
+        for val, recs in by_progress.items():
+            recs.write({'progress': val})
         # Re-run scheduler
         if self.scheduling_type != 'manual':
             self.env['project.task'].scheduler_plan(self.id)
@@ -522,8 +528,9 @@ class Project(models.Model):
             ('date_start', '!=', False),
             ('date_end', '!=', False),
         ])
-        for task in tasks:
-            task.write({
+        # Same constraint for all overdue tasks → single batched write.
+        if tasks:
+            tasks.write({
                 'constrain_type': 'snet',
                 'constrain_date': now,
             })
@@ -774,18 +781,19 @@ class Project(models.Model):
                 committed.append({'start': new_start, 'end': new_start + duration,
                                   'load': cur['load']})
 
-        # Step 4: Apply SNET constraints (batch write grouped by task)
+        # Step 4: Apply SNET constraints, grouping tasks that share the same
+        # constrain_date into a single write (one write per distinct date).
         if changes:
             Task = self.env['project.task']
-            task_ids = list(changes.keys())
-            tasks_by_id = {t.id: t for t in Task.browse(task_ids)}
+            by_date = {}
             for tid, constrain_date in changes.items():
-                task = tasks_by_id.get(tid)
-                if task:
-                    task.write({
-                        'constrain_type': 'snet',
-                        'constrain_date': constrain_date,
-                    })
+                by_date.setdefault(constrain_date, [])
+                by_date[constrain_date].append(tid)
+            for constrain_date, tids in by_date.items():
+                Task.browse(tids).write({
+                    'constrain_type': 'snet',
+                    'constrain_date': constrain_date,
+                })
 
         # Step 5: Re-run scheduler
         if self.scheduling_type != 'manual':

@@ -709,8 +709,10 @@
                                          t-att-style="getGhostBarStyle(ghostBar)"
                                          t-att-title="'基線: ' + (ghostBar.name || '')"/>
                                 </t>
-                                <!-- Resource conflict indicator -->
-                                <t t-if="hasResourceConflict(row)">
+                                <!-- Resource conflict indicator (only while the
+                                     intersection/resource overlay is enabled, so
+                                     the resource index isn't built every render). -->
+                                <t t-if="props.showIntersection and hasResourceConflict(row)">
                                     <div class="o_gantt_resource_conflict_indicator"
                                          t-att-style="cachedBarStyle"
                                          title="資源衝突：指派重疊"/>

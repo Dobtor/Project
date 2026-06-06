@@ -3973,30 +3973,32 @@ export class GanttModel extends Model {
 
     /** Restore an outline snapshot (parent_id + sorting_seq) and persist it. */
     async _restoreTree(snap) {
-        const sortField = this.archInfo.sortingSeq || "sorting_seq";
-        const parentField = this.archInfo.parentId || "parent_id";
         const taskBatch = [];
         const msBatch = [];
         for (const s of snap) {
-            const rec = this._recordMap.get(s.id);
-            if (!rec) continue;
-            rec[sortField] = s.seq;
+            if (!this._recordMap.get(s.id)) continue;
             if (s.isMilestone) {
-                rec.sorting_seq = s.seq;
                 msBatch.push({ id: Math.abs(s.id), sorting_seq: s.seq });
             } else {
-                rec[parentField] = s.parent ? [s.parent, ""] : false;
-                rec._parentId = s.parent || 0;
                 taskBatch.push({ id: s.id, sorting_seq: s.seq, parent_id: s.parent || false });
             }
         }
-        this._buildTree();
-        for (const group of this.data.groups) {
-            this._computeGroupSummaryDates(group);
-        }
-        this._recomputeMilestonePositions();
         await this.batchResequence(taskBatch, msBatch);
-        this.notify();
+        // Reload authoritative server state: restoring parent/sequence can make
+        // the server re-propagate ancestor dates / FS shifts, so a plain local
+        // structure restore would leave dates inconsistent. A full reload
+        // reconciles structure AND dates. (load() does not clear undo/redo
+        // stacks, so redo still works.)
+        if (this._lastLoadProps) {
+            await this.load(this._lastLoadProps);
+        } else {
+            this._buildTree();
+            for (const group of this.data.groups) {
+                this._computeGroupSummaryDates(group);
+            }
+            this._recomputeMilestonePositions();
+            this.notify();
+        }
     }
 
     async undo() {

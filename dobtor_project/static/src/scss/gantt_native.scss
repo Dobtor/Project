@@ -42,6 +42,7 @@
     --gantt-accent-pink: #FF2D55;
     --gantt-accent-purple: #AF52DE;
     --gantt-accent-red: #FF3B30;
+    --gantt-accent-red-rgb: 255, 59, 48;
     --gantt-accent-teal: #5AC8FA;
     --gantt-accent-yellow: #FFCC00;
 
@@ -2304,7 +2305,7 @@
     font-size: 9px;
     font-weight: 700;
     text-align: center;
-    background: var(--gantt-accent-red, #e74c3c);
+    background: var(--gantt-accent-red, #FF3B30);
     color: #fff;
     border-radius: 7px;
     padding: 0 3px;
@@ -2839,16 +2840,16 @@
     // Hard constraints (MSO/MFO) — red
     &.o_gantt_constraint_hard {
         .o_gantt_constraint_label {
-            background: var(--gantt-accent-red, #e74c3c);
+            background: var(--gantt-accent-red, #FF3B30);
         }
         .o_gantt_constraint_line {
-            border-left-color: var(--gantt-accent-red, #e74c3c);
+            border-left-color: var(--gantt-accent-red, #FF3B30);
         }
         .o_gantt_constraint_connector {
-            border-top-color: var(--gantt-accent-red, #e74c3c);
+            border-top-color: var(--gantt-accent-red, #FF3B30);
             &::after {
-                border-left-color: var(--gantt-accent-red, #e74c3c);
-                border-right-color: var(--gantt-accent-red, #e74c3c);
+                border-left-color: var(--gantt-accent-red, #FF3B30);
+                border-right-color: var(--gantt-accent-red, #FF3B30);
             }
         }
     }
@@ -2906,7 +2907,7 @@
     }
 
     .o_gantt_constraint_tooltip_warn {
-        color: var(--gantt-accent-red, #e74c3c);
+        color: var(--gantt-accent-red, #FF3B30);
         font-weight: 600;
         display: flex;
         align-items: center;
@@ -3394,18 +3395,20 @@
         }
     }
 
-    // Color swatches 1-11 (matching Kanban $o-colors)
-    .o_gantt_color_1  { background-color: #ee2d2d; }
-    .o_gantt_color_2  { background-color: #dc8534; }
-    .o_gantt_color_3  { background-color: #e8bb1d; }
-    .o_gantt_color_4  { background-color: #5794dd; }
-    .o_gantt_color_5  { background-color: #9f628f; }
-    .o_gantt_color_6  { background-color: #db8865; }
-    .o_gantt_color_7  { background-color: #41a9a2; }
-    .o_gantt_color_8  { background-color: #304be0; }
-    .o_gantt_color_9  { background-color: #ee2f8a; }
-    .o_gantt_color_10 { background-color: #61c36e; }
-    .o_gantt_color_11 { background-color: #9872e6; }
+    // Color swatches 1-11. Authoritative values live in JS GANTT_COLORS
+    // (gantt_inspector.js) and are injected at runtime into --gantt-palette-N
+    // by the renderer; the hex below is only a fallback before injection.
+    .o_gantt_color_1  { background-color: var(--gantt-palette-1, #ee2d2d); }
+    .o_gantt_color_2  { background-color: var(--gantt-palette-2, #dc8534); }
+    .o_gantt_color_3  { background-color: var(--gantt-palette-3, #e8bb1d); }
+    .o_gantt_color_4  { background-color: var(--gantt-palette-4, #5794dd); }
+    .o_gantt_color_5  { background-color: var(--gantt-palette-5, #9f628f); }
+    .o_gantt_color_6  { background-color: var(--gantt-palette-6, #db8865); }
+    .o_gantt_color_7  { background-color: var(--gantt-palette-7, #41a9a2); }
+    .o_gantt_color_8  { background-color: var(--gantt-palette-8, #304be0); }
+    .o_gantt_color_9  { background-color: var(--gantt-palette-9, #ee2f8a); }
+    .o_gantt_color_10 { background-color: var(--gantt-palette-10, #61c36e); }
+    .o_gantt_color_11 { background-color: var(--gantt-palette-11, #9872e6); }
 }
 
 // Inspector button (e.g. Detail Plan)
@@ -3784,7 +3787,7 @@
    ============================================================ */
 .o_gantt_marquee {
     border: 1px solid var(--gantt-accent-blue, #007AFF);
-    background: rgba(0, 122, 255, 0.12);
+    background: rgba(var(--gantt-accent-blue-rgb, 0, 122, 255), 0.12);
     border-radius: 2px;
 }
 
@@ -3900,7 +3903,8 @@
 }
 .o_gantt_resview_overload {
     position: absolute; top: 0; bottom: 0;
-    background: rgba(255, 59, 48, 0.18); border-left: 1px solid var(--gantt-accent-red, #FF3B30);
+    background: rgba(var(--gantt-accent-red-rgb, 255, 59, 48), 0.18);
+    border-left: 1px solid var(--gantt-accent-red, #FF3B30);
 }
 
 /* Network / PERT */

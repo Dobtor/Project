@@ -73,6 +73,17 @@ export class GanttRenderer extends Component {
         // props memoization) and use the model's O(1) lookup instead of an
         // O(n) .find() over the records array.
         this.getModelRecord = (id) => this.props.model.getRecord(id);
+        // Stable reference so GanttArrows props keep their identity across
+        // renders (otherwise a fresh arrow fn every render defeats memoization).
+        this._boundDateToPx = (dt) => this._dateToPx(dt);
+
+        // Publish the canonical task colour palette (JS GANTT_COLORS, the single
+        // source of truth) as CSS variables so the SCSS swatches (.o_gantt_color_N)
+        // no longer hard-code their own copy.
+        const _root = document.documentElement;
+        GANTT_COLORS.forEach((c, i) => {
+            if (i > 0 && c) _root.style.setProperty(`--gantt-palette-${i}`, c);
+        });
         this.timelineRef = useRef("timeline");
         this.timelineDataRef = useRef("timelineData");
         this.listRowsRef = useRef("listRows");
@@ -259,7 +270,7 @@ export class GanttRenderer extends Component {
                     let shiftHours = newStart.diff(summaryStart, "hours").hours;
                     // Virtual timeline hours must be converted to working hours for the backend
                     if (record._isVirtualDates) {
-                        const scaleFactor = (this._calHpd < 24) ? (24 / this._calHpd) : 1;
+                        const scaleFactor = this._scaleFactor;
                         shiftHours = shiftHours / scaleFactor;
                     }
                     if (Math.abs(shiftHours) < 0.01) return;
@@ -295,7 +306,7 @@ export class GanttRenderer extends Component {
                 if (record._isVirtualDates) {
                     // Planning mode: drag delta is in virtual timeline units,
                     // divide by scaleFactor to convert back to working hours
-                    const scaleFactor = (this._calHpd < 24) ? (24 / this._calHpd) : 1;
+                    const scaleFactor = this._scaleFactor;
                     // Convert duration to hours directly (avoid epoch-based month inaccuracy)
                     const shiftHours = (shiftDur.hours || 0) + (shiftDur.days || 0) * 24
                         + (shiftDur.weeks || 0) * 168 + (shiftDur.months || 0) * 720;
@@ -378,7 +389,7 @@ export class GanttRenderer extends Component {
                     + (shiftDur.weeks || 0) * 168 + (shiftDur.months || 0) * 720;
                 // If hiding non-working days, use working-hour conversion
                 if (this._isHidingNonWorking()) {
-                    const scaleFactor = (this._calHpd < 24) ? (24 / this._calHpd) : 1;
+                    const scaleFactor = this._scaleFactor;
                     shiftHours = shiftHours / scaleFactor;
                 }
                 await this.props.model.moveMultipleRecords(recordIds, shiftHours);
@@ -418,7 +429,7 @@ export class GanttRenderer extends Component {
                 if (record._isVirtualDates) {
                     // Planning mode: resize delta is in virtual timeline units,
                     // divide by scaleFactor to convert back to working hours
-                    const scaleFactor = (this._calHpd < 24) ? (24 / this._calHpd) : 1;
+                    const scaleFactor = this._scaleFactor;
                     const minDuration = this._calHpd; // Minimum 1 working day
                     const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
                     // Convert duration to hours directly (avoid epoch-based month inaccuracy)
@@ -1514,6 +1525,15 @@ export class GanttRenderer extends Component {
         return (ws && ws.size > 0) ? ws.size : 7;
     }
 
+    /**
+     * Virtual-timeline scale factor (24/hpd) used to convert between calendar
+     * columns and working-hour offsets when non-working time is collapsed.
+     * Single definition so the rule lives in one place.
+     */
+    get _scaleFactor() {
+        return (this._calHpd < 24) ? (24 / this._calHpd) : 1;
+    }
+
     get arrowProps() {
         const data = this.props.model.data;
         
@@ -1536,7 +1556,7 @@ export class GanttRenderer extends Component {
             records: data?.records || [],
             flattenedRows: this.flattenedRows,
             visibleRowIds: visibleRowIds.size > 0 ? visibleRowIds : undefined,
-            dateToPx: (dt) => this._dateToPx(dt),
+            dateToPx: this._boundDateToPx,
             rowHeight: 44,
             selectedRowId: this.state.selectedRowId,
             criticalField: this.props.archInfo.criticalPath || "",
@@ -2316,18 +2336,9 @@ export class GanttRenderer extends Component {
     onGroupBarClick(group, ev) {
         // Stop propagation to prevent row click handler from firing
         ev.stopPropagation();
-
-        if (ev.ctrlKey || ev.metaKey) {
-            if (this.state.selectedRowIds[group.id]) {
-                delete this.state.selectedRowIds[group.id];
-            } else {
-                this.state.selectedRowIds[group.id] = true;
-            }
-        } else {
-            this.state.selectedRowIds = {};
-            this.state.selectedRowIds[group.id] = true;
-        }
-        this.state.selectedRowId = group.id;
+        // Reuse the unified selection logic (ctrl/shift/plain) instead of a
+        // separate hand-rolled copy that mutated state in place.
+        this._applySelectionClick(group.id, ev);
     }
 
     // -------------------------------------------------------------------------

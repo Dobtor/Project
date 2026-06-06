@@ -55,7 +55,7 @@
                             </group>
                         </group>
                     </page>
-                    <page string="成本與賺得值" name="evm_settings">
+                    <page string="成本與賺得值" name="evm_settings" groups="dobtor_project.group_project_cost_manager">
                         <group>
                             <group string="設定">
                                 <field name="status_date"/>

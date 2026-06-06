@@ -580,7 +580,8 @@ class GanttReport(models.AbstractModel):
                             f"{color_css}border-radius:2px;"
                         )
                     if task.critical_path:
-                        bar_style += "outline:2px solid #e74c3c;"
+                        # Match the front-end critical-path colour (--gantt-accent-red).
+                        bar_style += "outline:2px solid #FF3B30;"
 
                 rows_data.append({
                     'wbs': wbs_map.get(task.id, ""),
