@@ -1320,23 +1320,43 @@
             <t t-if="props.mode === 'calendar'">
                 <div class="o_gantt_altview_body o_gantt_calview">
                     <div class="o_gantt_cal_title" t-esc="calendarTitle"/>
-                    <div class="o_gantt_cal_grid">
-                        <t t-foreach="weekdayLabels" t-as="wd" t-key="wd_index">
-                            <div class="o_gantt_cal_weekday" t-esc="wd"/>
-                        </t>
-                        <t t-foreach="calendarWeeks" t-as="week" t-key="week.key">
-                            <t t-foreach="week.days" t-as="day" t-key="day.key">
-                                <div t-att-class="'o_gantt_cal_cell' + (day.inMonth ? '' : ' o_gantt_cal_out')">
-                                    <div class="o_gantt_cal_daynum" t-esc="day.label"/>
-                                    <t t-foreach="day.tasks" t-as="task" t-key="task.id">
-                                        <div class="o_gantt_cal_task" t-att-title="recName(task)"
-                                             t-esc="recName(task)"/>
-                                    </t>
-                                    <div t-if="day.more" class="o_gantt_cal_more" t-esc="'+' + day.more"/>
-                                </div>
+                    <!-- Planning mode: relative T+N grid (native calendar can't show this) -->
+                    <t t-if="calendarIsPlanning">
+                        <div class="o_gantt_cal_grid o_gantt_cal_grid_planning">
+                            <t t-foreach="planningCalendarRows" t-as="week" t-key="week.key">
+                                <t t-foreach="week.days" t-as="day" t-key="day.key">
+                                    <div class="o_gantt_cal_cell">
+                                        <div class="o_gantt_cal_daynum o_gantt_cal_planlabel" t-esc="day.label"/>
+                                        <t t-foreach="day.tasks" t-as="task" t-key="task.id">
+                                            <div class="o_gantt_cal_task" t-att-title="recName(task)"
+                                                 t-esc="recName(task)"/>
+                                        </t>
+                                        <div t-if="day.more" class="o_gantt_cal_more" t-esc="'+' + day.more"/>
+                                    </div>
+                                </t>
                             </t>
-                        </t>
-                    </div>
+                        </div>
+                    </t>
+                    <!-- Real dates: month grid -->
+                    <t t-else="">
+                        <div class="o_gantt_cal_grid">
+                            <t t-foreach="weekdayLabels" t-as="wd" t-key="wd_index">
+                                <div class="o_gantt_cal_weekday" t-esc="wd"/>
+                            </t>
+                            <t t-foreach="calendarWeeks" t-as="week" t-key="week.key">
+                                <t t-foreach="week.days" t-as="day" t-key="day.key">
+                                    <div t-att-class="'o_gantt_cal_cell' + (day.inMonth ? '' : ' o_gantt_cal_out')">
+                                        <div class="o_gantt_cal_daynum" t-esc="day.label"/>
+                                        <t t-foreach="day.tasks" t-as="task" t-key="task.id">
+                                            <div class="o_gantt_cal_task" t-att-title="recName(task)"
+                                                 t-esc="recName(task)"/>
+                                        </t>
+                                        <div t-if="day.more" class="o_gantt_cal_more" t-esc="'+' + day.more"/>
+                                    </div>
+                                </t>
+                            </t>
+                        </div>
+                    </t>
                 </div>
             </t>
         </div>

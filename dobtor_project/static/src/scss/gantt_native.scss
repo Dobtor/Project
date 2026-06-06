@@ -3919,3 +3919,9 @@
 .o_gantt_cal_daynum { font-weight: 600; margin-bottom: 2px; }
 .o_gantt_cal_task { background: var(--gantt-accent-blue, #007AFF); color: #fff; border-radius: 3px; padding: 1px 4px; margin-bottom: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .o_gantt_cal_more { color: var(--gantt-label-tertiary, #8e8e93); }
+
+/* Planning-mode calendar (relative T+N days) */
+.o_gantt_cal_planlabel {
+    color: var(--gantt-accent-blue, #007AFF);
+    font-weight: 600;
+}

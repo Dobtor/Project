@@ -4,6 +4,10 @@ import { Component, useState, onWillStart, onWillUpdateProps } from "@odoo/owl";
 
 const { DateTime } = luxon;
 
+// Must match the renderer's PLANNING_T0 so the calendar's T+N offsets line up
+// exactly with the gantt's planning-mode labels.
+const PLANNING_T0 = DateTime.fromObject({ year: 2000, month: 1, day: 1 });
+
 /**
  * Alternate visualisations for the native Gantt, rendered as an overlay so the
  * main Gantt DOM is never touched (default "gantt" mode is unaffected):
@@ -226,7 +230,55 @@ export class GanttAltView extends Component {
     }
 
     get calendarTitle() {
+        if (this.calendarIsPlanning) {
+            return "規劃模式 — 相對日程（T0 = 專案起點）";
+        }
         return this.timeStart.toFormat("yyyy LLLL");
+    }
+
+    /**
+     * Planning mode: tasks have no real dates (virtual timeline anchored at
+     * PLANNING_T0). Native Odoo calendar cannot show these at all — this is the
+     * differentiating value of keeping a custom calendar. We render a grid of
+     * relative days labelled T+0, T+1, … instead of calendar dates.
+     */
+    get calendarIsPlanning() {
+        const recs = this.records;
+        return recs.length > 0 && recs.every(r => r._isVirtualDates);
+    }
+
+    _planLabel(n) {
+        return `T${n > 0 ? "+" : ""}${n}`;
+    }
+
+    get planningCalendarRows() {
+        const recs = this.records;
+        if (!recs.length) return [];
+        const spans = recs.map(r => {
+            const s = Math.floor(r._dateStart.diff(PLANNING_T0, "days").days);
+            let e = Math.ceil(r._dateEnd.diff(PLANNING_T0, "days").days) - 1;
+            if (e < s) e = s;
+            return { rec: r, s, e };
+        });
+        const minOff = Math.min(...spans.map(sp => sp.s));
+        const maxOff = Math.max(...spans.map(sp => sp.e));
+        const PER_ROW = 7;
+        const rows = [];
+        for (let base = minOff; base <= maxOff; base += PER_ROW) {
+            const cells = [];
+            for (let i = 0; i < PER_ROW && base + i <= maxOff; i++) {
+                const off = base + i;
+                const hit = spans.filter(sp => sp.s <= off && off <= sp.e);
+                cells.push({
+                    key: "p" + off,
+                    label: this._planLabel(off),
+                    tasks: hit.slice(0, 4).map(sp => sp.rec),
+                    more: Math.max(0, hit.length - 4),
+                });
+            }
+            rows.push({ key: "r" + base, days: cells });
+        }
+        return rows;
     }
 
     get weekdayLabels() {
