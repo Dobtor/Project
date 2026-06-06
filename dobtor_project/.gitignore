@@ -1,0 +1,7 @@
+# Python bytecode (auto-generated, never commit)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Playwright test artifacts
+.playwright-mcp/
