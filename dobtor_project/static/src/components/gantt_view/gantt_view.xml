@@ -804,7 +804,7 @@
     <t t-name="dobtor_project.GanttTooltip">
         <div t-ref="tooltip"
              t-att-class="'o_gantt_tooltip' + (state.visible ? ' o_gantt_tooltip_visible' : '')"
-             t-att-style="'left: ' + state.x + 'px; top: ' + state.y + 'px;'">
+             t-att-style="tooltipStyle">
             <t t-if="tooltipData">
                 <!-- Header section: name + badges -->
                 <div class="o_gantt_tooltip_header">

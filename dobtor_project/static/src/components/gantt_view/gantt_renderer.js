@@ -260,9 +260,10 @@ export class GanttRenderer extends Component {
                 this._dragState.deltaRight = deltaX;
             },
             onDragEnd: async (recordId, cellsDelta) => {
-                this._dragState.ids = {};
-                this._dragState.deltaLeft = 0;
-                this._dragState.deltaRight = 0;
+              // Keep the live offset applied through the (awaited) server move so
+              // the bar doesn't flash back to its pre-drag position; clear it in
+              // finally once the new dates are in.
+              try {
                 const record = this.props.model.getRecord(recordId);
                 if (!record) return;
 
@@ -383,6 +384,9 @@ export class GanttRenderer extends Component {
                     const writeOpts = wasClamped ? { context: { skip_date_snap: true } } : {};
                     await this.props.model.moveAndCascade(recordId, values, null, writeOpts);
                 }
+              } finally {
+                this._clearGesture();
+              }
             },
             // Lag preview: compute FS predecessor lag changes during drag
             getPredLagPreview: (recId, cellsDelta) => {
@@ -437,11 +441,9 @@ export class GanttRenderer extends Component {
                 this._dragState.deltaRight = side === "right" ? delta : 0;
             },
             onResizeEnd: async (recordId, side, cellsDelta) => {
-                // Clear live gesture state first so the final render uses the
-                // committed dates, not the transient offset.
-                this._dragState.ids = {};
-                this._dragState.deltaLeft = 0;
-                this._dragState.deltaRight = 0;
+              // Keep the live offset through the awaited server resize, clear in
+              // finally so the bar doesn't flash back to its pre-resize size.
+              try {
                 const record = this.props.model.getRecord(recordId);
                 if (!record) return;
 
@@ -557,6 +559,9 @@ export class GanttRenderer extends Component {
                     const resizeOpts = wasClamped ? { context: { skip_date_snap: true } } : {};
                     await this.props.model.moveAndCascade(recordId, values, null, resizeOpts);
                 }
+              } finally {
+                this._clearGesture();
+              }
             },
             // Lag preview: compute FS predecessor lag changes during resize
             getPredLagPreview: (recId, cellsDelta, resizeSide) => {
@@ -2776,6 +2781,13 @@ export class GanttRenderer extends Component {
             classes.push("o_gantt_row_selected");
         }
         return classes.join(" ");
+    }
+
+    /** Clear the live drag/resize offset (called once dates have settled). */
+    _clearGesture() {
+        this._dragState.ids = {};
+        this._dragState.deltaLeft = 0;
+        this._dragState.deltaRight = 0;
     }
 
     getBarStyle(record) {

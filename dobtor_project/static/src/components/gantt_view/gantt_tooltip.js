@@ -39,26 +39,30 @@ export class GanttTooltip extends Component {
         this.tooltipRef = useRef("tooltip");
         this.state = useState({
             visible: false,
-            x: 0,
-            y: 0,
             record: null,
         });
 
         this._onMouseOver = this._onMouseOver.bind(this);
         this._onMouseOut = this._onMouseOut.bind(this);
-        this._onMouseMove = this._onMouseMove.bind(this);
         this._hideTimeout = null;
         this._container = null;
+        // Anchored to the timeline time header so the tooltip stays pinned to a
+        // fixed top-right corner instead of following the cursor (which used to
+        // cover the bar the user wants to click).
+        this._anchorEl = null;
 
         onMounted(() => {
             const rootEl = this.tooltipRef.el?.closest(".o_gantt_content_wrapper");
             this._container = rootEl
                 ? rootEl.querySelector(".o_gantt_timeline_data")
                 : null;
+            this._anchorEl = rootEl
+                ? (rootEl.querySelector(".o_gantt_timeline_header")
+                   || rootEl.querySelector(".o_gantt_timeline"))
+                : null;
             if (this._container) {
                 this._container.addEventListener("mouseover", this._onMouseOver);
                 this._container.addEventListener("mouseout", this._onMouseOut);
-                this._container.addEventListener("mousemove", this._onMouseMove);
             }
         });
 
@@ -66,9 +70,9 @@ export class GanttTooltip extends Component {
             if (this._container) {
                 this._container.removeEventListener("mouseover", this._onMouseOver);
                 this._container.removeEventListener("mouseout", this._onMouseOut);
-                this._container.removeEventListener("mousemove", this._onMouseMove);
             }
             this._container = null;
+            this._anchorEl = null;
             clearTimeout(this._hideTimeout);
         });
     }
@@ -86,9 +90,7 @@ export class GanttTooltip extends Component {
         if (!record) return;
 
         this.state.record = record;
-        this._currentBar = bar;
         this.state.visible = true;
-        this._positionTooltip(ev);
     }
 
     _onMouseOut(ev) {
@@ -102,56 +104,19 @@ export class GanttTooltip extends Component {
         }, 100);
     }
 
-    _onMouseMove(ev) {
-        if (!this.state.visible) return;
-        this._positionTooltip(ev);
-    }
-
-    _positionTooltip(ev) {
+    /**
+     * Fixed position: top-right corner of the timeline time header, using a
+     * right/top offset so the tooltip width never matters and it never moves
+     * with the pointer.
+     */
+    get tooltipStyle() {
+        const anchor = this._anchorEl;
+        if (!anchor) return "right: 16px; top: 64px;";
+        const rect = anchor.getBoundingClientRect();
         const GAP = 8;
-        const el = this.tooltipRef.el;
-        const bar = this._currentBar;
-        if (!bar) return;
-
-        const barRect = bar.getBoundingClientRect();
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-
-        // X: align tooltip left edge with bar left, follow mouse X if bar is wide
-        let x = Math.max(barRect.left, Math.min(ev.clientX, barRect.right - 20));
-
-        // Y: default above the bar
-        let y = barRect.top - GAP;
-
-        if (el) {
-            const ttRect = el.getBoundingClientRect();
-
-            // Y: place tooltip bottom edge above the bar
-            y = barRect.top - ttRect.height - GAP;
-
-            // Not enough space above → show below the bar
-            if (y < 10) {
-                y = barRect.bottom + GAP;
-            }
-
-            // Bottom overflow → clamp
-            if (y + ttRect.height > vh - 10) {
-                y = vh - ttRect.height - 10;
-            }
-
-            // Right overflow → shift left
-            if (x + ttRect.width > vw - 10) {
-                x = vw - ttRect.width - 10;
-            }
-
-            // Left overflow → clamp
-            if (x < 10) {
-                x = 10;
-            }
-        }
-
-        this.state.x = x;
-        this.state.y = y;
+        const right = Math.max(GAP, window.innerWidth - rect.right + GAP);
+        const top = rect.top + GAP;
+        return `right: ${right}px; top: ${top}px;`;
     }
 
     /**
