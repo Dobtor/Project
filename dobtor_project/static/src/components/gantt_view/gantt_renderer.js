@@ -858,12 +858,26 @@ export class GanttRenderer extends Component {
         if (!timeline) return;
 
         const updateScroll = () => {
+            const prevWidth = this._scrollPos.viewportWidth;
             this._scrollPos.scrollLeft = timeline.scrollLeft;
             this._scrollPos.scrollTop = timeline.scrollTop;
             this._scrollPos.viewportWidth = timeline.clientWidth;
             this._scrollPos.viewportHeight = timeline.clientHeight;
             this._scrollPos.totalHeight = timeline.scrollHeight;
             this._updateVisibleRange();
+            // The viewport width drives extraPaddingCols, which is the dateToPx
+            // ORIGIN for bars, arrows AND the grid. _scrollPos is non-reactive and
+            // starts at 0, so the first render uses a fallback width; once the real
+            // width is known (mount) or it changes (resize) we MUST force a full
+            // re-render so every element re-lays-out on the same origin together.
+            // Without this, only the parts that happen to re-render later (e.g. the
+            // arrows on the first drag) pick up the new origin, leaving the
+            // dependency lines offset from their bars by extraPaddingCols × cw.
+            // (Plain scroll keeps the same width, so this only fires on real
+            // width changes — onPatched compensates scrollLeft to avoid a jump.)
+            if (timeline.clientWidth !== prevWidth) {
+                this.render();
+            }
         };
 
         timeline.addEventListener("scroll", updateScroll, { passive: true });
