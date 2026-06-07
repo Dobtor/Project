@@ -1022,80 +1022,17 @@ class ProjectTaskNative(models.Model):
         """Push dependent tasks when date changes create overlap.
         Called from write() for non-gantt operations (e.g. list view edits).
 
-        Uses skip_cascade_push context to prevent infinite recursion:
-        pushed targets write with skip_cascade_push=True, but their own
-        successors are still checked via recursive call with visited set.
+        Thin wrapper over the single canonical cascade engine
+        ``_cascade_fs_push`` (relaxation BFS, all four link types, duration
+        preserved, converges in a single pass). Previously this was a second,
+        near-duplicate recursive implementation; the two were merged so
+        write()-triggered cascades (list-view edits) and gantt-triggered cascades
+        share ONE engine and ONE traversal — no duplicate or nested passes.
+
+        ``pred_map`` is forwarded so a caller that already prefetched the link
+        graph avoids rebuilding it.
         """
-        if visited is None:
-            visited = set()
-        if pred_map is None:
-            pred_map = self._build_outbound_pred_map()
-        Pred = self.env['project.task.predecessor']
-        tasks_to_cascade = self.env['project.task']
-
-        for task in self:
-            if task.id in visited:
-                continue
-            visited.add(task.id)
-
-            # Outbound predecessors where this task is the source (prefetched)
-            outbound = pred_map.get(task.id)
-            if not outbound:
-                continue
-
-            is_planning = self._is_planning_mode(task)
-
-            for pred in outbound:
-                target = pred.task_id
-                if not target or target.id in visited:
-                    continue
-                dep_type = pred.type
-
-                if is_planning:
-                    push_amount = self._calc_planning_push(
-                        task, target, dep_type)
-                    if push_amount is None or push_amount <= 0:
-                        continue
-                    # All types: shift target forward by push_amount
-                    if target.child_ids:
-                        target.action_move_with_descendants(push_amount)
-                    else:
-                        new_offset = (target.plan_offset or 0) + push_amount
-                        target.with_context(
-                            skip_date_snap=True,
-                            skip_cascade_push=True,
-                        ).write({'plan_offset': new_offset})
-                    tasks_to_cascade |= target
-                else:
-                    push_result = self._calc_scheduled_push(
-                        task, target, dep_type)
-                    if push_result is None:
-                        continue
-                    new_start, new_end = push_result
-                    if target.child_ids:
-                        tgt_start = target.summary_date_start or target.date_start
-                        if tgt_start and new_start:
-                            shift = (new_start - tgt_start).total_seconds() / 3600.0
-                            if shift > 0:
-                                target.action_move_with_descendants(shift)
-                    else:
-                        target.with_context(
-                            skip_date_snap=True,
-                            skip_cascade_push=True,
-                        ).write({
-                            'date_start': new_start,
-                            'date_end': new_end,
-                        })
-                    tasks_to_cascade |= target
-
-                # Propagate ancestors after push
-                if target.parent_id:
-                    target._update_ancestor_dates()
-
-        # Recursively cascade from pushed targets (reuse the prefetched map)
-        if tasks_to_cascade:
-            tasks_to_cascade._cascade_dependency_push(
-                visited=visited, pred_map=pred_map)
+        return self._cascade_fs_push(visited, pred_map=pred_map)
 
     def _get_ancestor_fs_min_start(self, task):
         """Get the strictest predecessor boundary for a task's start date,
@@ -1173,15 +1110,11 @@ class ProjectTaskNative(models.Model):
                     'date_end': effective_min + dur,
                 })
 
-    def action_move_with_descendants(self, shift_hours):
-        """Move this task and all descendants by shift_hours (float).
-        Preserves relative positions. Uses super().write() to avoid
-        recursive ancestor updates until the end."""
+    def _collect_descendants(self):
+        """Return all descendant tasks (children, recursively), excluding self.
+        Cycle-guarded via a visited set."""
         self.ensure_one()
-        self.check_access('write')
-        delta = timedelta(hours=shift_hours)
-        # Collect all descendants (with visited set to prevent cycles)
-        all_tasks = self.env['project.task']
+        descendants = self.env['project.task']
         visited = {self.id}
         stack = list(self.child_ids)
         while stack:
@@ -1189,8 +1122,18 @@ class ProjectTaskNative(models.Model):
             if task.id in visited:
                 continue
             visited.add(task.id)
-            all_tasks |= task
+            descendants |= task
             stack.extend(task.child_ids)
+        return descendants
+
+    def action_move_with_descendants(self, shift_hours):
+        """Move this task and all descendants by shift_hours (float).
+        Preserves relative positions. Uses super().write() to avoid
+        recursive ancestor updates until the end."""
+        self.ensure_one()
+        self.check_access('write')
+        delta = timedelta(hours=shift_hours)
+        all_tasks = self._collect_descendants()
         # Move descendants first (skip ancestor update via super)
         for task in all_tasks:
             vals = {}
@@ -1255,14 +1198,25 @@ class ProjectTaskNative(models.Model):
                 'constrain_date': t.constrain_date,
             }
 
-        # Step 1: Apply initial change
+        # Step 1: Apply initial change. Suppress write()'s own cascade — Step 2
+        # runs the single canonical cascade explicitly, so letting write()
+        # cascade here would walk the whole successor graph twice per gesture.
         if shift_hours is not None:
             self.action_move_with_descendants(shift_hours)
         elif vals:
-            self.write(vals)
+            self.with_context(skip_cascade_push=True).write(vals)
 
-        # Step 2: FS cascade from self
-        self._cascade_fs_push()
+        # Prefetch the link graph once and share it across every cascade below.
+        pred_map = self._build_outbound_pred_map()
+
+        # Step 2: cascade from every MOVED task. For a parent move (shift_hours)
+        # the descendants moved too, so seed them as well — otherwise a
+        # descendant's external FS successor would not be pushed. Spurious pushes
+        # are impossible (the engine only pushes on real overlap).
+        seed = self
+        if shift_hours is not None:
+            seed = self | self._collect_descendants()
+        seed._cascade_fs_push(pred_map=pred_map)
 
         # Step 3: Walk ancestor chain → push parent's FS successors
         current = self
@@ -1272,7 +1226,7 @@ class ProjectTaskNative(models.Model):
             if parent.id in ancestor_visited:
                 break
             ancestor_visited.add(parent.id)
-            parent._cascade_fs_push()
+            parent._cascade_fs_push(pred_map=pred_map)
             current = parent
 
         # Step 4: Compute diff + recalc lags
@@ -1353,10 +1307,13 @@ class ProjectTaskNative(models.Model):
                         skip_cascade_push=True,
                     ).write(vals)
 
-        # Step 2: Cascade FS dependencies from all moved tasks (shared visited set)
-        visited = set()
-        for task in self:
-            task._cascade_fs_push(visited)
+        # Prefetch the link graph once and share it across every cascade below.
+        pred_map = self._build_outbound_pred_map()
+
+        # Step 2: One combined relaxation seeded with ALL moved tasks (the engine
+        # seeds its queue from each record of ``self``), so cross-task overlaps
+        # converge together instead of via N independent passes.
+        self._cascade_fs_push(pred_map=pred_map)
 
         # Step 3: Walk ancestor chains → push parent's FS successors
         ancestor_visited = set()
@@ -1367,7 +1324,7 @@ class ProjectTaskNative(models.Model):
                 if parent.id in ancestor_visited:
                     break
                 ancestor_visited.add(parent.id)
-                parent._cascade_fs_push(visited)
+                parent._cascade_fs_push(pred_map=pred_map)
                 current = parent
 
         # Step 4: Compute diff + recalc lags
@@ -1397,33 +1354,62 @@ class ProjectTaskNative(models.Model):
 
         return {'tasks': task_diff, 'predecessors': pred_diff}
 
-    def _cascade_fs_push(self, visited=None):
-        """Push successors forward when overlap exists for all dependency types
-        (FS/SS/FF/SF). Iterative BFS.
+    def _cascade_fs_push(self, visited=None, pred_map=None):
+        """Push successors forward on overlap for all dependency types
+        (FS/SS/FF/SF), preserving each target's duration. Relaxation BFS.
 
         Dependency push rules (scheduled mode):
         - FS: source.end > target.start → push target.start to source.end
         - SS: source.start > target.start → push target.start to source.start
         - FF: source.end > target.end → push target.end to source.end (start follows)
         - SF: source.start > target.end → push target.end to source.start (start follows)
-        All preserve target's duration.
+
+        Relaxation: a target is re-enqueued *whenever it actually moves*, so the
+        traversal converges fully in a single pass even for multi-predecessor /
+        cross-level graphs (a node pushed again after it was first processed
+        re-propagates to its successors). This is what lets the pushes write with
+        ``skip_cascade_push=True`` — propagation is owned entirely by this queue,
+        with no nested re-entry through ``write()``.
+
+        Termination: pushes are monotonic-forward and the link graph is acyclic
+        (enforced by ``project.task.predecessor._check_circular_dependency``), so
+        the relaxation settles; a generous iteration cap is a backstop against a
+        data anomaly (e.g. a cycle that slipped through) rather than spinning.
+
+        :param visited: accepted for backward-compat; not used to skip relaxation
+        :param pred_map: prefetched outbound link graph (shared across a batch);
+                         built once here when not supplied.
         """
         from collections import deque
-        if visited is None:
-            visited = set()
-        stack = deque([self])
-        # Prefetch the static link graph once (avoids per-node N+1 search).
-        pred_map = self._build_outbound_pred_map()
+        # Seed with each record individually so a multi-record ``self`` (batch
+        # move) runs as one combined relaxation.
+        queue = deque(self)
+        if pred_map is None:
+            pred_map = self._build_outbound_pred_map()
         empty_preds = self.env['project.task.predecessor']
+        # Backstop: monotonic-forward relaxation on a DAG pushes each node at most
+        # O(V) times, so total relaxations are bounded by V·E. Derive both from
+        # the dependency graph itself — V = distinct tasks that appear as a link
+        # source or target (the only tasks that can ever be relaxed), E = edges —
+        # giving the tight theoretical bound: it never aborts a legitimate cascade
+        # and can only be reached by a cycle (excluded by
+        # project.task.predecessor._check_circular_dependency). A small constant
+        # margin keeps trivial graphs sane.
+        total_edges = sum(len(p) for p in pred_map.values())
+        node_ids = set(pred_map)
+        for preds in pred_map.values():
+            node_ids.update(preds.task_id.ids)
+        num_nodes = len(node_ids)
+        relax_count = 0
+        max_relax = num_nodes * total_edges + num_nodes + total_edges + 1000
 
-        while stack:
-            current = stack.popleft()
-            if current.id in visited:
-                continue
-            visited.add(current.id)
+        while queue:
+            current = queue.popleft()
 
             # All dependency types where current is the source (prefetched)
             all_preds = pred_map.get(current.id, empty_preds)
+            if not all_preds:
+                continue
 
             is_planning = self._is_planning_mode(current)
 
@@ -1432,28 +1418,24 @@ class ProjectTaskNative(models.Model):
                 if not target:
                     continue
                 dep_type = pred.type
+                moved = False
 
                 if is_planning:
                     push_amount = self._calc_planning_push(
                         current, target, dep_type)
                     if push_amount is None or push_amount <= 0:
                         continue
-                    if dep_type in ('FS', 'SS'):
-                        # Push target start forward
-                        if target.child_ids:
-                            target.action_move_with_descendants(push_amount)
-                        else:
-                            new_offset = (target.plan_offset or 0) + push_amount
-                            target.with_context(skip_date_snap=True).write(
-                                {'plan_offset': new_offset})
+                    # FS/SS push start, FF/SF push end — both shift the leaf's
+                    # plan_offset forward by push_amount (duration preserved).
+                    if target.child_ids:
+                        target.action_move_with_descendants(push_amount)
                     else:
-                        # FF/SF: push target end forward → start follows
-                        if target.child_ids:
-                            target.action_move_with_descendants(push_amount)
-                        else:
-                            new_offset = (target.plan_offset or 0) + push_amount
-                            target.with_context(skip_date_snap=True).write(
-                                {'plan_offset': new_offset})
+                        new_offset = (target.plan_offset or 0) + push_amount
+                        target.with_context(
+                            skip_date_snap=True,
+                            skip_cascade_push=True,
+                        ).write({'plan_offset': new_offset})
+                    moved = True
                 else:
                     push_result = self._calc_scheduled_push(
                         current, target, dep_type)
@@ -1466,18 +1448,33 @@ class ProjectTaskNative(models.Model):
                             shift = (new_start - tgt_start).total_seconds() / 3600.0
                             if shift > 0:
                                 target.action_move_with_descendants(shift)
+                                moved = True
                     else:
-                        target.with_context(skip_date_snap=True).write({
+                        target.with_context(
+                            skip_date_snap=True,
+                            skip_cascade_push=True,
+                        ).write({
                             'date_start': new_start,
                             'date_end': new_end,
                         })
+                        moved = True
 
-                # Propagate ancestors after push
+                if not moved:
+                    continue
+
+                # Propagate ancestors, then re-enqueue the moved target so its
+                # own successors relax against its new dates.
                 if target.parent_id:
                     target._update_ancestor_dates()
+                queue.append(target)
 
-                # Enqueue target for cascading its own successors
-                stack.append(target)
+                relax_count += 1
+                if relax_count > max_relax:
+                    _logger.warning(
+                        "Dependency cascade exceeded relaxation cap (%s) for "
+                        "project task(s) %s — possible dependency cycle; "
+                        "aborting cascade.", max_relax, self.ids)
+                    return
 
     @staticmethod
     def _is_planning_mode(task):

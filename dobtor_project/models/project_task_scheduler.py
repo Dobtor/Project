@@ -692,6 +692,24 @@ class ProjectTaskNativeScheduler(models.Model):
         return parent_date + diff
 
     def _scheduler_work_constrain(self, task_obj, vals, calendar_level, scheduling_type, t_params):
+        """Override a task's link-derived schedule (``vals``) with its date
+        constraint, per the precedence in auto_scheduling.md §4.3.
+
+        ``constrain_type`` is a single exclusive value per task, so there is no
+        multi-constraint conflict to arbitrate — the precedence is expressed
+        directly by which branch fires:
+
+          * MSO / MFO          → unconditional hard pin (start / end).
+          * SNET / SNLT /
+            FNET / FNLT        → pin only when the link-derived date *violates*
+                                 the boundary (otherwise the link date stands).
+          * ASAP / ALAP        → no constraint; the link-derived date is kept
+                                 (skipped by the guard below).
+
+        In every constrained case the constraint wins over the predecessor-link
+        date already in ``vals`` (which itself already won over plain ASAP/ALAP).
+        The branches are mutually exclusive (``elif``) to make that explicit.
+        """
         if scheduling_type == "forward":
             cp_date_start = "soon_date_start"
             cp_date_end = "soon_date_end"
@@ -707,30 +725,27 @@ class ProjectTaskNativeScheduler(models.Model):
         if constrain_type and constrain_type not in ["asap", "alap"] and constrain_date and vals:
             direction = date_type = None
 
-            if constrain_type == "fnet":
-                if vals[cp_date_end] < constrain_date:
-                    direction = "revers"
-                    date_type = "date_end"
-
-            if constrain_type == "fnlt":
-                if vals[cp_date_end] > constrain_date:
-                    direction = "revers"
-                    date_type = "date_end"
-
+            # Hard pins (unconditional) — highest precedence.
             if constrain_type == "mso":
                 direction = "normal"
                 date_type = "date_start"
-
-            if constrain_type == "mfo":
+            elif constrain_type == "mfo":
                 direction = "revers"
                 date_type = "date_end"
-
-            if constrain_type == "snet":
+            # Boundary constraints — pin only when the link date violates them.
+            elif constrain_type == "fnet":
+                if vals[cp_date_end] < constrain_date:
+                    direction = "revers"
+                    date_type = "date_end"
+            elif constrain_type == "fnlt":
+                if vals[cp_date_end] > constrain_date:
+                    direction = "revers"
+                    date_type = "date_end"
+            elif constrain_type == "snet":
                 if vals[cp_date_start] < constrain_date:
                     direction = "normal"
                     date_type = "date_start"
-
-            if constrain_type == "snlt":
+            elif constrain_type == "snlt":
                 if vals[cp_date_start] > constrain_date:
                     direction = "normal"
                     date_type = "date_start"
