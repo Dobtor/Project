@@ -87,35 +87,14 @@ export function useGanttBarDrag(params) {
             } else {
                 // Horizontal drag → date change mode
                 dragMode = "horizontal";
-                const record = params.getRecord(recordId);
-                // Compute leftward clamp from FS predecessor boundary
-                minLeftDeltaX = -Infinity;
-                if (record._isMilestoneRecord && params.getMinMilestoneDate) {
-                    // Milestone: clamp leftward to linked tasks' latest end date
-                    const minDate = params.getMinMilestoneDate(recordId);
-                    if (minDate) {
-                        const currentDate = record._dateStart;
-                        if (currentDate) {
-                            const cellWidth = params.getCellWidth();
-                            const scale = params.getScale ? params.getScale() : "day";
-                            const diffMs = currentDate.toMillis() - minDate.toMillis();
-                            const msPerCell = _scaleToMs(scale);
-                            const maxLeftCells = diffMs / msPerCell;
-                            minLeftDeltaX = -(maxLeftCells * cellWidth);
-                        }
-                    }
-                } else if (params.getMinStart) {
-                    const minStart = params.getMinStart(recordId);
-                    if (minStart) {
-                        const currentStart = (record._hasChildren && record._summaryDateStart) || record._dateStart;
-                        if (currentStart) {
-                            const cellWidth = params.getCellWidth();
-                            const scale = params.getScale ? params.getScale() : "day";
-                            const diffMs = currentStart.toMillis() - minStart.toMillis();
-                            const msPerCell = _scaleToMs(scale);
-                            const maxLeftCells = diffMs / msPerCell;
-                            minLeftDeltaX = -(maxLeftCells * cellWidth);
-                        }
+                // Leftward FS clamp. For a multi-selection moving as a rigid
+                // block, the binding constraint is the MOST restrictive (largest,
+                // i.e. closest to 0) clamp across every selected task.
+                minLeftDeltaX = _minLeftDeltaForRecord(recordId);
+                if (isMultiDrag) {
+                    for (const mb of multiDragBars) {
+                        const d = _minLeftDeltaForRecord(mb.recordId);
+                        if (d > minLeftDeltaX) minLeftDeltaX = d;
                     }
                 }
                 dragBar.classList.add("o_gantt_bar_dragging");
@@ -136,16 +115,16 @@ export function useGanttBarDrag(params) {
             } else {
                 dragBar.classList.remove("o_gantt_bar_at_boundary");
             }
-            dragBar.style.left = `${originalLeft + clampedDeltaX}px`;
-            // Item 10: Move all multi-selected bars visually
+            // Geometry is owned by OWL: onDragMove updates _dragState and
+            // getBarStyle re-renders every selected bar with the offset. No
+            // imperative style writes here, so bars and their arrows stay glued.
             if (isMultiDrag) {
                 for (const mb of multiDragBars) {
-                    mb.barEl.style.left = `${mb.originalLeft + clampedDeltaX}px`;
                     mb.barEl.classList.add("o_gantt_bar_dragging");
                 }
             }
             _updateHint(clampedDeltaX);
-            // Live arrow update during drag
+            // Live arrow + bar update during drag
             if (params.onDragMove) {
                 params.onDragMove(recordId, clampedDeltaX);
             }
@@ -263,15 +242,13 @@ export function useGanttBarDrag(params) {
                     params.onDragEnd(recordId, cellsDelta);
                 }
             } else {
-                // Snap back
-                dragBar.style.left = `${originalLeft}px`;
-                // Item 10: Snap back multi-drag bars
+                // Snap back: drop the live offset, OWL restores every bar.
                 if (isMultiDrag) {
                     for (const mb of multiDragBars) {
-                        mb.barEl.style.left = `${mb.originalLeft}px`;
                         mb.barEl.classList.remove("o_gantt_bar_dragging");
                     }
                 }
+                params.onGestureCancel?.();
             }
         } else if (dragMode === "vertical") {
             dragBar.classList.remove("o_gantt_bar_dragging_vertical");
@@ -287,6 +264,30 @@ export function useGanttBarDrag(params) {
     // -------------------------------------------------------------------------
     // Horizontal drag helpers (hint tooltip)
     // -------------------------------------------------------------------------
+
+    /**
+     * Leftward pixel clamp for one record from its FS predecessor (or, for a
+     * milestone, its linked tasks' latest end). Returns -Infinity when the
+     * record is unconstrained. Negative = how far left it may move.
+     */
+    function _minLeftDeltaForRecord(rid) {
+        const record = params.getRecord(rid);
+        if (!record) return -Infinity;
+        let minDate = null;
+        let currentRef = null;
+        if (record._isMilestoneRecord && params.getMinMilestoneDate) {
+            minDate = params.getMinMilestoneDate(rid);
+            currentRef = record._dateStart;
+        } else if (params.getMinStart) {
+            minDate = params.getMinStart(rid);
+            currentRef = (record._hasChildren && record._summaryDateStart) || record._dateStart;
+        }
+        if (!minDate || !currentRef) return -Infinity;
+        const cellWidth = params.getCellWidth();
+        const scale = params.getScale ? params.getScale() : "day";
+        const diffMs = currentRef.toMillis() - minDate.toMillis();
+        return -((diffMs / _scaleToMs(scale)) * cellWidth);
+    }
 
     function _showHint() {
         hintEl = document.createElement("div");

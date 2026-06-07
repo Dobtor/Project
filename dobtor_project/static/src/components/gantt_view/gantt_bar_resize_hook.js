@@ -45,34 +45,22 @@ export function useGanttBarResize(params) {
         const deltaX = ev.clientX - startX;
         const cellWidth = params.getCellWidth();
         if (!cellWidth) return;
-        const minWidth = 4; // minimum visible bar width in px
 
-        // Pixel-level resize (no grid snap) for minute-level precision
+        // Pixel-level resize (no grid snap) for minute-level precision.
+        // The bar geometry itself is owned by OWL (getBarStyle reads _dragState
+        // via onResizeMove); we only compute the reported delta and toggle the
+        // boundary class here — no imperative style writes, so the bar and its
+        // arrows can never disagree.
         let reportDelta = deltaX;
-        if (side === "left") {
-            const newLeft = originalLeft + deltaX;
-            const newWidth = originalWidth - deltaX;
-            if (newWidth >= minWidth) {
-                resizeBar.style.left = `${newLeft}px`;
-                resizeBar.style.width = `${newWidth}px`;
-            }
-        } else {
+        if (side === "right") {
             // Clamp right-side shrink to FF/SF min-end boundary
-            let clampedDelta = deltaX;
             const hitBoundary = minRightDeltaX > -Infinity && deltaX < minRightDeltaX;
             if (hitBoundary) {
-                clampedDelta = minRightDeltaX;
-            }
-            if (hitBoundary) {
+                reportDelta = minRightDeltaX;
                 resizeBar.classList.add("o_gantt_bar_at_boundary");
             } else {
                 resizeBar.classList.remove("o_gantt_bar_at_boundary");
             }
-            const newWidth = originalWidth + clampedDelta;
-            if (newWidth >= minWidth) {
-                resizeBar.style.width = `${newWidth}px`;
-            }
-            reportDelta = clampedDelta;
         }
 
         _updateHint(deltaX);
@@ -170,15 +158,18 @@ export function useGanttBarResize(params) {
         const shiftDur = cellsDeltaToDuration(cellsDelta, _scale);
 
         if (isConstraintMode && Math.abs(cellsDelta) > 0.01 && params.onConstraintSet) {
-            // Constraint mode: set constraint instead of modifying dates
+            // Constraint mode: set constraint instead of modifying dates.
+            // Guard the side-specific anchor date (left→start / right→end); a
+            // date-less task can't anchor a constraint, so cancel the gesture.
             const record = params.getRecord(recordId);
-            if (record) {
+            const anchorDate = record && (side === "left" ? record._dateStart : record._dateEnd);
+            if (anchorDate) {
                 const constrainType = side === "left" ? "snet" : "fnet";
-                const targetDate = side === "left"
-                    ? record._dateStart.plus(shiftDur)
-                    : record._dateEnd.plus(shiftDur);
+                const targetDate = anchorDate.plus(shiftDur);
                 // Odoo Datetime field expects UTC "yyyy-MM-dd HH:mm:ss" string format
                 params.onConstraintSet(recordId, constrainType, targetDate.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"));
+            } else {
+                params.onGestureCancel?.();
             }
         } else if (Math.abs(cellsDelta) > 0.01) {
             // Normal resize mode
@@ -196,17 +187,15 @@ export function useGanttBarResize(params) {
                 if (valid) {
                     params.onResizeEnd(recordId, side, cellsDelta);
                 } else {
-                    // Snap back
-                    resizeBar.style.left = `${originalLeft}px`;
-                    resizeBar.style.width = `${originalWidth}px`;
+                    // Snap back: drop the live offset, OWL restores the bar.
+                    params.onGestureCancel?.();
                 }
             } else {
                 params.onResizeEnd(recordId, side, cellsDelta);
             }
         } else {
-            // Snap back
-            resizeBar.style.left = `${originalLeft}px`;
-            resizeBar.style.width = `${originalWidth}px`;
+            // Snap back: drop the live offset, OWL restores the bar.
+            params.onGestureCancel?.();
         }
 
         _cleanup();

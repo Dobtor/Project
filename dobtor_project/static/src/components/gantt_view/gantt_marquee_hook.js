@@ -125,6 +125,7 @@ export function useGanttMarquee(params) {
         if (boundEl) boundEl.removeEventListener("pointerdown", onPointerDown);
         boundEl = null;
         document.removeEventListener("pointermove", onPointerMove);
+        document.removeEventListener("pointerup", onPointerUp);
         if (rectEl) {
             rectEl.remove();
             rectEl = null;

@@ -27,6 +27,11 @@ export class GanttArrows extends Component {
         flattenedRows: { type: Array, optional: true },
         visibleRowIds: { type: Set, optional: true },  // For virtual scrolling
         dateToPx: Function,
+        // Authoritative bar-edge geometry: (record) => {left, right} | null.
+        // When provided, task arrow endpoints use the bar's *visual* edges
+        // (clamp + fallback + live drag already baked in) instead of raw
+        // dateToPx, so they stay glued to the bar through resize/drag.
+        barGeom: { type: Function, optional: true },
         rowHeight: { type: Number, optional: true },
         barTopOffset: { type: Number, optional: true },
         barHeight: { type: Number, optional: true },
@@ -113,24 +118,36 @@ export class GanttArrows extends Component {
             const childIdx = rowIndexMap.get(pred.task_id);
             if (parentIdx === undefined || childIdx === undefined) continue;
 
-            // Use renderer's dateToPx for scale-aware coordinate mapping
-            let parentLeft = dateToPx(pStart);
-            let parentRight = pEnd ? dateToPx(pEnd) : parentLeft + 20;
-            let childLeft = dateToPx(cStart);
-            let childRight = cEnd ? dateToPx(cEnd) : childLeft + 20;
-
-            // Live drag/resize offset: shift the moved record's endpoints.
-            // deltaLeft/deltaRight let a left-resize move only the start edge and
-            // a right-resize only the end edge (drag sets them equal).
-            const drag = this.props.dragState;
-            if (drag && drag.ids) {
-                if (drag.ids[pred.parent_task_id]) {
-                    parentLeft += drag.deltaLeft;
-                    parentRight += drag.deltaRight;
-                }
-                if (drag.ids[pred.task_id]) {
-                    childLeft += drag.deltaLeft;
-                    childRight += drag.deltaRight;
+            // Bar-edge coordinates. Prefer the renderer's authoritative
+            // geometry (clamp + no-end fallback + live drag offset already
+            // applied) so endpoints stay glued to the bar's *visual* edge.
+            // Fall back to raw dateToPx (+ manual drag offset) only if the host
+            // didn't supply barGeom. NOTE: in this module the renderer ALWAYS
+            // passes barGeom, so this fallback is not exercised here — it is kept
+            // as a safety net for reusing GanttArrows without a host geometry fn.
+            const { barGeom } = this.props;
+            let parentLeft, parentRight, childLeft, childRight;
+            const pg = barGeom && barGeom(parentRecord);
+            const cg = barGeom && barGeom(childRecord);
+            if (pg && cg) {
+                parentLeft = pg.left; parentRight = pg.right;
+                childLeft = cg.left; childRight = cg.right;
+            } else {
+                parentLeft = dateToPx(pStart);
+                parentRight = pEnd ? dateToPx(pEnd) : parentLeft + 20;
+                childLeft = dateToPx(cStart);
+                childRight = cEnd ? dateToPx(cEnd) : childLeft + 20;
+                // Live drag/resize offset: shift the moved record's endpoints.
+                const drag = this.props.dragState;
+                if (drag && drag.ids) {
+                    if (drag.ids[pred.parent_task_id]) {
+                        parentLeft += drag.deltaLeft;
+                        parentRight += drag.deltaRight;
+                    }
+                    if (drag.ids[pred.task_id]) {
+                        childLeft += drag.deltaLeft;
+                        childRight += drag.deltaRight;
+                    }
                 }
             }
 
@@ -306,20 +323,30 @@ export class GanttArrows extends Component {
             const msIdx = rowIndexMap.get(link.milestone_id);
             if (taskIdx === undefined || msIdx === undefined) continue;
 
-            // Task: from right edge (FS style) — use dateToPx
-            let fromX = taskRecord._dateEnd
-                ? dateToPx(taskRecord._dateEnd)
-                : dateToPx(taskRecord._dateStart) + 20;
+            // Task: from right edge (FS style). Prefer the authoritative bar
+            // geometry so the connector starts at the bar's *visual* right edge
+            // (clamp + drag baked in); fall back to dateToPx otherwise.
+            const { barGeom } = this.props;
+            const tg = barGeom && barGeom(taskRecord);
+            let fromX;
+            if (tg) {
+                fromX = tg.right;
+            } else {
+                fromX = taskRecord._dateEnd
+                    ? dateToPx(taskRecord._dateEnd)
+                    : dateToPx(taskRecord._dateStart) + 20;
+            }
             const fromY = taskIdx * rowHeight + rowHeight / 2;
 
             // Milestone: diamond visual center = dateToPx(start) + half box
             let msCenterX = dateToPx(msRecord._dateStart) + halfBox;
 
-            // Live drag/resize offset (end edge for the task, center for the
-            // milestone) so the connector tracks the gesture.
+            // Live drag/resize offset for the gesture. The task side is already
+            // baked into barGeom (tg); only apply the manual offset on the
+            // dateToPx fallback. The milestone center always needs it.
             const drag = this.props.dragState;
             if (drag && drag.ids) {
-                if (drag.ids[link.task_id]) fromX += drag.deltaRight;
+                if (!tg && drag.ids[link.task_id]) fromX += drag.deltaRight;
                 if (drag.ids[link.milestone_id]) msCenterX += drag.deltaLeft;
             }
             const toY = msIdx * rowHeight + rowHeight / 2;

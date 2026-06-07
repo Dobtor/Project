@@ -1,7 +1,7 @@
 /** @odoo-module **/
 
 import { Component, useState, useRef, onMounted, onWillUnmount, onPatched, onWillPatch, markRaw, reactive } from "@odoo/owl";
-import { useOwnedDialogs } from "@web/core/utils/hooks";
+import { useOwnedDialogs, useService } from "@web/core/utils/hooks";
 import { usePopover } from "@web/core/popover/popover_hook";
 import { DateTimePickerPopover } from "@web/core/datetime/datetime_picker_popover";
 import { ConfirmationDialog } from "@web/core/confirmation_dialog/confirmation_dialog";
@@ -66,8 +66,21 @@ export class GanttRenderer extends Component {
         hideNonWorkingDays: { type: Boolean, optional: true },
     };
 
+    // Minimum visible bar width in px (clamp for sub-cell durations) and the
+    // fallback width for tasks without an end date. Shared by _computeBarGeometry
+    // so the rendered bar and the dependency arrows agree on the visual edges.
+    static MIN_BAR_W = 20;
+    static NO_END_BAR_W = 50;
+    // Minimum width for secondary mini-bars (ghost / load / intersection) that
+    // are not arrow targets and may legitimately be narrower than a task bar.
+    static MIN_MINIBAR_W = 4;
+
     setup() {
         this.displayDialog = useOwnedDialogs();
+        // Cache services once (adds the component-destroyed guard vs. reaching
+        // into this.env.services.* on every call).
+        this.notification = useService("notification");
+        this.actionService = useService("action");
         // Stable bound reference so child components (tooltip / context menu)
         // receive the same getRecord function every render (preserves their
         // props memoization) and use the model's O(1) lookup instead of an
@@ -76,6 +89,9 @@ export class GanttRenderer extends Component {
         // Stable reference so GanttArrows props keep their identity across
         // renders (otherwise a fresh arrow fn every render defeats memoization).
         this._boundDateToPx = (dt) => this._dateToPx(dt);
+        // Single source of truth for bar edges, shared with GanttArrows so arrow
+        // endpoints attach to the bar's *visual* edge (post clamp/fallback/drag).
+        this._boundBarGeom = (record) => this._computeBarGeometry(record);
 
         // Publish the canonical task colour palette (JS GANTT_COLORS, the single
         // source of truth) as CSS variables so the SCSS swatches (.o_gantt_color_N)
@@ -238,7 +254,7 @@ export class GanttRenderer extends Component {
             onBoundaryHit: (id) => {
                 const info = this.props.model.getBlockingFsInfo(id);
                 if (info) {
-                    this.env.services.notification.add(info.message, {
+                    this.notification.add(info.message, {
                         type: "warning",
                         sticky: false,
                     });
@@ -259,6 +275,8 @@ export class GanttRenderer extends Component {
                 this._dragState.deltaLeft = deltaX;
                 this._dragState.deltaRight = deltaX;
             },
+            // Non-committing exit (snap-back / cancel): drop the live offset.
+            onGestureCancel: () => this._clearGesture(),
             onDragEnd: async (recordId, cellsDelta) => {
               // Keep the live offset applied through the (awaited) server move so
               // the bar doesn't flash back to its pre-drag position; clear it in
@@ -359,7 +377,7 @@ export class GanttRenderer extends Component {
                     const dateStartField = this.props.archInfo.dateStart || "date_start";
                     const dateStopField = this.props.archInfo.dateStop || "date_end";
                     if (this._isFieldReadonly(dateStartField) || this._isFieldReadonly(dateStopField)) {
-                        this.env.services.notification.add(
+                        this.notification.add(
                             _t("無法修改：日期欄位為唯讀"),
                             { type: "warning" }
                         );
@@ -403,16 +421,22 @@ export class GanttRenderer extends Component {
                 return Object.keys(ids).filter(k => ids[k]).map(Number);
             },
             onMultiDragEnd: async (recordIds, cellsDelta) => {
-                const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
-                // Convert duration to hours
-                let shiftHours = (shiftDur.hours || 0) + (shiftDur.days || 0) * 24
-                    + (shiftDur.weeks || 0) * 168 + (shiftDur.months || 0) * 720;
-                // If hiding non-working days, use working-hour conversion
-                if (this._isHidingNonWorking()) {
-                    const scaleFactor = this._scaleFactor;
-                    shiftHours = shiftHours / scaleFactor;
+                // Keep the live offset through the awaited move, clear in finally
+                // so the bars settle on their new dates (not a stale _dragState).
+                try {
+                    const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
+                    // Convert duration to hours
+                    let shiftHours = (shiftDur.hours || 0) + (shiftDur.days || 0) * 24
+                        + (shiftDur.weeks || 0) * 168 + (shiftDur.months || 0) * 720;
+                    // If hiding non-working days, use working-hour conversion
+                    if (this._isHidingNonWorking()) {
+                        const scaleFactor = this._scaleFactor;
+                        shiftHours = shiftHours / scaleFactor;
+                    }
+                    await this.props.model.moveMultipleRecords(recordIds, shiftHours);
+                } finally {
+                    this._clearGesture();
                 }
-                await this.props.model.moveMultipleRecords(recordIds, shiftHours);
             },
             getFlattenedRows: () => this.flattenedRows,
             getListEl: () => this.listRowsRef.el,
@@ -440,6 +464,9 @@ export class GanttRenderer extends Component {
                 this._dragState.deltaLeft = side === "left" ? delta : 0;
                 this._dragState.deltaRight = side === "right" ? delta : 0;
             },
+            // Non-committing exit (snap-back / cancel): drop the live offset so
+            // OWL re-renders the bar (and its arrows) back to the record dates.
+            onGestureCancel: () => this._clearGesture(),
             onResizeEnd: async (recordId, side, cellsDelta) => {
               // Keep the live offset through the awaited server resize, clear in
               // finally so the bar doesn't flash back to its pre-resize size.
@@ -523,7 +550,7 @@ export class GanttRenderer extends Component {
                     const dateStopField = this.props.archInfo.dateStop || "date_end";
                     const checkField = side === "left" ? dateStartField : dateStopField;
                     if (this._isFieldReadonly(checkField)) {
-                        this.env.services.notification.add(
+                        this.notification.add(
                             _t("無法修改：日期欄位為唯讀"),
                             { type: "warning" }
                         );
@@ -568,13 +595,20 @@ export class GanttRenderer extends Component {
                 return this._computePredLagPreview(recId, cellsDelta, resizeSide === "left" ? "incoming" : "outgoing");
             },
             onConstraintSet: async (recordId, constrainType, constrainDate) => {
-                const constrainTypeField = this.props.archInfo.constrainType || "constrain_type";
-                const constrainDateField = this.props.archInfo.constrainDate || "constrain_date";
-                await this.props.model.updateRecord(recordId, {
-                    [constrainTypeField]: constrainType,
-                    [constrainDateField]: constrainDate,
-                });
-                if (this.props.onReload) await this.props.onReload();
+                // Constraint mode doesn't move the bar — drop the live offset so
+                // the bar snaps back to its date-derived position (and isn't left
+                // shifted by a stale _dragState after reload).
+                try {
+                    const constrainTypeField = this.props.archInfo.constrainType || "constrain_type";
+                    const constrainDateField = this.props.archInfo.constrainDate || "constrain_date";
+                    await this.props.model.updateRecord(recordId, {
+                        [constrainTypeField]: constrainType,
+                        [constrainDateField]: constrainDate,
+                    });
+                    if (this.props.onReload) await this.props.onReload();
+                } finally {
+                    this._clearGesture();
+                }
             },
         });
 
@@ -591,7 +625,7 @@ export class GanttRenderer extends Component {
                 const deadlineField = this.props.archInfo.dateDeadline;
                 if (!deadlineField) return;
                 if (this._isFieldReadonly(deadlineField)) {
-                    this.env.services.notification.add(
+                    this.notification.add(
                         _t("無法修改：截止日欄位為唯讀"),
                         { type: "warning" }
                     );
@@ -666,7 +700,7 @@ export class GanttRenderer extends Component {
                 const progressField = this.props.archInfo.progress;
                 if (!progressField) return;
                 if (this._isFieldReadonly(progressField)) {
-                    this.env.services.notification.add(
+                    this.notification.add(
                         _t("無法修改：進度欄位為唯讀"),
                         { type: "warning" }
                     );
@@ -1590,6 +1624,9 @@ export class GanttRenderer extends Component {
             flattenedRows: this.flattenedRows,
             visibleRowIds: visibleRowIds.size > 0 ? visibleRowIds : undefined,
             dateToPx: this._boundDateToPx,
+            // Authoritative bar-edge geometry (clamp + fallback + live drag baked
+            // in). Arrows use this for task endpoints so they never detach.
+            barGeom: this._boundBarGeom,
             rowHeight: 44,
             selectedRowId: this.state.selectedRowId,
             criticalField: this.props.archInfo.criticalPath || "",
@@ -1871,7 +1908,7 @@ export class GanttRenderer extends Component {
                 return;
             }
             // Fallback: open milestone form
-            this.env.services.action.doAction({
+            this.actionService.doAction({
                 type: "ir.actions.act_window",
                 res_model: "project.milestone",
                 res_id: Math.abs(record.id),
@@ -2340,10 +2377,10 @@ export class GanttRenderer extends Component {
         if (!data?.timeStart || !data.timeStart.isValid || !ghostBar.dateStart) return "display: none;";
 
         const left = this._dateToPx(ghostBar.dateStart);
-        let width = 20;
+        let width = GanttRenderer.MIN_BAR_W;
         if (ghostBar.dateEnd) {
             const right = this._dateToPx(ghostBar.dateEnd);
-            width = Math.max(right - left, 4);
+            width = Math.max(right - left, GanttRenderer.MIN_MINIBAR_W);
         }
         return `left: ${left}px; width: ${width}px;`;
     }
@@ -2636,7 +2673,7 @@ export class GanttRenderer extends Component {
                 await model.toggleMilestoneReached(recordId);
                 break;
             case "open_milestone":
-                this.env.services.action.doAction({
+                this.actionService.doAction({
                     type: "ir.actions.act_window",
                     res_model: "project.milestone",
                     res_id: Math.abs(recordId),
@@ -2746,7 +2783,7 @@ export class GanttRenderer extends Component {
             await this.props.model.orm.write("project.task", [record.id], { state: item.value });
             await this.props.onReload();
         } catch (error) {
-            this.env.services.notification.add(
+            this.notification.add(
                 _t("狀態更新失敗"),
                 { type: "danger" },
             );
@@ -2790,27 +2827,43 @@ export class GanttRenderer extends Component {
         this._dragState.deltaRight = 0;
     }
 
-    getBarStyle(record) {
+    /**
+     * Single source of truth for a task bar's horizontal geometry.
+     *
+     * Returns the bar's *visual* edges in timeline pixels — already including:
+     *   - summary dates for parent tasks,
+     *   - the live drag/resize offset (_dragState),
+     *   - the no-end fallback width,
+     *   - the minimum-visible-width clamp (MIN_BAR_W).
+     *
+     * BOTH getBarStyle() (the rendered bar) and GanttArrows (dependency arrow
+     * endpoints) must derive their X coordinates from this method so that an
+     * arrow always attaches to the bar's real visual edge. Computing arrow
+     * endpoints independently from raw dateToPx() makes them drift from the bar
+     * whenever the clamp/fallback kicks in (e.g. a short task on a coarse scale,
+     * or a bar resized down to a sub-cell duration) — which is the root cause of
+     * the "resize → arrow detaches" bug.
+     *
+     * @param {Object} record
+     * @returns {{left:number, right:number}|null} null when the bar is not drawable
+     */
+    _computeBarGeometry(record) {
+        if (!record) return null;
         const data = this.props.model.data;
-        if (!data?.timeStart || !data.timeStart.isValid) {
-            return "display: none;";
-        }
+        if (!data?.timeStart || !data.timeStart.isValid) return null;
 
         // Use summary dates for parent tasks if available
         let dateStart = record._dateStart;
         let dateEnd = record._dateEnd;
-
         if (record._hasChildren) {
             dateStart = record._summaryDateStart || dateStart;
             dateEnd = record._summaryDateEnd || dateEnd;
         }
 
-        if (!this._isValidDt(dateStart)) {
-            return "display: none;";
-        }
+        if (!this._isValidDt(dateStart)) return null;
 
         let left = this._dateToPx(dateStart);
-        let right = dateEnd ? this._dateToPx(dateEnd) : left + 50;
+        let right = dateEnd ? this._dateToPx(dateEnd) : left + GanttRenderer.NO_END_BAR_W;
 
         // Apply the live drag/resize offset so a re-render mid-gesture keeps the
         // bar exactly where the pointer put it (and aligned with its arrows).
@@ -2820,8 +2873,16 @@ export class GanttRenderer extends Component {
             right += drag.deltaRight;
         }
 
-        const width = Math.max(right - left, 20);
-        return `left: ${left}px; width: ${width}px;`;
+        // Clamp to a minimum visible width — and expose the *clamped* right edge
+        // so arrows attach to what the user actually sees.
+        const width = Math.max(right - left, GanttRenderer.MIN_BAR_W);
+        return { left, right: left + width };
+    }
+
+    getBarStyle(record) {
+        const geom = this._computeBarGeometry(record);
+        if (!geom) return "display: none;";
+        return `left: ${geom.left}px; width: ${geom.right - geom.left}px;`;
     }
 
     getBarClass(record) {
@@ -3496,10 +3557,10 @@ export class GanttRenderer extends Component {
         if (!loadBar.dateStart) return "display: none;";
 
         const left = this._dateToPx(loadBar.dateStart);
-        let width = 20;
+        let width = GanttRenderer.MIN_BAR_W;
         if (loadBar.dateEnd) {
             const right = this._dateToPx(loadBar.dateEnd);
-            width = Math.max(right - left, 4);
+            width = Math.max(right - left, GanttRenderer.MIN_MINIBAR_W);
         }
 
         let bg = "";
@@ -3640,8 +3701,8 @@ export class GanttRenderer extends Component {
         if (!minDate) return "display: none;";
 
         const left = this._dateToPx(minDate);
-        const right = maxDate ? this._dateToPx(maxDate) : left + 50;
-        const width = Math.max(right - left, 20);
+        const right = maxDate ? this._dateToPx(maxDate) : left + GanttRenderer.NO_END_BAR_W;
+        const width = Math.max(right - left, GanttRenderer.MIN_BAR_W);
         return `left: ${left}px; width: ${width}px;`;
     }
 
@@ -3661,7 +3722,7 @@ export class GanttRenderer extends Component {
         return sorted.map(r => {
             const left = this._dateToPx(r._dateStart);
             const right = this._dateToPx(r._dateEnd);
-            const width = Math.max(right - left, 4);
+            const width = Math.max(right - left, GanttRenderer.MIN_MINIBAR_W);
 
             // Alternating top offset for overlaps
             let top = 2;
