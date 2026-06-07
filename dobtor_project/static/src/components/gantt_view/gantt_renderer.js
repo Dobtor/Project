@@ -774,6 +774,7 @@ export class GanttRenderer extends Component {
             // could pick up a freshly-rebuilt index while the bars kept positions
             // from a stale one, drifting the dependency lines off the bars.
             this._dateToPxCache = null;
+            this._barVisualOffsets = null;
             void this.timelineColumns;
         });
 
@@ -2904,7 +2905,7 @@ export class GanttRenderer extends Component {
      * @param {Object} record
      * @returns {{left:number, right:number}|null} null when the bar is not drawable
      */
-    _computeBarGeometry(record) {
+    _baseBarGeometry(record) {
         if (!record) return null;
         const data = this.props.model.data;
         if (!data?.timeStart || !data.timeStart.isValid) return null;
@@ -2934,6 +2935,88 @@ export class GanttRenderer extends Component {
         // so arrows attach to what the user actually sees.
         const width = Math.max(right - left, GanttRenderer.MIN_BAR_W);
         return { left, right: left + width };
+    }
+
+    /**
+     * Per-render map: recordId → extra pixels to nudge a bar RIGHT (visual only,
+     * dates unchanged) so FS dependency lines never have to fold leftward before
+     * dropping/rising vertically.
+     *
+     * When short tasks are clamped to MIN_BAR_W and chained by FS, a successor's
+     * start (= predecessor's end) can fall LEFT of the predecessor's widened
+     * right edge, which forces the connector to backfold left before turning
+     * vertical (ugly). We shift such a successor right just enough that its left
+     * edge meets the predecessor's right edge, so the existing line geometry
+     * produces a clean vertical drop landing on the offset point (childLeft + D).
+     *
+     * The nudge cascades: a nudged bar's right edge is used for its own FS
+     * successors. We evaluate records left-to-right by base position so a
+     * predecessor's final offset is known before its successors. This is purely
+     * cosmetic — the bar may sit slightly off its true date column, by design.
+     */
+    _computeBarVisualOffsets() {
+        if (this._barVisualOffsets) return this._barVisualOffsets;
+        const offsets = {};
+        const data = this.props.model.data;
+        const preds = data?.predecessors || [];
+        const records = data?.records || [];
+        if (!preds.length || !records.length) {
+            this._barVisualOffsets = offsets;
+            return offsets;
+        }
+        const recMap = new Map();
+        for (const r of records) recMap.set(r.id, r);
+        // incoming FS links: targetId → [sourceId, ...]
+        const incoming = new Map();
+        for (const p of preds) {
+            if ((p.type || "FS").toUpperCase() !== "FS") continue;
+            if (!recMap.has(p.parent_task_id) || !recMap.has(p.task_id)) continue;
+            if (!incoming.has(p.task_id)) incoming.set(p.task_id, []);
+            incoming.get(p.task_id).push(p.parent_task_id);
+        }
+        if (!incoming.size) {
+            this._barVisualOffsets = offsets;
+            return offsets;
+        }
+        const baseCache = new Map();
+        const baseOf = (id) => {
+            if (!baseCache.has(id)) baseCache.set(id, this._baseBarGeometry(recMap.get(id)));
+            return baseCache.get(id);
+        };
+        const ids = [...recMap.keys()].filter((id) => baseOf(id));
+        ids.sort((a, b) => baseOf(a).left - baseOf(b).left);
+        for (const id of ids) {
+            const srcs = incoming.get(id);
+            if (!srcs) continue;
+            const g = baseOf(id);
+            let off = 0;
+            for (const srcId of srcs) {
+                const sg = baseOf(srcId);
+                if (!sg) continue;
+                // predecessor's FINAL (possibly already-nudged) right edge
+                const srcRight = sg.right + (offsets[srcId] || 0);
+                off = Math.max(off, srcRight - g.left);
+            }
+            if (off > 0.5) offsets[id] = off;
+        }
+        this._barVisualOffsets = offsets;
+        return offsets;
+    }
+
+    /**
+     * Single source of truth for a task bar's *visual* horizontal geometry,
+     * consumed by BOTH getBarStyle() and GanttArrows so a dependency line always
+     * attaches to the bar's real on-screen edge. Adds the FS anti-backfold nudge
+     * (see _computeBarVisualOffsets) on top of the base geometry.
+     *
+     * @param {Object} record
+     * @returns {{left:number, right:number}|null} null when the bar is not drawable
+     */
+    _computeBarGeometry(record) {
+        const g = this._baseBarGeometry(record);
+        if (!g) return null;
+        const off = record ? (this._computeBarVisualOffsets()[record.id] || 0) : 0;
+        return off ? { left: g.left + off, right: g.right + off } : g;
     }
 
     getBarStyle(record) {
