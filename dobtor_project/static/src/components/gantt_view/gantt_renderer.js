@@ -765,6 +765,16 @@ export class GanttRenderer extends Component {
         onWillRender(() => {
             this._prevRenderedExtraPad = this._renderedExtraPad;
             this._renderedExtraPad = this.extraPaddingCols;
+            // Start every render from a clean dateToPx cache, and eagerly rebuild
+            // the column layout (which also rebuilds _workingDayIndex /
+            // _workingHourIndex / _coarseColumns that _dateToPx maps through in
+            // hide-non-working-days mode). Doing this BEFORE the template runs
+            // guarantees bars, the GanttArrows child and the grid all read the
+            // SAME, current index — otherwise, after a layout change, the arrows
+            // could pick up a freshly-rebuilt index while the bars kept positions
+            // from a stale one, drifting the dependency lines off the bars.
+            this._dateToPxCache = null;
+            void this.timelineColumns;
         });
 
         onWillPatch(() => {
