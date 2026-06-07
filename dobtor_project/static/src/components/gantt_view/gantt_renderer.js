@@ -1,6 +1,6 @@
 /** @odoo-module **/
 
-import { Component, useState, useRef, onMounted, onWillUnmount, onPatched, onWillPatch, markRaw, reactive } from "@odoo/owl";
+import { Component, useState, useRef, onMounted, onWillUnmount, onPatched, onWillPatch, onWillRender, markRaw, reactive } from "@odoo/owl";
 import { useOwnedDialogs, useService } from "@web/core/utils/hooks";
 import { usePopover } from "@web/core/popover/popover_hook";
 import { DateTimePickerPopover } from "@web/core/datetime/datetime_picker_popover";
@@ -746,10 +746,25 @@ export class GanttRenderer extends Component {
 
         this._lastPanelCount = 0;
 
+        // Track the timeline left-padding (in columns) actually used by each
+        // render. extraPaddingCols depends on the measured viewport width, which
+        // is 0 on the very first render (→ fallback) and only becomes real after
+        // mount. When it later changes, the dateToPx origin (_extendedTimeStart,
+        // used by BOTH bars/arrows and the grid) shifts — without this guard the
+        // whole timeline lurches sideways on the first drag. We capture the value
+        // per render and compensate scrollLeft in onPatched so the view stays put.
+        this._renderedExtraPad = null;
+        this._prevRenderedExtraPad = null;
+
         onMounted(() => {
             this._syncScroll();
             this._initScrollTracking();
             document.addEventListener("keydown", this._onRendererKeyDown);
+        });
+
+        onWillRender(() => {
+            this._prevRenderedExtraPad = this._renderedExtraPad;
+            this._renderedExtraPad = this.extraPaddingCols;
         });
 
         onWillPatch(() => {
@@ -761,6 +776,24 @@ export class GanttRenderer extends Component {
         });
 
         onPatched(() => {
+            // Keep the view visually stable when the timeline left-padding
+            // changes (e.g. the first re-render after mount, once the real
+            // viewport width is known, or on resize). The padding shifts the
+            // dateToPx origin for every bar/arrow/column by the same amount, so
+            // we counter it with an equal scrollLeft adjustment — otherwise the
+            // whole chart jumps sideways (most visibly on the first drag).
+            if (this._prevRenderedExtraPad != null
+                && this._renderedExtraPad !== this._prevRenderedExtraPad) {
+                const tl = this.timelineRef.el;
+                const cw = this.cellWidth;
+                if (tl && cw > 0) {
+                    const deltaCols = this._renderedExtraPad - this._prevRenderedExtraPad;
+                    tl.scrollLeft += deltaCols * cw;
+                }
+                // Avoid re-triggering on the next, unrelated patch.
+                this._prevRenderedExtraPad = this._renderedExtraPad;
+            }
+
             // Re-init scroll sync + tracking when panels are toggled
             const panels = [this.timelineRef.el, this.listRowsRef.el, this.durationRowsRef?.el].filter(Boolean);
             if (panels.length !== this._lastPanelCount) {
