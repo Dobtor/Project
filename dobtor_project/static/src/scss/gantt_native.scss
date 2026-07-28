@@ -1083,6 +1083,11 @@
     top: 0;
     bottom: 0;
     width: 8px;
+    // Never let the two handles eat the whole bar: dragging a bar means
+    // grabbing it BETWEEN the handles, so on a short bar they have to give way
+    // or the task becomes resize-only. At a third each, a bar clamped to
+    // MIN_BAR_W still leaves a grab zone the same size as it had at 20px.
+    max-width: 33%;
     cursor: col-resize;
     z-index: 2;
     opacity: 0;

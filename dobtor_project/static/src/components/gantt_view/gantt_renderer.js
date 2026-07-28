@@ -69,7 +69,17 @@ export class GanttRenderer extends Component {
     // Minimum visible bar width in px (clamp for sub-cell durations) and the
     // fallback width for tasks without an end date. Shared by _computeBarGeometry
     // so the rendered bar and the dependency arrows agree on the visual edges.
-    static MIN_BAR_W = 20;
+    // Minimum painted width for a task bar.
+    //
+    // Every pixel a short bar is widened by is a pixel its right edge overshoots
+    // the task's real end — and that edge is where its FS successor's connector
+    // has to leave from. At 20px a 4–5 hour task on the day scale (6.7–8.3px of
+    // real width) overshot its successor's start by ~12px, which left the
+    // connector no forward room at all and collapsed the 45° exit into a plain
+    // vertical (6 of this project's 28 links). 12px is the largest value that
+    // keeps every link's chamfer drawable; the resize handles stay usable via
+    // their max-width rule, which never lets them eat the whole bar.
+    static MIN_BAR_W = 12;
     static NO_END_BAR_W = 50;
     // Minimum width for secondary mini-bars (ghost / load / intersection) that
     // are not arrow targets and may legitimately be narrower than a task bar.

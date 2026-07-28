@@ -33,6 +33,9 @@ import { humanizeHours } from "./gantt_utils";
 export class GanttArrows extends Component {
     static template = "dobtor_project.GanttArrows";
 
+    /** Upper bound for the chamfer distance (see _buildPath). */
+    static MAX_CHAMFER = 24;
+
     static props = {
         predecessors: { type: Array, optional: true },
         milestoneLinks: { type: Array, optional: true },
@@ -462,9 +465,29 @@ export class GanttArrows extends Component {
 
 
         const vertDist = Math.abs(toY - fromY);
-        const D = Math.min(chamferD, vertDist * 0.3); // clamp for very close rows
         const vertDir = toY > fromY ? 1 : -1; // 1=down, -1=up
         const EPS = 0.5;
+
+        // D is the chamfer distance, and it sets TWO things at once: how far
+        // inward from the target's edge the arrowhead lands (the deliberate
+        // endpoint offset), and — because the 45° leg can never be longer than
+        // the gap it has to cross — how long that leg is.
+        //
+        // A fixed 7px reads well between neighbouring rows, where it is nearly
+        // half of the visible drop. Over a long drop it does not: on this
+        // project 食品供應鏈 ERP → Line整合 spans 23 rows (1012px), and 7px of
+        // diagonal on top of that is 0.7% of the line — the exit simply is not
+        // there to see. So D grows with the drop, bounded so it stays correct:
+        //   * vertDist * 0.3 — never overshoot a near-adjacent row's own drop
+        //   * targetW * 0.4  — the arrowhead must land INSIDE the target bar
+        //   * MAX_CHAMFER    — past this it stops reading as a corner
+        const targetW = Math.max(0, targetRight - targetLeft);
+        const D = Math.min(
+            Math.max(chamferD, vertDist * 0.05),
+            vertDist * 0.3,
+            targetW * 0.4,
+            GanttArrows.MAX_CHAMFER,
+        );
 
         // Exit direction: FS/FF exit right, SS/SF exit left
         const exitRight = (type === "FS" || type === "FF");
