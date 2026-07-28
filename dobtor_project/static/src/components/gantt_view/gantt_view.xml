@@ -600,7 +600,8 @@
                                 <div t-att-class="getBarClass(row)"
                                      t-att-style="cachedBarStyle + getBarCustomStyle(row)"
                                      t-att-data-record-id="row.id"
-                                     t-on-click.stop="(ev) => this.onBarClick(row, ev)">
+                                     t-on-click.stop="(ev) => this.onBarClick(row, ev)"
+                                     t-on-dblclick.stop="(ev) => this.onBarDblClick(row, ev)">
                                     <t t-if="!row._hasChildren">
                                         <!-- Progress bar fill + drag handle -->
                                         <div class="o_gantt_bar_progress"

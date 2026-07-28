@@ -3455,6 +3455,20 @@ export class GanttRenderer extends Component {
         }
     }
 
+    /**
+     * Double-clicking a task bar opens the inspector for it — and closes it
+     * again when that same task's inspector is already open (the controller's
+     * onInspectorToggle owns that toggle).
+     */
+    onBarDblClick(record, ev) {
+        if (record._isGroup || !this.props.onInspectorOpen) return;
+        ev.stopPropagation();
+        // A double click also fires the two clicks that selected the row; make
+        // sure the inspector shows the bar that was actually double-clicked.
+        this.state.selectedRowId = record.id;
+        this.props.onInspectorOpen(record.id);
+    }
+
     onConstraintEnter(record, ev) {
         const el = ev.currentTarget;
         const rect = el.getBoundingClientRect();
