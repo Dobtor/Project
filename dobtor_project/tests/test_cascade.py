@@ -413,3 +413,40 @@ class TestWorkHoursAreTheSchedule(TransactionCase):
         self.assertEqual(p.plan_duration, before)
         self.assertEqual(p.date_start, c.date_start)
         self.assertEqual(p.date_end, c.date_end)
+
+    def test_compact_left_separates_a_collapsed_chain(self):
+        """壓縮向左 places each FS successor AT its predecessor's end.
+
+        Regression: the compaction step only ever pulled tasks LEFT, so a chain
+        whose members had all been snapped onto the same working instant (e.g.
+        several tasks sitting in the same Friday-evening / weekend gap) stayed
+        collapsed on that one point and no amount of compacting separated it.
+        """
+        from odoo.exceptions import UserError  # noqa: F401 (import parity)
+        a = self._leaf("A", self.MON, 4.0)
+        b = self._leaf("B", self.MON, 4.0)
+        c = self._leaf("C", self.MON, 4.0)
+        for src, tgt in ((a, b), (b, c)):
+            self.Pred.create({
+                "parent_task_id": src.id, "task_id": tgt.id,
+                "type": "FS", "lag_hours": 0.0,
+            })
+        # Force the collapsed state the bug produced: all three on one instant.
+        for t in (a, b, c):
+            t.with_context(skip_date_snap=True, skip_cascade_push=True).write({
+                "date_start": self.MON,
+                "date_end": datetime(2026, 3, 2, 12, 0),
+            })
+
+        self.env["project.task"].action_compact_left(self.project.id)
+
+        # Monday 08:00-12:00 → 13:00-17:00 → Tuesday 08:00-12:00.
+        self.assertEqual((a.date_start, a.date_end),
+                         (datetime(2026, 3, 2, 8, 0), datetime(2026, 3, 2, 12, 0)))
+        self.assertEqual((b.date_start, b.date_end),
+                         (datetime(2026, 3, 2, 13, 0), datetime(2026, 3, 2, 17, 0)))
+        self.assertEqual((c.date_start, c.date_end),
+                         (datetime(2026, 3, 3, 8, 0), datetime(2026, 3, 3, 12, 0)))
+        for t in (a, b, c):
+            self.assertAlmostEqual(t.plan_duration, 4.0, places=2)
+            self.assertAlmostEqual(t.working_duration, 4.0, places=2)

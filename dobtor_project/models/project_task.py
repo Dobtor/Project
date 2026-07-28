@@ -2121,7 +2121,7 @@ class ProjectTaskNative(models.Model):
                         if pt_end > max_pred_end:
                             max_pred_end = pt_end
                 current_start = task._plan_effective_start()
-                if current_start > max_pred_end + 0.01:
+                if abs(current_start - max_pred_end) > 0.01:
                     shift = current_start - max_pred_end
                     if task.child_ids:
                         task.action_move_with_descendants(-shift)
@@ -2157,11 +2157,20 @@ class ProjectTaskNative(models.Model):
                         min_start = cd - dur
                         if min_start > target_start:
                             target_start = min_start
+                # Early Start means the successor sits AT its latest
+                # predecessor's end — pull it left when there is a gap, push it
+                # right when it overlaps. The old guard only ever pulled left,
+                # so a chain that was already overlapping stayed overlapping and
+                # compacting could not repair it. That is reachable in one
+                # click: step 3b re-snaps moved leaves into working time, and
+                # several leaves sitting in the SAME non-working gap (Friday
+                # evening, the weekend) all snap forward onto the same Monday
+                # morning instant, collapsing the chain onto one point.
                 current_start = task.summary_date_start if task.child_ids else task.date_start
-                if not current_start or current_start <= target_start:
+                if not current_start:
                     continue
                 shift_hours = (current_start - target_start).total_seconds() / 3600.0
-                if shift_hours > 0.01:
+                if abs(shift_hours) > 0.01:
                     if task.child_ids:
                         task.action_move_with_descendants(-shift_hours)
                     else:
