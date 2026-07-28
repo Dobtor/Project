@@ -19,13 +19,16 @@ import { humanizeHours } from "./gantt_utils";
  *   Overlap (target's connection point at or behind the source's):
  *     M targetX, source bar edge → vertical ↓/↑
  *
- * INVARIANT — no backfold. Along the exit direction the path's X only ever
- * advances. The chamfer leg is clamped to the distance actually available
- * instead of always being drawn at full length D; drawing it full length is
- * what forced the following "horizontal" segment to run backwards whenever the
- * target sat closer than D (e.g. a chain compacted flush by 壓縮向左, where the
- * MIN_BAR_W clamp pushes a short predecessor's right edge past its successor's
- * left edge).
+ * INVARIANT 1 — the corner is constant. The leg's horizontal run and the
+ * arrowhead's inset from the target edge are the same distance D, identical on
+ * every connector. When the source's bar reaches past the target's connection
+ * edge (a flush chain whose short predecessor was widened by the min-width
+ * clamp), the vertical line slides further INTO the target to make room, so the
+ * leg keeps its size; the leg shrinks only once the inset hits its own bound
+ * (half the target bar, or MAX_INSET), and then it shrinks proportionally.
+ *
+ * INVARIANT 2 — no backfold. Along the exit direction the path's X only ever
+ * advances; the leg is clamped to the distance actually available.
  *
  * Position calculation uses the renderer's dateToPx() callback to ensure
  * arrow endpoints always match bar positions across all scale levels.
@@ -33,8 +36,9 @@ import { humanizeHours } from "./gantt_utils";
 export class GanttArrows extends Component {
     static template = "dobtor_project.GanttArrows";
 
-    /** Upper bound for the chamfer distance (see _buildPath). */
-    static MAX_CHAMFER = 24;
+    /** How far the vertical line may be pushed INTO the target bar to keep the
+     *  chamfer at its constant size (see _buildPath). */
+    static MAX_INSET = 24;
 
     static props = {
         predecessors: { type: Array, optional: true },
@@ -468,26 +472,11 @@ export class GanttArrows extends Component {
         const vertDir = toY > fromY ? 1 : -1; // 1=down, -1=up
         const EPS = 0.5;
 
-        // D is the chamfer distance, and it sets TWO things at once: how far
-        // inward from the target's edge the arrowhead lands (the deliberate
-        // endpoint offset), and — because the 45° leg can never be longer than
-        // the gap it has to cross — how long that leg is.
-        //
-        // A fixed 7px reads well between neighbouring rows, where it is nearly
-        // half of the visible drop. Over a long drop it does not: on this
-        // project 食品供應鏈 ERP → Line整合 spans 23 rows (1012px), and 7px of
-        // diagonal on top of that is 0.7% of the line — the exit simply is not
-        // there to see. So D grows with the drop, bounded so it stays correct:
-        //   * vertDist * 0.3 — never overshoot a near-adjacent row's own drop
-        //   * targetW * 0.4  — the arrowhead must land INSIDE the target bar
-        //   * MAX_CHAMFER    — past this it stops reading as a corner
-        const targetW = Math.max(0, targetRight - targetLeft);
-        const D = Math.min(
-            Math.max(chamferD, vertDist * 0.05),
-            vertDist * 0.3,
-            targetW * 0.4,
-            GanttArrows.MAX_CHAMFER,
-        );
+        // THE CORNER IS A CONSTANT. The 45° leg's horizontal run and the
+        // arrowhead's inset from the target's edge are the SAME distance D, so
+        // every connector in the chart turns identically — it must not vary
+        // with how far apart the two rows happen to be.
+        const D = Math.min(chamferD, vertDist * 0.3);
 
         // Exit direction: FS/FF exit right, SS/SF exit left
         const exitRight = (type === "FS" || type === "FF");
@@ -515,30 +504,40 @@ export class GanttArrows extends Component {
         const endY = toY - barEdge * vertDir;
 
         // Entry sign: +1 for target-left (FS/SS), -1 for target-right (FF/SF)
-        // Ensures arrowhead lands D pixels *inward* from the target bar edge,
+        // Ensures the arrowhead lands *inward* from the target bar edge,
         // symmetric for both start-side and end-side connections.
         const entrySign = (type === "FS" || type === "SS") ? 1 : -1;
 
-        // Vertical line X: D pixels inward from target connection edge
-        const vertX = hTargetX + D * entrySign;
+        // --------------------------------------------------------------
+        // Keeping the corner constant when the source is in the way.
+        //
+        // ``room`` is the gap between the source's exit point and the target's
+        // connection edge, measured along the exit direction. It goes NEGATIVE
+        // when the source's bar reaches past that edge — which happens on every
+        // flush chain as soon as the min-width clamp widens a short predecessor,
+        // and on a summary bar that inherits such a child's widened edge.
+        //
+        // Rather than squeeze the chamfer away (that is what turned the exit
+        // into a bare vertical), absorb the shortfall by sliding the vertical
+        // line FURTHER INTO the target. The leg then keeps its full length D and
+        // the corner looks the same as everywhere else; only the inset grows.
+        //
+        // The inset may not grow past MAX_INSET, nor past half the target bar —
+        // the arrowhead has to stay inside the bar it points at. When that bound
+        // binds there genuinely is not enough room, and only then does the leg
+        // shrink, proportionally, keeping the 45° until it runs out entirely.
+        // --------------------------------------------------------------
+        const room = (hTargetX - fromX) * exitSign;
+        const maxInset = Math.max(0, Math.min(
+            (targetRight - targetLeft) / 2,
+            GanttArrows.MAX_INSET,
+        ));
+        const inset = Math.min(Math.max(D, D - room), maxInset);
+        const vertX = hTargetX + inset * entrySign;
 
-        // --------------------------------------------------------------
-        // NO BACKFOLD. Along the exit direction the path's X must only ever
-        // move FORWARD: fromX → cx → vertX. Two things used to break that:
-        //
-        //   * the 45° leg was always drawn at its full length D, so whenever
-        //     the vertical line sat closer than D the following "horizontal"
-        //     segment ran backwards to reach it;
-        //   * a bar widened by the MIN_BAR_W clamp pushes its right edge past
-        //     the successor's left edge, which is exactly the flush-chained
-        //     case produced by 壓縮向左 — the first link still fits inside D,
-        //     the rest of the chain does not, so every link after the first
-        //     folded back.
-        //
-        // ``reach`` is how far the vertical line is ahead of the source in the
-        // exit direction. The chamfer leg is clamped to it, keeping the 45°
-        // angle while guaranteeing the leg can never overshoot.
-        // --------------------------------------------------------------
+        // NO BACKFOLD: along the exit direction the path's X only ever advances,
+        // fromX → cx → vertX. ``reach`` is how far the vertical line is ahead of
+        // the source; the leg is clamped to it so it can never overshoot.
         const reach = (vertX - fromX) * exitSign;
 
         if (reach <= EPS) {
