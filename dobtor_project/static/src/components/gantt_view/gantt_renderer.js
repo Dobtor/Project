@@ -774,7 +774,6 @@ export class GanttRenderer extends Component {
             // could pick up a freshly-rebuilt index while the bars kept positions
             // from a stale one, drifting the dependency lines off the bars.
             this._dateToPxCache = null;
-            this._barVisualOffsets = null;
             void this.timelineColumns;
         });
 
@@ -2913,9 +2912,9 @@ export class GanttRenderer extends Component {
         // A summary bar IS its children: first child's left edge → last child's
         // right edge, measured in PIXELS after every child-side adjustment
         // (min-width clamp, no-end fallback, live drag offset). Deriving it from
-        // the summary dates instead would leave a child whose bar was widened or
-        // nudged sticking out past its parent — the parent must always contain
-        // its descendants on screen.
+        // the summary dates instead would leave a child whose bar was widened by
+        // the clamp sticking out past its parent — the parent must always
+        // contain its descendants on screen.
         if (record._hasChildren && record._children && record._children.length) {
             const seen = _seen || new Set();
             if (!seen.has(record.id)) {
@@ -2966,88 +2965,21 @@ export class GanttRenderer extends Component {
         return { left, right: left + width };
     }
 
-    /**
-     * Per-render map: recordId → extra pixels to nudge a bar RIGHT (visual only,
-     * dates unchanged) so FS dependency lines never have to fold leftward before
-     * dropping/rising vertically.
-     *
-     * When short tasks are clamped to MIN_BAR_W and chained by FS, a successor's
-     * start (= predecessor's end) can fall LEFT of the predecessor's widened
-     * right edge, which forces the connector to backfold left before turning
-     * vertical (ugly). We shift such a successor right just enough that its left
-     * edge meets the predecessor's right edge, so the existing line geometry
-     * produces a clean vertical drop landing on the offset point (childLeft + D).
-     *
-     * The nudge cascades: a nudged bar's right edge is used for its own FS
-     * successors. We evaluate records left-to-right by base position so a
-     * predecessor's final offset is known before its successors. This is purely
-     * cosmetic — the bar may sit slightly off its true date column, by design.
-     */
-    _computeBarVisualOffsets() {
-        if (this._barVisualOffsets) return this._barVisualOffsets;
-        const offsets = {};
-        const data = this.props.model.data;
-        const preds = data?.predecessors || [];
-        const records = data?.records || [];
-        if (!preds.length || !records.length) {
-            this._barVisualOffsets = offsets;
-            return offsets;
-        }
-        const recMap = new Map();
-        for (const r of records) recMap.set(r.id, r);
-        // incoming FS links: targetId → [sourceId, ...]
-        const incoming = new Map();
-        for (const p of preds) {
-            if ((p.type || "FS").toUpperCase() !== "FS") continue;
-            if (!recMap.has(p.parent_task_id) || !recMap.has(p.task_id)) continue;
-            if (!incoming.has(p.task_id)) incoming.set(p.task_id, []);
-            incoming.get(p.task_id).push(p.parent_task_id);
-        }
-        if (!incoming.size) {
-            this._barVisualOffsets = offsets;
-            return offsets;
-        }
-        const baseCache = new Map();
-        const baseOf = (id) => {
-            if (!baseCache.has(id)) baseCache.set(id, this._baseBarGeometry(recMap.get(id)));
-            return baseCache.get(id);
-        };
-        const ids = [...recMap.keys()].filter((id) => baseOf(id));
-        ids.sort((a, b) => baseOf(a).left - baseOf(b).left);
-        for (const id of ids) {
-            const srcs = incoming.get(id);
-            if (!srcs) continue;
-            const g = baseOf(id);
-            let off = 0;
-            for (const srcId of srcs) {
-                const sg = baseOf(srcId);
-                if (!sg) continue;
-                // predecessor's FINAL (possibly already-nudged) right edge
-                const srcRight = sg.right + (offsets[srcId] || 0);
-                off = Math.max(off, srcRight - g.left);
-            }
-            // HARD CAP. This nudge exists only to absorb the few pixels that the
-            // MIN_BAR_W clamp adds to a short predecessor. Left uncapped it also
-            // "absorbs" genuine data errors — a successor scheduled days before
-            // its predecessor ends got silently drawn days to the right of its
-            // real dates, past its own parent's bar. Beyond the cap the overlap
-            // is real and must stay visible as a backfolding arrow.
-            off = Math.min(off, GanttRenderer.MIN_BAR_W);
-            if (off > 0.5) offsets[id] = off;
-        }
-        this._barVisualOffsets = offsets;
-        return offsets;
-    }
+    // The per-render "anti-backfold nudge" (_computeBarVisualOffsets) is gone.
+    //
+    // It shifted an FS successor's BAR right so its left edge met the
+    // predecessor's MIN_BAR_W-widened right edge, purely so the connector would
+    // not have to fold leftward. Two problems: a bar no longer sat on its own
+    // dates (the timeline must read as the calendar span), and the shift had to
+    // cascade down a chain, growing link by link until it was either wrong or
+    // capped — capped is exactly when the backfold reappeared, which is why a
+    // flush chain produced by 壓縮向左 showed a clean first link and folded on
+    // every one after it.
+    //
+    // Backfolding is now impossible by construction in the connector itself:
+    // GanttArrows._buildPath clamps the 45° leg to the distance actually
+    // available, so the path's X only ever advances. Bars stay on their dates.
 
-    /**
-     * Single source of truth for a task bar's *visual* horizontal geometry,
-     * consumed by BOTH getBarStyle() and GanttArrows so a dependency line always
-     * attaches to the bar's real on-screen edge. Adds the FS anti-backfold nudge
-     * (see _computeBarVisualOffsets) on top of the base geometry.
-     *
-     * @param {Object} record
-     * @returns {{left:number, right:number}|null} null when the bar is not drawable
-     */
     /**
      * Live drag offset that applies to a SUMMARY bar built from its children.
      *
@@ -3066,43 +2998,20 @@ export class GanttRenderer extends Component {
         return drag.deltaLeft;
     }
 
-    _computeBarGeometry(record) {
-        return this._finalBarGeometry(record, new Set());
-    }
-
     /**
-     * Final on-screen geometry, offsets included.
+     * Single source of truth for a task bar's *visual* horizontal geometry,
+     * consumed by BOTH getBarStyle() and GanttArrows, so a dependency line
+     * always attaches to the bar's real on-screen edge.
      *
-     * A summary bar is the union of its children's FINAL geometry, so a child
-     * can never be drawn outside its parent — not by the min-width clamp, not
-     * by the anti-backfold nudge, not mid-drag.
+     * A summary bar is the union of its children's geometry — a child can never
+     * be drawn outside its parent, not by the min-width clamp and not mid-drag.
+     * Every bar otherwise sits exactly on its own dates.
+     *
+     * @param {Object} record
+     * @returns {{left:number, right:number}|null} null when the bar is not drawable
      */
-    _finalBarGeometry(record, seen) {
-        if (!record) return null;
-        if (record._hasChildren && record._children && record._children.length
-            && !seen.has(record.id)) {
-            seen.add(record.id);
-            let left = null;
-            let right = null;
-            for (const child of record._children) {
-                if (child._isMilestoneRecord) continue;
-                const cg = this._finalBarGeometry(child, seen);
-                if (!cg) continue;
-                if (left === null || cg.left < left) left = cg.left;
-                if (right === null || cg.right > right) right = cg.right;
-            }
-            if (left !== null) {
-                const d = this._parentDragDelta(record);
-                return {
-                    left: left + d,
-                    right: left + d + Math.max(right - left, GanttRenderer.MIN_BAR_W),
-                };
-            }
-        }
-        const g = this._baseBarGeometry(record);
-        if (!g) return null;
-        const off = this._computeBarVisualOffsets()[record.id] || 0;
-        return off ? { left: g.left + off, right: g.right + off } : g;
+    _computeBarGeometry(record) {
+        return this._baseBarGeometry(record);
     }
 
     getBarStyle(record) {

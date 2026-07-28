@@ -6,13 +6,26 @@ import { humanizeHours } from "./gantt_utils";
 /**
  * OWL component that renders predecessor arrows as SVG paths.
  *
- * Arrow routing — all arrowheads are vertical (↓ or ↑):
- *
- *   Tight (target within chamfer distance):
- *     M source → 45° chamfer to targetX → vertical ↓/↑
+ * Arrow routing — all arrowheads are vertical (↓ or ↑). The connector leaves
+ * the source on a 45° diagonal and turns vertical, landing D pixels inside the
+ * target's connection edge (the deliberate endpoint offset).
  *
  *   Non-tight (target beyond chamfer distance):
- *     M source → 45° chamfer → horizontal to targetX → vertical ↓/↑
+ *     M source → 45° chamfer (length D) → horizontal to targetX → vertical ↓/↑
+ *
+ *   Tight (target within chamfer distance):
+ *     M source → 45° chamfer SHORTENED to the available distance → vertical ↓/↑
+ *
+ *   Overlap (target's connection point at or behind the source's):
+ *     M targetX, source bar edge → vertical ↓/↑
+ *
+ * INVARIANT — no backfold. Along the exit direction the path's X only ever
+ * advances. The chamfer leg is clamped to the distance actually available
+ * instead of always being drawn at full length D; drawing it full length is
+ * what forced the following "horizontal" segment to run backwards whenever the
+ * target sat closer than D (e.g. a chain compacted flush by 壓縮向左, where the
+ * MIN_BAR_W clamp pushes a short predecessor's right edge past its successor's
+ * left edge).
  *
  * Position calculation uses the renderer's dateToPx() callback to ensure
  * arrow endpoints always match bar positions across all scale levels.
@@ -451,6 +464,7 @@ export class GanttArrows extends Component {
         const vertDist = Math.abs(toY - fromY);
         const D = Math.min(chamferD, vertDist * 0.3); // clamp for very close rows
         const vertDir = toY > fromY ? 1 : -1; // 1=down, -1=up
+        const EPS = 0.5;
 
         // Exit direction: FS/FF exit right, SS/SF exit left
         const exitRight = (type === "FS" || type === "FF");
@@ -477,10 +491,6 @@ export class GanttArrows extends Component {
         // Arrow endpoint: bar top/bottom edge (not center)
         const endY = toY - barEdge * vertDir;
 
-        // Always draw full 45° chamfer
-        const cx = fromX + D * exitSign;
-        const cy = fromY + D * vertDir;
-
         // Entry sign: +1 for target-left (FS/SS), -1 for target-right (FF/SF)
         // Ensures arrowhead lands D pixels *inward* from the target bar edge,
         // symmetric for both start-side and end-side connections.
@@ -489,10 +499,45 @@ export class GanttArrows extends Component {
         // Vertical line X: D pixels inward from target connection edge
         const vertX = hTargetX + D * entrySign;
 
-        // If chamfer endpoint and vertical line converge, draw tight 2-segment path
-        const hDist = Math.abs(cx - vertX);
-        if (hDist < 1) {
-            // Tight: full chamfer → straight vertical at cx
+        // --------------------------------------------------------------
+        // NO BACKFOLD. Along the exit direction the path's X must only ever
+        // move FORWARD: fromX → cx → vertX. Two things used to break that:
+        //
+        //   * the 45° leg was always drawn at its full length D, so whenever
+        //     the vertical line sat closer than D the following "horizontal"
+        //     segment ran backwards to reach it;
+        //   * a bar widened by the MIN_BAR_W clamp pushes its right edge past
+        //     the successor's left edge, which is exactly the flush-chained
+        //     case produced by 壓縮向左 — the first link still fits inside D,
+        //     the rest of the chain does not, so every link after the first
+        //     folded back.
+        //
+        // ``reach`` is how far the vertical line is ahead of the source in the
+        // exit direction. The chamfer leg is clamped to it, keeping the 45°
+        // angle while guaranteeing the leg can never overshoot.
+        // --------------------------------------------------------------
+        const reach = (vertX - fromX) * exitSign;
+
+        if (reach <= EPS) {
+            // The target's connection point is at or behind the source's: there
+            // is no forward room for a chamfer at all. Draw the same pure
+            // vertical the SS/FF overlap case uses — bar edge to bar edge at
+            // the target's offset X — rather than folding the line backwards.
+            return {
+                d: `M ${vertX} ${fromY + barEdge * vertDir} L ${vertX} ${endY}`,
+                turnX: vertX,
+                turnY: (fromY + barEdge * vertDir + endY) / 2,
+                isTight: true,
+                isSameRow: false,
+            };
+        }
+
+        const legLen = Math.min(D, reach);
+        const cx = fromX + legLen * exitSign;
+        const cy = fromY + legLen * vertDir; // 45°: equal run and rise
+
+        if (reach <= D + EPS) {
+            // Tight: the clamped chamfer lands exactly on the vertical line.
             return {
                 d: `M ${fromX} ${fromY} L ${cx} ${cy} L ${cx} ${endY}`,
                 turnX: cx,
@@ -502,7 +547,7 @@ export class GanttArrows extends Component {
             };
         }
 
-        // Non-tight: full chamfer → horizontal to vertX → vertical
+        // Non-tight: full chamfer → forward horizontal to vertX → vertical
         return {
             d: `M ${fromX} ${fromY} L ${cx} ${cy} L ${vertX} ${cy} L ${vertX} ${endY}`,
             turnX: vertX,

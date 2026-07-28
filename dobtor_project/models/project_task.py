@@ -2165,10 +2165,19 @@ class ProjectTaskNative(models.Model):
                     if task.child_ids:
                         task.action_move_with_descendants(-shift_hours)
                     else:
-                        dur = (task.date_end - task.date_start) if task.date_end and task.date_start else timedelta(0)
+                        # Compacting is a move, not a re-plan: the task keeps the
+                        # hours it was scheduled for. Derive the window through
+                        # the calendar (target_start may be 17:00 — the close of
+                        # a predecessor's last working interval), otherwise
+                        # compacting drops the task into the evening and its
+                        # work hours silently change again.
+                        new_start, new_end = task._plan_dates_from(target_start)
+                        if not new_start:
+                            dur = (task.date_end - task.date_start) if task.date_end and task.date_start else timedelta(0)
+                            new_start, new_end = target_start, target_start + dur
                         super(ProjectTaskNative, task).write({
-                            'date_start': target_start,
-                            'date_end': target_start + dur,
+                            'date_start': new_start,
+                            'date_end': new_end,
                         })
                         if task.parent_id:
                             task._update_ancestor_dates()
@@ -2200,9 +2209,15 @@ class ProjectTaskNative(models.Model):
                 elif task.constrain_type == 'fnlt' and de > cd:
                     new_start = cd - dur
                 if new_start and new_start != ds:
+                    # Land on the calendar like every other move. A "no later
+                    # than" constraint that falls on a non-working instant is
+                    # met as closely as the calendar allows (next work start).
+                    snapped, derived = task._plan_dates_from(new_start)
+                    if not snapped:
+                        snapped, derived = new_start, new_start + dur
                     super(ProjectTaskNative, task).write({
-                        'date_start': new_start,
-                        'date_end': new_start + dur,
+                        'date_start': snapped,
+                        'date_end': derived,
                     })
                     if task.parent_id:
                         task._update_ancestor_dates()
