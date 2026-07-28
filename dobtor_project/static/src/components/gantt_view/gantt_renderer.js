@@ -14,7 +14,7 @@ import { useGanttTreeDrag } from "./gantt_tree_drag_hook";
 import { useGanttArrowDraw } from "./gantt_arrow_draw_hook";
 import { useGanttProgressDrag } from "./gantt_progress_drag_hook";
 import { useGanttMarquee } from "./gantt_marquee_hook";
-import { cellsDeltaToDuration, toOdooDatetime, humanizeDays, humanizeHours } from "./gantt_utils";
+import { cellsDeltaToDuration, toOdooDatetime, humanizeHours } from "./gantt_utils";
 import { GanttArrows } from "./gantt_arrows";
 import { GanttTooltip } from "./gantt_tooltip";
 import { GanttContextMenu } from "./gantt_context_menu";
@@ -2905,10 +2905,39 @@ export class GanttRenderer extends Component {
      * @param {Object} record
      * @returns {{left:number, right:number}|null} null when the bar is not drawable
      */
-    _baseBarGeometry(record) {
+    _baseBarGeometry(record, _seen) {
         if (!record) return null;
         const data = this.props.model.data;
         if (!data?.timeStart || !data.timeStart.isValid) return null;
+
+        // A summary bar IS its children: first child's left edge → last child's
+        // right edge, measured in PIXELS after every child-side adjustment
+        // (min-width clamp, no-end fallback, live drag offset). Deriving it from
+        // the summary dates instead would leave a child whose bar was widened or
+        // nudged sticking out past its parent — the parent must always contain
+        // its descendants on screen.
+        if (record._hasChildren && record._children && record._children.length) {
+            const seen = _seen || new Set();
+            if (!seen.has(record.id)) {
+                seen.add(record.id);
+                let left = null;
+                let right = null;
+                for (const child of record._children) {
+                    if (child._isMilestoneRecord) continue;
+                    const cg = this._baseBarGeometry(child, seen);
+                    if (!cg) continue;
+                    if (left === null || cg.left < left) left = cg.left;
+                    if (right === null || cg.right > right) right = cg.right;
+                }
+                if (left !== null) {
+                    const d = this._parentDragDelta(record);
+                    return {
+                        left: left + d,
+                        right: left + d + Math.max(right - left, GanttRenderer.MIN_BAR_W),
+                    };
+                }
+            }
+        }
 
         // Use summary dates for parent tasks if available
         let dateStart = record._dateStart;
@@ -2997,6 +3026,13 @@ export class GanttRenderer extends Component {
                 const srcRight = sg.right + (offsets[srcId] || 0);
                 off = Math.max(off, srcRight - g.left);
             }
+            // HARD CAP. This nudge exists only to absorb the few pixels that the
+            // MIN_BAR_W clamp adds to a short predecessor. Left uncapped it also
+            // "absorbs" genuine data errors — a successor scheduled days before
+            // its predecessor ends got silently drawn days to the right of its
+            // real dates, past its own parent's bar. Beyond the cap the overlap
+            // is real and must stay visible as a backfolding arrow.
+            off = Math.min(off, GanttRenderer.MIN_BAR_W);
             if (off > 0.5) offsets[id] = off;
         }
         this._barVisualOffsets = offsets;
@@ -3012,10 +3048,60 @@ export class GanttRenderer extends Component {
      * @param {Object} record
      * @returns {{left:number, right:number}|null} null when the bar is not drawable
      */
+    /**
+     * Live drag offset that applies to a SUMMARY bar built from its children.
+     *
+     * Dragging a parent moves only the parent's own bar during the gesture
+     * (children snap into place on commit), so the parent's delta must be added
+     * on top of the children's union. But in a multi-select drag where a child
+     * is dragged too, the union already carries that movement — adding the
+     * parent's delta again would double it.
+     */
+    _parentDragDelta(record) {
+        const drag = this._dragState;
+        if (!drag.ids[record.id]) return 0;
+        for (const child of record._children || []) {
+            if (drag.ids[child.id]) return 0;
+        }
+        return drag.deltaLeft;
+    }
+
     _computeBarGeometry(record) {
+        return this._finalBarGeometry(record, new Set());
+    }
+
+    /**
+     * Final on-screen geometry, offsets included.
+     *
+     * A summary bar is the union of its children's FINAL geometry, so a child
+     * can never be drawn outside its parent — not by the min-width clamp, not
+     * by the anti-backfold nudge, not mid-drag.
+     */
+    _finalBarGeometry(record, seen) {
+        if (!record) return null;
+        if (record._hasChildren && record._children && record._children.length
+            && !seen.has(record.id)) {
+            seen.add(record.id);
+            let left = null;
+            let right = null;
+            for (const child of record._children) {
+                if (child._isMilestoneRecord) continue;
+                const cg = this._finalBarGeometry(child, seen);
+                if (!cg) continue;
+                if (left === null || cg.left < left) left = cg.left;
+                if (right === null || cg.right > right) right = cg.right;
+            }
+            if (left !== null) {
+                const d = this._parentDragDelta(record);
+                return {
+                    left: left + d,
+                    right: left + d + Math.max(right - left, GanttRenderer.MIN_BAR_W),
+                };
+            }
+        }
         const g = this._baseBarGeometry(record);
         if (!g) return null;
-        const off = record ? (this._computeBarVisualOffsets()[record.id] || 0) : 0;
+        const off = this._computeBarVisualOffsets()[record.id] || 0;
         return off ? { left: g.left + off, right: g.right + off } : g;
     }
 
@@ -3471,8 +3557,6 @@ export class GanttRenderer extends Component {
     }
 
     getInfoDuration(record) {
-        const dpw = this._calDpw;
-
         // Determine hours per day:
         // - Planning mode (virtual dates): use project calendar hours_per_day (default 8)
         // - Normal mode: use calendarInfo hours_per_day (default 24 for continuous)
@@ -3482,28 +3566,30 @@ export class GanttRenderer extends Component {
             ? (calendarHpd || 8)   // Planning mode: 8 hours/day default (working day)
             : (calendarHpd || 24); // Normal mode: 24 hours/day default (calendar day)
 
-        // 1. Server-calculated working hours (most accurate with calendar)
-        const wdField = this.props.archInfo.workingDuration || "working_duration";
-        const workingHours = record[wdField];
-        if (workingHours && workingHours > 0 && !record._hasChildren) {
-            return this.formatDurationChinese(workingHours, hpd);
+        // 1. Summary rows: the roll-up of their leaf descendants' scheduled
+        //    hours (server-computed, never double-counting an intermediate
+        //    level). This is a pure total — it is deliberately unrelated to the
+        //    bar's length, because sibling tasks are not necessarily chained FS.
+        const twhField = this.props.archInfo.totalWorkHours || "total_work_hours";
+        if (record._hasChildren) {
+            const total = record[twhField];
+            return total > 0 ? this.formatDurationChinese(total, hpd) : "";
         }
 
-        // 2. plan_duration (user-specified working hours) - display as working days
-        if (record._planDuration && record._planDuration > 0 && !record._hasChildren) {
+        // 2. Leaf rows: the hours the user scheduled. plan_duration is the
+        //    authoritative input — working_duration is only a cross-check of
+        //    where the task currently sits, and must never override the input
+        //    (that is what made the number jump on every cascade).
+        if (record._planDuration && record._planDuration > 0) {
             return this.formatDurationChinese(record._planDuration, hpd);
         }
 
-        // 3. Parent tasks: use summary date span
-        const dateStart = (record._hasChildren && record._summaryDateStart) || record._dateStart;
-        const dateEnd = (record._hasChildren && record._summaryDateEnd) || record._dateEnd;
-        if (this._isValidDt(dateStart) && this._isValidDt(dateEnd)
-            && !record._isVirtualDates) {
-            const calendarDays = dateEnd.diff(dateStart, "days").days;
-            if (Number.isFinite(calendarDays)) {
-                const workingDays = calendarDays * (dpw / 7);
-                return this._humanizeDuration(workingDays, dpw);
-            }
+        // 3. Leaf with no scheduled hours yet: fall back to the calendar
+        //    reading of its current window.
+        const wdField = this.props.archInfo.workingDuration || "working_duration";
+        const workingHours = record[wdField];
+        if (workingHours && workingHours > 0) {
+            return this.formatDurationChinese(workingHours, hpd);
         }
         return "";
     }
@@ -3556,10 +3642,10 @@ export class GanttRenderer extends Component {
         return `T+${workingDays.toFixed(1)}d`;
     }
 
-    _humanizeDuration(days, dpw = 7) {
-        if (!Number.isFinite(days) || days <= 0) return humanizeDays(0, dpw, this._calHpd || 24);
-        return humanizeDays(days, dpw, this._calHpd || 24);
-    }
+    // NOTE: the old _humanizeDuration() helper is gone. It existed only to turn
+    // "calendar days × dpw/7" into a label for summary rows — an estimate that
+    // matched neither the children's total hours nor the bar's real span.
+    // Summary rows now show total_work_hours; bars show the real date span.
 
     // -------------------------------------------------------------------------
     // Planning Mode: Duration formatting & editing
@@ -3612,6 +3698,8 @@ export class GanttRenderer extends Component {
         const infoEl = ev.target.closest(".o_gantt_duration_cell") || ev.target.closest(".o_gantt_task_info");
         if (!infoEl) return;
         ev.stopPropagation();
+        // A summary row's hours are the sum of its leaves — not editable.
+        if (record._hasChildren) return;
         this._startDurationEdit(record.id, infoEl);
     }
 

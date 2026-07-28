@@ -203,6 +203,19 @@ class ProjectTaskNative(models.Model):
         help="使用專案行事曆計算的工作時數"
     )
 
+    # Rolled-up planned work hours.
+    # Leaf task  → its own plan_duration (the hours the user typed).
+    # Parent task → sum of its children's total_work_hours, which resolves
+    #               recursively down to the LEAF level only, so an intermediate
+    #               summary level is never counted twice.
+    total_work_hours = fields.Float(
+        string='工時合計',
+        compute='_compute_total_work_hours',
+        recursive=True,
+        compute_sudo=True,
+        help="上層任務的工時為其最下層子任務工時的總和，不可編輯。"
+    )
+
     # Scheduler
     schedule_mode = fields.Selection(
         selection='_get_schedule_mode',
@@ -529,6 +542,20 @@ class ProjectTaskNative(models.Model):
 
         # project_task_scheduler.py
         self._scheduler_plan_start_calc(project=search_project)
+
+        # Re-derive every leaf's window from its scheduled hours: start snapped
+        # into working time, end from plan_duration through the calendar. This
+        # is what stops a task from finishing at 19:00 or on a Saturday (which
+        # silently changed its work hours), then relax the dependency graph
+        # against the corrected windows.
+        leaves = self.env['project.task'].search([
+            ('project_id', '=', project_id),
+            ('child_ids', '=', False),
+        ])
+        if leaves:
+            leaves._resync_leaf_dates()
+            leaves._cascade_fs_push()
+
         self._summary_work(project_id=project_id)
         self._scheduler_plan_complete(project_id=project_id, scheduling_type=scheduling_type)
 
@@ -563,75 +590,46 @@ class ProjectTaskNative(models.Model):
                 project.write({'schedule_start': min(date_list_start)})
 
     def _summary_work(self, project_id):
-        """Update summary task dates - optimized without unnecessary sudo()"""
+        """Align every summary task with its children.
+
+        A summary task's bar is, by definition, "first child start → last child
+        end". This runs for EVERY parent regardless of ``schedule_mode``:
+        the old ``schedule_mode == 'auto'`` guard silently skipped rollup for
+        manually-scheduled outlines, which is what let child bars end up outside
+        their parent's bar after scheduling.
+
+        Predecessor constraints are NOT enforced by nudging the parent's own
+        start here — doing so moved the summary bar off its children (the bar
+        would start after its own first child). A parent that must respect an FS
+        boundary pushes its CHILDREN instead, which
+        :meth:`_update_ancestor_dates` already does via
+        :meth:`_clamp_children_to_fs_boundary`.
+
+        ``plan_duration`` is not written either: a summary task's hours are the
+        computed :field:`total_work_hours` roll-up of its leaves.
+        """
         search_tasks = self.env['project.task'].search([
             ('project_id', '=', project_id),
             ('child_ids', '!=', False)
         ])
+        if not search_tasks:
+            return
 
-        # Prefetch predecessor_ids to avoid N+1 queries in the loop
-        if search_tasks:
-            search_tasks.mapped('predecessor_ids')
-            search_tasks.mapped('predecessor_ids.parent_task_id')
+        # Deepest levels first, so a nested parent is already aligned with its
+        # own children before its parent reads its span.
+        for task in search_tasks.sorted(key='sorting_level', reverse=True):
+            task.invalidate_recordset(['summary_date_start', 'summary_date_end'])
+            date_start = task.summary_date_start
+            date_end = task.summary_date_end
+            if not date_start and not date_end:
+                continue
 
-        for task in search_tasks:
-            if task.schedule_mode == "auto":
-                date_start = task.summary_date_start
-                date_end = task.summary_date_end
-
-                # Enforce predecessor constraints on parent dates:
-                # - FS: start cannot be earlier than source's end
-                # - SS: start cannot be earlier than source's start
-                # - FF: end cannot be earlier than source's end
-                # - SF: end cannot be earlier than source's start
-                for pred in task.predecessor_ids:
-                    if not pred.parent_task_id:
-                        continue
-                    src = pred.parent_task_id
-                    src_start = src.summary_date_start if src.child_ids else src.date_start
-                    src_end = src.summary_date_end if src.child_ids else src.date_end
-                    if pred.type == 'FS':
-                        if src_end and date_start and date_start < src_end:
-                            date_start = src_end
-                    elif pred.type == 'SS':
-                        if src_start and date_start and date_start < src_start:
-                            date_start = src_start
-                    elif pred.type == 'FF':
-                        if src_end and date_end and date_end < src_end:
-                            # Push end forward, shift start to preserve duration
-                            if date_start and date_end:
-                                dur = date_end - date_start
-                                date_end = src_end
-                                date_start = date_end - dur
-                            else:
-                                date_end = src_end
-                    elif pred.type == 'SF':
-                        if src_start and date_end and date_end < src_start:
-                            # Push end forward, shift start to preserve duration
-                            if date_start and date_end:
-                                dur = date_end - date_start
-                                date_end = src_start
-                                date_start = date_end - dur
-                            else:
-                                date_end = src_start
-
-                var_data = {
-                    "date_start": date_start,
-                    "date_end": date_end,
-                }
-
-                # Odoo 18: datetime fields are already datetime objects
-                if date_end and date_start:
-                    calendar = task.project_id.resource_calendar_id
-                    if calendar and task.project_id.use_calendar:
-                        tz = pytz.timezone(task.project_id.tz or 'UTC')
-                        start_tz = pytz.UTC.localize(date_start).astimezone(tz)
-                        end_tz = pytz.UTC.localize(date_end).astimezone(tz)
-                        var_data["plan_duration"] = calendar.get_work_hours_count(start_tz, end_tz)
-                    else:
-                        diff = date_end - date_start
-                        var_data["plan_duration"] = diff.total_seconds() / 3600.0
-
+            var_data = {}
+            if date_start and date_start != task.date_start:
+                var_data["date_start"] = date_start
+            if date_end and date_end != task.date_end:
+                var_data["date_end"] = date_end
+            if var_data:
                 task.with_context(skip_date_snap=True).write(var_data)
 
     @api.depends("schedule_mode")
@@ -657,6 +655,121 @@ class ProjectTaskNative(models.Model):
             if start <= dt_tz <= stop:
                 return True
         return False
+
+    # ------------------------------------------------------------------
+    # Work-calendar arithmetic
+    #
+    # Single source of truth for the rule "the hours the user typed ARE the
+    # scheduled hours": a leaf task's ``date_end`` is always derived from
+    # ``date_start`` + ``plan_duration`` **through the work calendar**, and both
+    # endpoints always land inside working time. Nothing may set date_end by
+    # adding raw wall-clock hours, otherwise the task drifts into evenings /
+    # weekends and its work hours silently change.
+    # ------------------------------------------------------------------
+
+    def _work_calendar(self):
+        """Return (calendar, tz) for this task, or (None, None) when the
+        project does not use a work calendar."""
+        self.ensure_one()
+        calendar = self.project_id.resource_calendar_id
+        if not calendar or not self.project_id.use_calendar:
+            return None, None
+        return calendar, pytz.timezone(self.project_id.tz or 'UTC')
+
+    _WORK_SEARCH_DAYS = 60
+
+    def _snap_start_to_work(self, dt):
+        """Move a naive-UTC datetime FORWARD to the next instant at which work
+        can actually begin.
+
+        Note the strict comparison: an instant sitting exactly on the CLOSE of a
+        work interval (17:00) is a valid finish but not a valid start — there is
+        no working time left in it — so it snaps to the next interval. Using the
+        inclusive :meth:`_is_in_work_interval` test here would leave successors
+        starting at 17:00 and finishing days later.
+        """
+        self.ensure_one()
+        if not dt:
+            return dt
+        calendar, tz = self._work_calendar()
+        if not calendar:
+            return dt
+        dt_tz = pytz.UTC.localize(dt).astimezone(tz)
+        resource = self.env['resource.resource']
+        horizon = dt_tz + relativedelta(days=self._WORK_SEARCH_DAYS)
+        intervals = calendar._work_intervals_batch(
+            dt_tz, horizon, resource)[resource.id]
+        for start, stop, _meta in intervals:
+            if stop <= dt_tz:
+                continue
+            begin = start if start > dt_tz else dt_tz
+            return begin.astimezone(pytz.UTC).replace(tzinfo=None)
+        return dt
+
+    def _end_from_work_hours(self, start, hours):
+        """Return the naive-UTC datetime reached after consuming ``hours`` of
+        working time from ``start`` (naive UTC)."""
+        self.ensure_one()
+        if not start or not hours or hours <= 0:
+            return start
+        calendar, tz = self._work_calendar()
+        if not calendar:
+            return start + timedelta(hours=hours)
+        start_tz = pytz.UTC.localize(start).astimezone(tz)
+        end_dt = calendar.plan_hours(hours, start_tz, compute_leaves=True)
+        if not end_dt:
+            return start + timedelta(hours=hours)
+        return end_dt.astimezone(pytz.UTC).replace(tzinfo=None)
+
+    def _start_from_work_hours(self, end, hours):
+        """Return the naive-UTC datetime that is ``hours`` of working time
+        BEFORE ``end`` (naive UTC). Mirror of :meth:`_end_from_work_hours`."""
+        self.ensure_one()
+        if not end or not hours or hours <= 0:
+            return end
+        calendar, tz = self._work_calendar()
+        if not calendar:
+            return end - timedelta(hours=hours)
+        end_tz = pytz.UTC.localize(end).astimezone(tz)
+        start_dt = calendar.plan_hours(-hours, end_tz, compute_leaves=True)
+        if not start_dt:
+            return end - timedelta(hours=hours)
+        return start_dt.astimezone(pytz.UTC).replace(tzinfo=None)
+
+    def _plan_dates_from(self, start):
+        """Given a desired start, return the (start, end) pair a leaf task must
+        actually occupy: start snapped into working time, end derived from
+        ``plan_duration`` through the calendar.
+
+        Returns ``(None, None)`` when the task has no usable planned hours, so
+        callers can fall back to their previous behaviour.
+        """
+        self.ensure_one()
+        hours = self.plan_duration or 0.0
+        if not start or hours <= 0:
+            return None, None
+        new_start = self._snap_start_to_work(start)
+        return new_start, self._end_from_work_hours(new_start, hours)
+
+    def _resync_leaf_dates(self):
+        """Re-derive date_end (and snap date_start) from plan_duration for every
+        leaf task in ``self``. Used after a move that only translated dates."""
+        for task in self:
+            if task.child_ids or not task.date_start:
+                continue
+            new_start, new_end = task._plan_dates_from(task.date_start)
+            if not new_start:
+                continue
+            vals = {}
+            if new_start != task.date_start:
+                vals['date_start'] = new_start
+            if new_end and new_end != task.date_end:
+                vals['date_end'] = new_end
+            if vals:
+                task.with_context(
+                    skip_date_snap=True,
+                    skip_cascade_push=True,
+                ).write(vals)
 
     def _sync_predecessors_from_depend_on(self, depend_on_commands):
         """Sync predecessor records when depend_on_ids is written directly.
@@ -983,20 +1096,11 @@ class ProjectTaskNative(models.Model):
                 update_vals['date_start'] = new_start
             if new_end and new_end != parent.date_end:
                 update_vals['date_end'] = new_end
-            # Recompute plan_duration to match new span
-            effective_start = new_start or parent.date_start
-            effective_end = new_end or parent.date_end
-            if effective_start and effective_end:
-                calendar = parent.project_id.resource_calendar_id
-                if calendar and parent.project_id.use_calendar:
-                    tz = pytz.timezone(parent.project_id.tz or 'UTC')
-                    start_tz = pytz.UTC.localize(effective_start).astimezone(tz)
-                    end_tz = pytz.UTC.localize(effective_end).astimezone(tz)
-                    new_plan_dur = calendar.get_work_hours_count(start_tz, end_tz)
-                else:
-                    new_plan_dur = (effective_end - effective_start).total_seconds() / 3600.0
-                if abs(new_plan_dur - (parent.plan_duration or 0)) > 0.01:
-                    update_vals['plan_duration'] = new_plan_dur
+            # NOTE: plan_duration is deliberately NOT touched here. A summary
+            # task's hours are the sum of its leaves (``total_work_hours``),
+            # which is a computed field; its BAR is the children's span. Writing
+            # the span's work hours back into plan_duration used to make the
+            # parent's number drift every time any child moved.
 
             if update_vals:
                 parent.with_context(skip_date_snap=True).write(update_vals)  # recursive — triggers grandparent
@@ -1157,8 +1261,16 @@ class ProjectTaskNative(models.Model):
             self_vals['plan_offset'] = (self.plan_offset or 0) + shift_hours
         if self_vals:
             super(ProjectTaskNative, self).write(self_vals)
-        # Propagate to ancestors above self
-        if self.parent_id:
+        # A rigid translation can drop a leaf onto an evening or a weekend.
+        # Re-snap every moved leaf into working time and re-derive its end from
+        # plan_duration, then roll the summary levels back up from those leaves
+        # so a parent bar still spans exactly first-child-start → last-child-end.
+        moved = self | all_tasks
+        moved._resync_leaf_dates()
+        leaves = moved.filtered(lambda t: not t.child_ids)
+        if leaves:
+            leaves._update_ancestor_dates()
+        elif self.parent_id:
             self._update_ancestor_dates()
 
     # ------------------------------------------------------------------
@@ -1204,6 +1316,7 @@ class ProjectTaskNative(models.Model):
         if shift_hours is not None:
             self.action_move_with_descendants(shift_hours)
         elif vals:
+            vals = self._normalize_gesture_vals(vals)
             self.with_context(skip_cascade_push=True).write(vals)
 
         # Prefetch the link graph once and share it across every cascade below.
@@ -1249,12 +1362,82 @@ class ProjectTaskNative(models.Model):
                 changed['constrain_date'] = fields.Datetime.to_string(t.constrain_date) if t.constrain_date else False
             if changed:
                 changed['working_duration'] = t.working_duration or 0
+                changed['total_work_hours'] = t.total_work_hours or 0
                 task_diff[t.id] = changed
 
         affected_ids = list(task_diff.keys())
         pred_diff = self._cascade_recalc_lags(affected_ids) if affected_ids else {}
+        self._add_ancestor_hours_to_diff(task_diff)
 
         return {'tasks': task_diff, 'predecessors': pred_diff}
+
+    def _add_ancestor_hours_to_diff(self, task_diff):
+        """Add every ancestor's rolled-up hours to a gantt diff.
+
+        A summary task's total changes whenever ANY descendant's hours change —
+        even when no ancestor date moved (e.g. a middle child shortens without
+        touching the outline's first start / last end). Called AFTER the lag
+        recalc so these rows never widen the set of tasks treated as moved.
+        """
+        for tid in list(task_diff.keys()):
+            node = self.env['project.task'].browse(tid).parent_id
+            while node:
+                task_diff.setdefault(node.id, {})['total_work_hours'] = \
+                    node.total_work_hours or 0
+                node = node.parent_id
+        return task_diff
+
+    def _normalize_gesture_vals(self, vals):
+        """Make a gantt gesture obey the work calendar before it is written.
+
+        A leaf task's window is never free-form: it is always
+        ``date_start`` (inside working time) + ``plan_duration`` working hours.
+
+        * move (both dates sent) → keep the planned hours, snap the new start
+          and re-derive the end.
+        * resize (a single edge sent) → the gesture IS the hours input: read the
+          resized window's working hours back into ``plan_duration``, then
+          re-derive the window from it so both edges land on work boundaries.
+        """
+        self.ensure_one()
+        if self.child_ids:
+            return vals
+        has_start = 'date_start' in vals
+        has_end = 'date_end' in vals
+        if not has_start and not has_end:
+            return vals
+        calendar, tz = self._work_calendar()
+        if not calendar:
+            return vals
+
+        vals = dict(vals)
+        new_start = fields.Datetime.to_datetime(vals.get('date_start')) or self.date_start
+        new_end = fields.Datetime.to_datetime(vals.get('date_end')) or self.date_end
+        if not new_start:
+            return vals
+
+        if has_start and has_end:
+            # An explicit plan_duration in the same write wins over the stored
+            # one (that is how a duration edit reaches this method).
+            hours = vals.get('plan_duration')
+            if hours is None:
+                hours = self.plan_duration or 0.0
+        else:
+            # Resize: the new window defines the hours.
+            if not new_end or new_end <= new_start:
+                return vals
+            start_tz = pytz.UTC.localize(new_start).astimezone(tz)
+            end_tz = pytz.UTC.localize(new_end).astimezone(tz)
+            hours = calendar.get_work_hours_count(start_tz, end_tz)
+            if hours > 0:
+                vals['plan_duration'] = hours
+
+        if hours <= 0:
+            return vals
+        snapped = self._snap_start_to_work(new_start)
+        vals['date_start'] = snapped
+        vals['date_end'] = self._end_from_work_hours(snapped, hours)
+        return vals
 
     def action_move_multiple_and_cascade(self, shift_hours=None):
         """Batch move multiple tasks by shift_hours, cascade FS dependencies,
@@ -1347,10 +1530,12 @@ class ProjectTaskNative(models.Model):
                 changed['constrain_date'] = fields.Datetime.to_string(t.constrain_date) if t.constrain_date else False
             if changed:
                 changed['working_duration'] = t.working_duration or 0
+                changed['total_work_hours'] = t.total_work_hours or 0
                 task_diff[t.id] = changed
 
         affected_ids = list(task_diff.keys())
         pred_diff = self._cascade_recalc_lags(affected_ids) if affected_ids else {}
+        self._add_ancestor_hours_to_diff(task_diff)
 
         return {'tasks': task_diff, 'predecessors': pred_diff}
 
@@ -1525,7 +1710,12 @@ class ProjectTaskNative(models.Model):
     def _calc_scheduled_push(self, source, target, dep_type):
         """Calculate push result for scheduled mode.
         Returns (new_start, new_end) tuple, or None if no push needed.
-        All pushes preserve target's duration.
+
+        For a LEAF target the new end is re-derived from ``plan_duration``
+        through the work calendar (start snapped into working time), so the
+        scheduled hours stay exactly what the user typed no matter how far the
+        task is pushed. Only when the target has no planned hours does the push
+        fall back to translating the old wall-clock window.
         """
         src_start = source.summary_date_start if source.child_ids else source.date_start
         src_end = source.summary_date_end if source.child_ids else source.date_end
@@ -1536,26 +1726,37 @@ class ProjectTaskNative(models.Model):
             return None
         dur = tgt_end - tgt_start
 
+        def _from_start(new_start):
+            """Start-driven push (FS/SS): calendar-derive the end for leaves."""
+            if not target.child_ids:
+                snapped, derived = target._plan_dates_from(new_start)
+                if snapped:
+                    return (snapped, derived)
+            return (new_start, new_start + dur)
+
+        def _from_end(new_end):
+            """End-driven push (FF/SF): calendar-derive the start for leaves."""
+            if not target.child_ids and (target.plan_duration or 0) > 0:
+                return (target._start_from_work_hours(
+                    new_end, target.plan_duration), new_end)
+            return (new_end - dur, new_end)
+
         if dep_type == 'FS':
             if not src_end or tgt_start >= src_end:
                 return None
-            return (src_end, src_end + dur)
+            return _from_start(src_end)
         elif dep_type == 'SS':
             if not src_start or tgt_start >= src_start:
                 return None
-            return (src_start, src_start + dur)
+            return _from_start(src_start)
         elif dep_type == 'FF':
             if not src_end or tgt_end >= src_end:
                 return None
-            new_end = src_end
-            new_start = new_end - dur
-            return (new_start, new_end)
+            return _from_end(src_end)
         elif dep_type == 'SF':
             if not src_start or tgt_end >= src_start:
                 return None
-            new_end = src_start
-            new_start = new_end - dur
-            return (new_start, new_end)
+            return _from_end(src_start)
         return None
 
     def _cascade_recalc_lags(self, affected_ids):
@@ -1658,34 +1859,29 @@ class ProjectTaskNative(models.Model):
         return True
 
     def action_update_plan_duration(self, hours):
-        """Update plan_duration and compute date_end using work calendar.
+        """Set a leaf task's scheduled work hours.
 
-        Uses resource.calendar.plan_hours() so that working hours correctly
-        span across non-working periods (nights, weekends, etc.).
+        The typed hours ARE the schedule: the task keeps its start (snapped into
+        working time) and its end is re-derived through the work calendar, so it
+        can never finish outside office hours. The dependency cascade and the
+        resulting diff are produced by the single canonical engine
+        (:meth:`action_move_and_cascade`) — the caller must NOT run a second
+        client-side push on top of it.
 
         :param float hours: planned working hours
-        :returns: dict with computed date_end (UTC string) for frontend sync
+        :returns: {'tasks': {id: {...}}, 'predecessors': {id: {...}}}
         """
         self.ensure_one()
         self.check_access('write')
+        if self.child_ids:
+            raise UserError(_(
+                '上層任務的工時為下層任務工時的總和，不可直接編輯。'))
         vals = {'plan_duration': hours}
         if self.date_start:
-            calendar = self.project_id.resource_calendar_id
-            if calendar and self.project_id.use_calendar:
-                tz = pytz.timezone(self.project_id.tz or 'UTC')
-                start_tz = pytz.UTC.localize(self.date_start).astimezone(tz)
-                end_dt = calendar.plan_hours(hours, start_tz, compute_leaves=True)
-                if end_dt:
-                    vals['date_end'] = end_dt.astimezone(pytz.UTC).replace(tzinfo=None)
-            else:
-                # No calendar: fallback to raw hours
-                vals['date_end'] = self.date_start + timedelta(hours=hours)
-        self.with_context(skip_date_snap=True).write(vals)
-        date_end_str = fields.Datetime.to_string(vals['date_end']) if vals.get('date_end') else False
-        return {
-            'date_end': date_end_str,
-            'working_duration': self.working_duration,
-        }
+            snapped = self._snap_start_to_work(self.date_start)
+            vals['date_start'] = snapped
+            vals['date_end'] = self._end_from_work_hours(snapped, hours)
+        return self.action_move_and_cascade(vals=vals)
 
     def _plan_effective_start(self):
         """Effective plan start: for leaf = plan_offset; for parent = min of leaf descendants."""
@@ -2098,6 +2294,22 @@ class ProjectTaskNative(models.Model):
                 start_tz = pytz.UTC.localize(task.date_start).astimezone(tz)
                 end_tz = pytz.UTC.localize(task.date_end).astimezone(tz)
                 task.working_duration = calendar.get_work_hours_count(start_tz, end_tz)
+
+    @api.depends('plan_duration', 'child_ids', 'child_ids.total_work_hours')
+    def _compute_total_work_hours(self):
+        """Planned work hours, rolled up to summary tasks.
+
+        A leaf contributes the hours the user typed (``plan_duration``); a
+        summary task contributes the sum of its children's rolled-up value.
+        Because a parent never adds its own ``plan_duration``, a multi-level
+        outline sums the LEAF level exactly once — no double counting.
+        """
+        for task in self:
+            if task.child_ids:
+                task.total_work_hours = sum(
+                    c.total_work_hours for c in task.child_ids)
+            else:
+                task.total_work_hours = task.plan_duration or 0.0
 
     @api.depends('state', 'date_last_stage_update')
     def _compute_date_finished(self):

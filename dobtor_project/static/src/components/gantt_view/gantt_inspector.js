@@ -254,8 +254,15 @@ export class GanttInspector extends Component {
 
     get workingDurationLabel() {
         if (!this.props.record || !this.props.calendarInfo) return "";
+        const rec = this.props.record;
+        // Same authority order as the gantt's duration column: a summary row
+        // shows the roll-up of its leaves, a leaf shows the hours that were
+        // scheduled for it — never a measurement of where it happens to sit.
+        const twhField = this.props.archInfo.totalWorkHours || "total_work_hours";
         const field = this.props.archInfo.workingDuration || "working_duration";
-        const hours = this.props.record[field];
+        const hours = rec._hasChildren
+            ? rec[twhField]
+            : (rec._planDuration || rec[field]);
         if (!hours) return "";
         const hpd = this.props.calendarInfo.hours_per_day || 8;
         const ws = this.props.calendarInfo._workingWeekdays;

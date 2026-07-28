@@ -470,7 +470,7 @@
             <!-- Duration Panel -->
             <div class="o_gantt_duration_panel" t-att-style="'width: ' + state.durationWidth + 'px;'">
                 <div class="o_gantt_duration_header">
-                    <span>工期</span>
+                    <span>工時</span>
                 </div>
                 <div class="o_gantt_duration_rows" t-ref="durationRows">
                   <div t-att-style="_shouldUseVirtualScroll ? (_virtualScrollTotalHeightStyle + _virtualScrollOffsetStyle) : ''">
@@ -480,8 +480,8 @@
                              t-on-mouseenter="() => this.onRowHover(row.id)"
                              t-on-mouseleave="onRowLeave">
                             <t t-if="!row._isGroup">
-                                <span class="o_gantt_duration_cell"
-                                      t-att-title="getInfoDateRange(row)"
+                                <span t-att-class="'o_gantt_duration_cell' + (row._hasChildren ? ' o_gantt_duration_readonly' : '')"
+                                      t-att-title="row._hasChildren ? '下層工時合計（不可編輯）' : getInfoDateRange(row)"
                                       t-on-click.stop="(ev) => this.onDurationClick(row, ev)">
                                     <t t-esc="getInfoDuration(row)"/>
                                 </span>

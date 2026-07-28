@@ -293,6 +293,8 @@ export class GanttModel extends Model {
             "milestoneId",
             // Calendar
             "workingDuration",
+            // Rolled-up scheduled hours (summary rows)
+            "totalWorkHours",
             // Progress mode
             "progressMode",
         ];
@@ -1078,13 +1080,16 @@ export class GanttModel extends Model {
                 weightedProgressSum += childProgress * weight;
                 totalWeight += weight;
             }
-            // Enforce FS predecessor constraints: parent summary start cannot
-            // be earlier than the latest end date of its FS predecessors.
+            // A summary task IS its children: first child start → last child
+            // end, with nothing in between adjusted.
+            //
+            // This used to clamp minStart forward to the parent's FS
+            // predecessor boundary, which pushed the summary bar's start PAST
+            // its own first child and left that child hanging outside its
+            // parent. An FS boundary is enforced server-side by moving the
+            // CHILDREN (_clamp_children_to_fs_boundary), never by detaching the
+            // parent from them.
             if (minStart) {
-                const fsMinStart = this.getMinStartFromPredecessors(record.id);
-                if (fsMinStart && minStart < fsMinStart) {
-                    minStart = fsMinStart;
-                }
                 record._summaryDateStart = minStart;
             }
             if (maxEnd) record._summaryDateEnd = maxEnd;
@@ -3816,35 +3821,21 @@ export class GanttModel extends Model {
             return this.updateRecord(recordId, { [planField]: hours });
         }
 
-        // Real dates: use server-side calendar to compute correct date_end
+        // Real dates: the server owns the whole gesture — it snaps the start
+        // into working time, derives the end from the typed hours through the
+        // work calendar, cascades the dependency graph ONCE and returns the
+        // full diff. Running _pushFSSuccessors / _pushAncestorFSSuccessors here
+        // as well used to re-push the same successors from stale local dates,
+        // which is what made the downstream tasks (and their hours) jump.
         try {
-            const result = await this.orm.call(
+            const diff = await this.orm.call(
                 this.resModel, "action_update_plan_duration",
                 [[recordId], hours]
             );
-            // Sync local record with server result
             const planField = this.archInfo.planDuration || "plan_duration";
             record[planField] = hours;
             record._planDuration = hours;
-            if (result.date_end) {
-                const dateEndField = this.archInfo.dateStop || "date_end";
-                record[dateEndField] = result.date_end;
-                record._dateEnd = GanttModel.parseOdooDate(result.date_end);
-            }
-            // Sync working_duration so getInfoDuration displays correctly
-            const wdField = this.archInfo.workingDuration || "working_duration";
-            if (result.working_duration != null) {
-                record[wdField] = result.working_duration;
-            }
-            this._recomputeMilestonePositions();
-            for (const group of this.data.groups) {
-                this._computeGroupSummaryDates(group);
-            }
-            // Push FS successors if date_end changed (cascade constraint)
-            await this._pushFSSuccessors(recordId);
-            await this._pushAncestorFSSuccessors(recordId);
-            await this._recalcAndUpdateLags(recordId);
-            this.notify();
+            this._applyServerDiff(diff);
             return true;
         } catch (error) {
             console.error("Failed to update plan duration:", error);

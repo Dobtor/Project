@@ -45,13 +45,20 @@ class TestDependencyCascade(TransactionCase):
 
     def _task(self, name, start, end):
         """Create a manual-mode leaf task with real dates (not planning mode),
-        so the explicit dates are authoritative for the cascade."""
+        so the explicit dates are authoritative for the cascade.
+
+        ``plan_duration`` is set to match the window: the scheduled hours are
+        the single source of truth for a task's length, so a pushed task's end
+        is re-derived from them. With ``use_calendar=False`` that derivation is
+        plain ``start + hours``, which keeps these fixtures' windows intact.
+        """
         return self.Task.create({
             "name": name,
             "project_id": self.project.id,
             "schedule_mode": "manual",
             "date_start": start,
             "date_end": end,
+            "plan_duration": (end - start).total_seconds() / 3600.0,
         })
 
     def _link(self, source, target, link_type="FS", lag_hours=0.0):
@@ -266,3 +273,143 @@ class TestDependencyCascade(TransactionCase):
                          "C moved on a settled graph — cascade did not converge in one pass")
         self.assertEqual((b.date_start, b.date_end), (b_start, b_end))
         self.assertEqual((c.date_start, c.date_end), (c_start, c_end))
+
+
+@tagged("post_install", "-at_install")
+class TestWorkHoursAreTheSchedule(TransactionCase):
+    """The hours a user schedules ARE the schedule.
+
+    Locks in the four rules the gantt must obey with a real work calendar:
+
+    1. A leaf's ``plan_duration`` never changes because something upstream moved.
+    2. A leaf never starts or ends outside working time.
+    3. A summary task's bar spans exactly first-child-start → last-child-end.
+    4. A summary task's hours are the sum of its LEAF descendants, counted once
+       per leaf no matter how many outline levels sit in between.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.calendar = cls.env["resource.calendar"].create({
+            "name": "Test 8h/day Mon-Fri",
+            "tz": "UTC",
+            "attendance_ids": [
+                (0, 0, {
+                    "name": "d%s-%s" % (d, p),
+                    "dayofweek": str(d),
+                    "hour_from": h_from,
+                    "hour_to": h_to,
+                    "day_period": p,
+                })
+                for d in range(5)
+                for (p, h_from, h_to) in (
+                    ("morning", 8.0, 12.0), ("afternoon", 13.0, 17.0))
+            ],
+        })
+        cls.project = cls.env["project.project"].create({
+            "name": "Work-hours Project",
+            "use_calendar": True,
+            "resource_calendar_id": cls.calendar.id,
+            "tz": "UTC",
+        })
+        cls.Task = cls.env["project.task"]
+        cls.Pred = cls.env["project.task.predecessor"]
+
+    def _leaf(self, name, start, hours, parent=None):
+        task = self.Task.create({
+            "name": name,
+            "project_id": self.project.id,
+            "schedule_mode": "manual",
+            "parent_id": parent.id if parent else False,
+            "date_start": start,
+            "plan_duration": hours,
+        })
+        # Derive the window through the calendar, the same way the gantt does.
+        task.action_update_plan_duration(hours)
+        return task
+
+    def _parent(self, name, parent=None):
+        return self.Task.create({
+            "name": name,
+            "project_id": self.project.id,
+            "schedule_mode": "manual",
+            "parent_id": parent.id if parent else False,
+        })
+
+    # 2026-03-02 is a Monday.
+    MON = datetime(2026, 3, 2, 8, 0)
+
+    def test_end_lands_inside_working_time(self):
+        """4h from Monday 08:00 ends at 12:00 — never past close of business."""
+        t = self._leaf("A", self.MON, 4.0)
+        self.assertEqual(t.date_start, datetime(2026, 3, 2, 8, 0))
+        self.assertEqual(t.date_end, datetime(2026, 3, 2, 12, 0))
+        self.assertAlmostEqual(t.working_duration, 4.0, places=2)
+
+    def test_hours_survive_being_pushed_over_a_weekend(self):
+        """A pushed successor keeps its scheduled hours exactly; only its dates
+        move, and they move to working time — this is the "工時亂跳" case."""
+        a = self._leaf("A", self.MON, 4.0)
+        b = self._leaf("B", self.MON, 4.0)
+        self.Pred.create({
+            "parent_task_id": a.id, "task_id": b.id,
+            "type": "FS", "lag_hours": 0.0,
+        })
+        # Push A to Friday afternoon so B is forced across the weekend.
+        a.action_move_and_cascade(vals={
+            "date_start": datetime(2026, 3, 6, 13, 0),
+            "date_end": datetime(2026, 3, 6, 17, 0),
+        })
+        self.assertAlmostEqual(b.plan_duration, 4.0, places=2,
+                               msg="scheduled hours changed because the task moved")
+        # Friday 17:00 is outside working time → B starts Monday 08:00.
+        self.assertEqual(b.date_start, datetime(2026, 3, 9, 8, 0))
+        self.assertEqual(b.date_end, datetime(2026, 3, 9, 12, 0))
+        self.assertAlmostEqual(b.working_duration, 4.0, places=2)
+
+    def test_parent_span_covers_children(self):
+        """The summary bar is first-child-start → last-child-end, exactly."""
+        p = self._parent("P")
+        c1 = self._leaf("C1", self.MON, 8.0, parent=p)
+        c2 = self._leaf("C2", datetime(2026, 3, 4, 8, 0), 8.0, parent=p)
+        self.assertEqual(p.date_start, min(c1.date_start, c2.date_start))
+        self.assertEqual(p.date_end, max(c1.date_end, c2.date_end))
+        self.assertEqual(p.summary_date_start, p.date_start)
+        self.assertEqual(p.summary_date_end, p.date_end)
+
+    def test_total_work_hours_sums_leaves_once(self):
+        """Multi-level outline: every level reports the LEAF sum, never a
+        double count of the intermediate level."""
+        top = self._parent("TOP")
+        mid = self._parent("MID", parent=top)
+        self._leaf("L1", self.MON, 4.0, parent=mid)
+        self._leaf("L2", datetime(2026, 3, 3, 8, 0), 6.0, parent=mid)
+        other = self._leaf("L3", datetime(2026, 3, 4, 8, 0), 2.0, parent=top)
+
+        self.assertAlmostEqual(mid.total_work_hours, 10.0, places=2)
+        self.assertAlmostEqual(top.total_work_hours, 12.0, places=2)
+        self.assertAlmostEqual(other.total_work_hours, 2.0, places=2,
+                               msg="a leaf's total is its own scheduled hours")
+
+    def test_parent_hours_are_read_only(self):
+        """A summary task's hours are derived — editing them is refused."""
+        from odoo.exceptions import UserError
+        p = self._parent("P")
+        self._leaf("C", self.MON, 4.0, parent=p)
+        with self.assertRaises(UserError):
+            p.action_update_plan_duration(99.0)
+
+    def test_parent_plan_duration_not_overwritten_by_span(self):
+        """Moving a child must not rewrite the parent's stored plan_duration
+        (that is what made the summary number drift)."""
+        p = self._parent("P")
+        c = self._leaf("C", self.MON, 4.0, parent=p)
+        before = p.plan_duration
+        c.action_move_and_cascade(vals={
+            "date_start": datetime(2026, 3, 4, 8, 0),
+            "date_end": datetime(2026, 3, 4, 12, 0),
+        })
+        self.assertEqual(p.plan_duration, before)
+        self.assertEqual(p.date_start, c.date_start)
+        self.assertEqual(p.date_end, c.date_end)

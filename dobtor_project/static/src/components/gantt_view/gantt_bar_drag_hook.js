@@ -324,11 +324,14 @@ export function useGanttBarDrag(params) {
                 ? (params.shiftDate ? params.shiftDate(de, cellsDelta) : de.plus(shiftDur))
                 : null;
 
-            // Duration display: use server working_duration if available (drag = move, duration unchanged)
+            // Duration display: a move never changes the scheduled hours, so
+            // show the task's own planned hours (the authoritative input) and
+            // only fall back to a measurement when it has none.
             let durationStr = "";
             if (newEnd) {
-                if (record.working_duration && record.working_duration > 0) {
-                    durationStr = humanizeDays(record.working_duration / hpd, dpw, hpd);
+                const planned = record._planDuration || record.working_duration;
+                if (planned && planned > 0) {
+                    durationStr = humanizeDays(planned / hpd, dpw, hpd);
                 } else {
                     const diffHours = newEnd.diff(newStart, "hours").hours;
                     durationStr = humanizeDays(diffHours / hpd, dpw, hpd);

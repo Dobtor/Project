@@ -688,6 +688,17 @@
         background: var(--gantt-fill-tertiary);
         color: var(--gantt-accent-blue);
     }
+
+    // Summary rows show the roll-up of their leaves — not editable.
+    &.o_gantt_duration_readonly {
+        cursor: default;
+        font-weight: 600;
+
+        &:hover {
+            background: transparent;
+            color: var(--gantt-label-tertiary);
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------

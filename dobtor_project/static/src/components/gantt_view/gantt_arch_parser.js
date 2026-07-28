@@ -41,6 +41,9 @@ export class GanttArchParser {
         archInfo.duration = archInfo.duration || "duration";
         archInfo.planDuration = archInfo.planDuration || "plan_duration";
         archInfo.workingDuration = archInfo.workingDuration || "working_duration";
+        // Rolled-up scheduled hours (leaf = own plan_duration, parent = sum of
+        // its leaf descendants). Read-only on summary rows.
+        archInfo.totalWorkHours = archInfo.totalWorkHours || "total_work_hours";
         archInfo.fixedCalcType = archInfo.fixedCalcType || "";
 
         // Dates
