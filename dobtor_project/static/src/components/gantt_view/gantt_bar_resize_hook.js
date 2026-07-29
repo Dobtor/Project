@@ -246,7 +246,9 @@ export function useGanttBarResize(params) {
                 ? (params.shiftDate ? params.shiftDate(record._dateEnd, cellsDelta) : record._dateEnd.plus(shiftDur))
                 : record._dateEnd;
 
-            const diffHours = newEnd.diff(newStart, "hours").hours;
+            const diffHours = params.getWorkHours
+                ? params.getWorkHours(newStart, newEnd)
+                : newEnd.diff(newStart, "hours").hours;
             const durationStr = humanizeDays(diffHours / hpd, dpw, hpd);
 
             const sideLabel = side === "left" ? _t("開始") : _t("結束");

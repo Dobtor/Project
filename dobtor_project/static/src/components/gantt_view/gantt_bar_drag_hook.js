@@ -333,7 +333,9 @@ export function useGanttBarDrag(params) {
                 if (planned && planned > 0) {
                     durationStr = humanizeDays(planned / hpd, dpw, hpd);
                 } else {
-                    const diffHours = newEnd.diff(newStart, "hours").hours;
+                    const diffHours = params.getWorkHours
+                        ? params.getWorkHours(newStart, newEnd)
+                        : newEnd.diff(newStart, "hours").hours;
                     durationStr = humanizeDays(diffHours / hpd, dpw, hpd);
                 }
             }

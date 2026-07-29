@@ -20,6 +20,10 @@ import { GanttTooltip } from "./gantt_tooltip";
 import { GanttContextMenu } from "./gantt_context_menu";
 import { GanttScrollMap } from "./gantt_scrollmap";
 import { GanttInspector, GANTT_COLORS } from "./gantt_inspector";
+import {
+    dayWorkHours, workHoursInRange, workingFractionOfDay,
+    workingHourOfDayFromFraction,
+} from "./gantt_worktime";
 import { GanttAltView } from "./gantt_alt_views";
 import { ActivityListPopover } from "@mail/core/web/activity_list_popover";
 
@@ -247,12 +251,14 @@ export class GanttRenderer extends Component {
             getCalHpd: () => this._calHpd,
             getCalDpw: () => this._calDpw,
             // Shift a date by cellsDelta, respecting working days/hours
-            shiftDate: (dt, cellsDelta) => {
-                if (this._isHidingNonWorking()) {
-                    return this._addWorkingUnits(dt, cellsDelta);
-                }
-                return dt.plus(cellsDeltaToDuration(cellsDelta, this.props.scale));
-            },
+            shiftDate: (dt, cellsDelta) => this._shiftByCells(dt, cellsDelta),
+            // Hours of WORK between two instants — what the server will
+            // store as the task's scheduled hours, so the live hint shows
+            // the number the gesture actually produces (a window spanning
+            // a lunch break is not 9 hours of work).
+            getWorkHours: (from, to) => this._useWorkTimeAxis
+                ? this._workingHoursBetween(from, to)
+                : to.diff(from, "hours").hours,
             getMinStart: (id) => {
                 const rec = this.props.model.getRecord(id);
                 if (rec && rec._hasChildren) {
@@ -295,16 +301,13 @@ export class GanttRenderer extends Component {
                 const record = this.props.model.getRecord(recordId);
                 if (!record) return;
 
-                const useWorkingMove = this._isHidingNonWorking();
                 const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
 
                 // --- Parent task: move with all descendants ---
                 if (record._hasChildren) {
                     const summaryStart = record._summaryDateStart || record._dateStart;
                     if (!summaryStart) return;
-                    let newStart = useWorkingMove
-                        ? this._addWorkingUnits(summaryStart, cellsDelta)
-                        : summaryStart.plus(shiftDur);
+                    let newStart = this._shiftByCells(summaryStart, cellsDelta);
                     // Clamp to FS predecessor constraints (own + all descendants)
                     const minStart = this.props.model.getMinStartForParentDrag(recordId);
                     if (minStart && newStart < minStart) {
@@ -323,9 +326,8 @@ export class GanttRenderer extends Component {
 
                 // --- Milestone: update deadline_datetime ---
                 if (record._isMilestoneRecord) {
-                    let newDate = useWorkingMove && record._dateStart
-                        ? this._addWorkingUnits(record._dateStart, cellsDelta)
-                        : (record._dateStart ? record._dateStart.plus(shiftDur) : null);
+                    let newDate = record._dateStart
+                        ? this._shiftByCells(record._dateStart, cellsDelta) : null;
                     // Clamp to linked tasks' end dates
                     const minDate = this.props.model.getMinDateForMilestone(recordId);
                     if (minDate && newDate && newDate < minDate) {
@@ -364,9 +366,8 @@ export class GanttRenderer extends Component {
                     await this.props.model.moveAndCascade(recordId, { [planOffsetField]: newOffset });
                 } else if (record._scheduleMode === "auto") {
                     // Auto mode: convert drag to SNET constraint instead of overwriting dates
-                    let newStart = useWorkingMove && record._dateStart
-                        ? this._addWorkingUnits(record._dateStart, cellsDelta)
-                        : (record._dateStart ? record._dateStart.plus(shiftDur) : null);
+                    let newStart = record._dateStart
+                        ? this._shiftByCells(record._dateStart, cellsDelta) : null;
                     if (minStart && newStart && newStart < minStart) {
                         newStart = minStart;
                     }
@@ -389,9 +390,8 @@ export class GanttRenderer extends Component {
                         );
                         return;
                     }
-                    let newStart = useWorkingMove && record._dateStart
-                        ? this._addWorkingUnits(record._dateStart, cellsDelta)
-                        : (record._dateStart ? record._dateStart.plus(shiftDur) : null);
+                    let newStart = record._dateStart
+                        ? this._shiftByCells(record._dateStart, cellsDelta) : null;
                     // Clamp to FS predecessor end
                     if (minStart && newStart && newStart < minStart) {
                         newStart = minStart;
@@ -455,12 +455,14 @@ export class GanttRenderer extends Component {
             getCalHpd: () => this._calHpd,
             getCalDpw: () => this._calDpw,
             getMinEnd: (id) => this.props.model.getMinEndForRecord(id),
-            shiftDate: (dt, cellsDelta) => {
-                if (this._isHidingNonWorking()) {
-                    return this._addWorkingUnits(dt, cellsDelta);
-                }
-                return dt.plus(cellsDeltaToDuration(cellsDelta, this.props.scale));
-            },
+            shiftDate: (dt, cellsDelta) => this._shiftByCells(dt, cellsDelta),
+            // Hours of WORK between two instants — what the server will
+            // store as the task's scheduled hours, so the live hint shows
+            // the number the gesture actually produces (a window spanning
+            // a lunch break is not 9 hours of work).
+            getWorkHours: (from, to) => this._useWorkTimeAxis
+                ? this._workingHoursBetween(from, to)
+                : to.diff(from, "hours").hours,
             // Live update during resize — moves only the dragged edge so the
             // arrows attached to that edge track it in real time.
             onResizeMove: (recordId, side, delta) => {
@@ -535,11 +537,7 @@ export class GanttRenderer extends Component {
                     }
                 } else if (record._scheduleMode === "auto" && side === "right") {
                     // Auto mode + right resize: modify plan_duration (duration change only)
-                    const useWorkingMove = this._isHidingNonWorking();
-                    const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
-                    let newEnd = useWorkingMove
-                        ? this._addWorkingUnits(record._dateEnd, cellsDelta)
-                        : record._dateEnd.plus(shiftDur);
+                    let newEnd = this._shiftByCells(record._dateEnd, cellsDelta);
                     // Clamp to FF/SF predecessor min end
                     if (minEnd && newEnd < minEnd) {
                         newEnd = minEnd;
@@ -560,22 +558,16 @@ export class GanttRenderer extends Component {
                         );
                         return;
                     }
-                    const useWorkingMove = this._isHidingNonWorking();
-                    const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
                     const values = {};
                     if (side === "left" && record._dateStart) {
-                        let newStart = useWorkingMove
-                            ? this._addWorkingUnits(record._dateStart, cellsDelta)
-                            : record._dateStart.plus(shiftDur);
+                        let newStart = this._shiftByCells(record._dateStart, cellsDelta);
                         // Clamp to FS predecessor end
                         if (minStart && newStart < minStart) {
                             newStart = minStart;
                         }
                         values[dateStartField] = newStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                     } else if (side === "right" && record._dateEnd) {
-                        let newEnd = useWorkingMove
-                            ? this._addWorkingUnits(record._dateEnd, cellsDelta)
-                            : record._dateEnd.plus(shiftDur);
+                        let newEnd = this._shiftByCells(record._dateEnd, cellsDelta);
                         // Clamp to FF/SF predecessor min end
                         if (minEnd && newEnd < minEnd) {
                             newEnd = minEnd;
@@ -629,10 +621,7 @@ export class GanttRenderer extends Component {
                     );
                     return;
                 }
-                const useWorkingMove = this._isHidingNonWorking();
-                const newDeadline = useWorkingMove
-                    ? this._addWorkingUnits(record._dateDeadline, cellsDelta)
-                    : record._dateDeadline.plus(cellsDeltaToDuration(cellsDelta, this.props.scale));
+                const newDeadline = this._shiftByCells(record._dateDeadline, cellsDelta);
                 await this.props.model.updateRecord(recordId, {
                     [deadlineField]: newDeadline.toFormat("yyyy-MM-dd"),
                 });
@@ -773,6 +762,7 @@ export class GanttRenderer extends Component {
             // from a stale one, drifting the dependency lines off the bars.
             this._dateToPxCache = null;
             this._barGeomCache = null;
+            this._spanWorkCache = null;
             void this.timelineColumns;
         });
 
@@ -780,6 +770,7 @@ export class GanttRenderer extends Component {
             // Clear per-render caches before each render pass
             this._dateToPxCache = null;
             this._barGeomCache = null;
+            this._spanWorkCache = null;
             this._ghostBarsByTask = null;
             this._loadBarsByTask = null;
             this._recordsByResource = null;
@@ -1292,8 +1283,11 @@ export class GanttRenderer extends Component {
             const dayKey = dt.startOf("day").toISODate();
             const idx = this._workingDayIndex.get(dayKey);
             if (idx !== undefined) {
-                // Day fraction: portion of the day elapsed
-                const dayFrac = (dt.hour + dt.minute / 60) / 24;
+                // Portion of the day's WORKING time elapsed — the cell is the
+                // day's work, not 24 hours (see the working-time axis notes).
+                const dayFrac = this._useWorkTimeAxis
+                    ? this._workingFractionOfDay(dt)
+                    : (dt.hour + dt.minute / 60) / 24;
                 return (idx + dayFrac) * cw;
             }
             // dt is on a non-working day: find nearest working day boundary
@@ -1321,12 +1315,21 @@ export class GanttRenderer extends Component {
                     }
                 }
                 if (i >= 0 && i < cols.length) {
-                    const colStartMs = cols[i].date.toMillis();
-                    const colEndMs = (i + 1 < cols.length)
-                        ? cols[i + 1].date.toMillis()
-                        : cols[i].date.plus(step).toMillis();
-                    const totalMs = colEndMs - colStartMs;
-                    const frac = totalMs > 0 ? (dtMs - colStartMs) / totalMs : 0;
+                    const colStart = cols[i].date;
+                    const colEnd = (i + 1 < cols.length)
+                        ? cols[i + 1].date
+                        : cols[i].date.plus(step);
+                    // A week/month cell is the working time it contains, so a
+                    // weekend inside it takes no width and an 8-hour task is
+                    // 1/5 of a 5-day week wherever it sits.
+                    if (this._useWorkTimeAxis) {
+                        const frac = this._workingFractionOfSpan(
+                            colStart, colEnd, dt, i);
+                        return (i + frac) * cw;
+                    }
+                    const totalMs = colEnd.toMillis() - colStart.toMillis();
+                    const frac = totalMs > 0
+                        ? (dtMs - colStart.toMillis()) / totalMs : 0;
                     return (i + frac) * cw;
                 }
                 // Extrapolate: dt is outside column range
@@ -1348,8 +1351,85 @@ export class GanttRenderer extends Component {
             }
         }
 
-        // Day: use days diff (cw = px per day, start is midnight-aligned)
+        // Day: whole days from the timeline start, plus the portion of the
+        // target day's WORKING time elapsed (cw = px per day column).
+        if (this._useWorkTimeAxis) {
+            const day = dt.startOf("day");
+            const wholeDays = Math.round(day.diff(start.startOf("day"), "days").days);
+            return (wholeDays + this._workingFractionOfDay(dt)) * cw;
+        }
         return dt.diff(start, "days").days * cw;
+    }
+
+    /**
+     * Inverse of :meth:`_dateToPx` for the scales that carry the working-time
+     * axis, so a drag commits the date the bar was actually dropped on.
+     * Returns null when the scale/mode has no working-time mapping.
+     */
+    _pxToDate(px) {
+        if (!this._useWorkTimeAxis) return null;
+        const data = this.props.model.data;
+        const scale = this.props.scale;
+        const cw = this.cellWidth;
+        const start = this._extendedTimeStart || data.timeStart;
+        if (!start || !start.isValid || !cw) return null;
+
+        const pos = px / cw;
+        const idx = Math.floor(pos);
+        const frac = pos - idx;
+
+        if (scale === "day") {
+            if (this._workingDayIndex && this.props.hideNonWorkingDays) {
+                const cols = this.timelineColumns;
+                if (!cols.length) return null;
+                const col = cols[Math.max(0, Math.min(cols.length - 1, idx))];
+                return this._dateFromWorkingFraction(col.date.startOf("day"), frac);
+            }
+            return this._dateFromWorkingFraction(
+                start.startOf("day").plus({ days: idx }), frac);
+        }
+
+        if (scale === "week" || scale === "month") {
+            const cols = this._coarseColumns;
+            if (!cols || !cols.length) return null;
+            const step = scale === "week" ? { weeks: 1 } : { months: 1 };
+            const i = Math.max(0, Math.min(cols.length - 1, idx));
+            const colStart = cols[i].date;
+            const colEnd = (i + 1 < cols.length)
+                ? cols[i + 1].date : colStart.plus(step);
+            const total = this._workingHoursBetween(colStart, colEnd);
+            if (total <= 0) {
+                return colStart.plus({
+                    milliseconds: frac * (colEnd.toMillis() - colStart.toMillis()),
+                });
+            }
+            // Walk the column's days, spending `frac × total` working hours.
+            let want = frac * total;
+            let cursor = colStart.startOf("day");
+            while (cursor < colEnd) {
+                const dayHours = this._dayWorkHours(cursor);
+                if (want <= dayHours) {
+                    return this._dateFromWorkingFraction(
+                        cursor, dayHours > 0 ? want / dayHours : 0);
+                }
+                want -= dayHours;
+                cursor = cursor.plus({ days: 1 });
+            }
+            return colEnd;
+        }
+        return null;
+    }
+
+    /**
+     * Move `dt` by a (possibly fractional) number of cells, in whatever units
+     * the current axis is drawn in — so the committed date matches where the
+     * user actually dropped the bar.
+     */
+    _shiftByCells(dt, cellsDelta) {
+        const axisDate = this._pxToDate(this._dateToPx(dt) + cellsDelta * this.cellWidth);
+        if (axisDate && axisDate.isValid) return axisDate;
+        if (this._isHidingNonWorking()) return this._addWorkingUnits(dt, cellsDelta);
+        return dt.plus(cellsDeltaToDuration(cellsDelta, this.props.scale));
     }
 
     /**
@@ -1414,6 +1494,109 @@ export class GanttRenderer extends Component {
             cursor = cursor.minus({ days: 1 });
         }
         return 0;
+    }
+
+    // ---------------------------------------------------------------------
+    // Working-time axis
+    //
+    // A day column's WIDTH means the working time of that day, not 24 clock
+    // hours. With a 9:00–12:00 / 13:00–18:00 calendar, 8 scheduled hours fill
+    // exactly one day cell; the lunch hour and the night take no width at all.
+    // Two tasks of the same scheduled hours therefore draw the same length —
+    // measuring the wall clock made a task that happened to run over a lunch
+    // break, or overnight, look longer than an identical one that did not.
+    //
+    // Non-working DAYS still occupy their column (the "hide non-working days"
+    // toggle is what removes those); they simply contain no working time, so
+    // everything inside such a day maps to the column's left edge.
+    //
+    // Not applied in planning mode: virtual dates are already scaled by 24/hpd
+    // (_rescaleVirtualDates) so that 8 working hours = one day column, and
+    // applying the calendar again would count it twice. Without a work calendar
+    // the axis stays on the clock, exactly as before.
+    // ---------------------------------------------------------------------
+
+    /** Whether positions should be measured in working time. */
+    get _useWorkTimeAxis() {
+        return !!this.props.model.data?.calendarInfo?._weekdayMap
+            && !this.isPlanningMode;
+    }
+
+    /**
+     * The day's work intervals as [{from, to}] in decimal local hours.
+     * `[]` for a day the calendar does not work; `null` when there is no
+     * calendar to consult (caller falls back to clock time).
+     */
+    _dayWorkIntervals(day) {
+        const ci = this.props.model.data?.calendarInfo;
+        if (!ci?._weekdayMap) return null;
+        if (ci._leaveDays?.has(day.toISODate())) return [];
+        return ci._weekdayMap[String(day.weekday - 1)] || [];
+    }
+
+    /** Total working hours of a day (0 on a weekend / leave day). */
+    _dayWorkHours(day) {
+        return dayWorkHours(this._dayWorkIntervals(day) || []);
+    }
+
+    /**
+     * How far through the day's working time `dt` sits, as 0..1.
+     * 09:00 → 0, 12:00 and 13:00 → both 3/8 (the break has no width),
+     * 18:00 → 1. Falls back to the clock fraction with no calendar.
+     */
+    _workingFractionOfDay(dt) {
+        const ivs = this._dayWorkIntervals(dt.startOf("day"));
+        if (!ivs) return (dt.hour + dt.minute / 60) / 24;
+        return workingFractionOfDay(
+            ivs, dt.hour + dt.minute / 60 + dt.second / 3600);
+    }
+
+    /** Inverse of :meth:`_workingFractionOfDay`. */
+    _dateFromWorkingFraction(day, frac) {
+        const ivs = this._dayWorkIntervals(day);
+        if (!ivs) return day.plus({ hours: Math.max(0, frac) * 24 });
+        const hour = workingHourOfDayFromFraction(ivs, frac);
+        return hour === null ? day : day.plus({ hours: hour });
+    }
+
+    /** Working hours between two datetimes (used for week / month columns). */
+    _workingHoursBetween(from, to) {
+        if (to <= from) return 0;
+        let total = 0;
+        let cursor = from.startOf("day");
+        const lastDay = to.startOf("day");
+        const fromH = from.hour + from.minute / 60;
+        const toH = to.hour + to.minute / 60;
+        while (cursor <= lastDay) {
+            const ivs = this._dayWorkIntervals(cursor);
+            if (ivs && ivs.length) {
+                const isFirst = +cursor === +from.startOf("day");
+                const isLast = +cursor === +lastDay;
+                total += workHoursInRange(
+                    ivs, isFirst ? fromH : 0, isLast ? toH : 24);
+            }
+            cursor = cursor.plus({ days: 1 });
+        }
+        return total;
+    }
+
+    /**
+     * Fraction of a coarse column (week / month) consumed by working time up to
+     * `dt`. Memoised per render because a month column costs ~31 day lookups.
+     */
+    _workingFractionOfSpan(colStart, colEnd, dt, cacheKey) {
+        if (!this._spanWorkCache) this._spanWorkCache = new Map();
+        let total = this._spanWorkCache.get(cacheKey);
+        if (total === undefined) {
+            total = this._workingHoursBetween(colStart, colEnd);
+            this._spanWorkCache.set(cacheKey, total);
+        }
+        if (total <= 0) {
+            const span = colEnd.toMillis() - colStart.toMillis();
+            return span > 0 ? (dt.toMillis() - colStart.toMillis()) / span : 0;
+        }
+        return Math.max(0, Math.min(1,
+            this._workingHoursBetween(colStart, dt) / total));
     }
 
     /**
