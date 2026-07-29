@@ -63,12 +63,32 @@ class ProjectTaskNative(models.Model):
         return defaults
 
     @api.model
+    def _planning_mode_project(self):
+        """The project a task is being created in, when it is in planning mode.
+
+        Planning mode means the project has no ``schedule_start``: its tasks are
+        positioned by ``plan_offset`` (hours from T+0) and must NOT be given real
+        dates. Resolving the project only from ``default_project_id`` missed every
+        creation path that does not set it — a subtask created from a task form,
+        for instance — and one task with today's dates in an otherwise virtual
+        project stretches the gantt's time range from the virtual origin to the
+        real calendar (a ~9,700-day span of empty columns).
+        """
+        ctx = self._context
+        project = self.env['project.project']
+        if ctx.get('default_project_id'):
+            project = project.browse(ctx['default_project_id'])
+        elif ctx.get('default_parent_id'):
+            parent = self.env['project.task'].browse(ctx['default_parent_id']).exists()
+            project = parent.project_id
+        if project and project.exists() and not project.schedule_start:
+            return project
+        return self.env['project.project']
+
+    @api.model
     def _default_date_end(self):
-        if 'default_project_id' in self._context:
-            project_id = self._context['default_project_id']
-            project = self.env['project.project'].browse(project_id)
-            if not project.schedule_start:
-                return False  # Planning mode: no dates
+        if self._planning_mode_project():
+            return False  # Planning mode: position comes from plan_offset
 
         # Subtask inherits parent's date range
         if 'default_parent_id' in self._context:
@@ -94,11 +114,8 @@ class ProjectTaskNative(models.Model):
 
     @api.model
     def _default_date_start(self):
-        if 'default_project_id' in self._context:
-            project_id = self._context['default_project_id']
-            project = self.env['project.project'].browse(project_id)
-            if not project.schedule_start:
-                return False  # Planning mode: no dates
+        if self._planning_mode_project():
+            return False  # Planning mode: position comes from plan_offset
 
         # Subtask inherits parent's date range
         if 'default_parent_id' in self._context:

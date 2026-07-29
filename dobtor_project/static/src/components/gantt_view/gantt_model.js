@@ -628,15 +628,19 @@ export class GanttModel extends Model {
      */
     _expandTimeRange(newRecords) {
         let changed = false;
+        // Same rule as _calculateTimeRange: a row that is not on the chart's
+        // timeline (a milestone still carrying a real deadline in a planning
+        // project, a lazily-loaded subtask with dates) may not stretch the axis.
+        const window = this._virtualTimelineWindow();
         for (const record of newRecords) {
-            if (record._dateStart && record._dateStart.isValid) {
+            if (this._isOnChartTimeline(record._dateStart, window)) {
                 const padded = record._dateStart.minus({ days: 2 }).startOf("day");
                 if (!this.data.timeStart || padded < this.data.timeStart) {
                     this.data.timeStart = padded;
                     changed = true;
                 }
             }
-            if (record._dateEnd && record._dateEnd.isValid) {
+            if (this._isOnChartTimeline(record._dateEnd, window)) {
                 const padded = record._dateEnd.plus({ days: 5 }).endOf("day");
                 if (!this.data.timeEnd || padded > this.data.timeEnd) {
                     this.data.timeEnd = padded;
@@ -644,6 +648,7 @@ export class GanttModel extends Model {
                 }
             }
         }
+        if (changed) this._clampTimeRange();
         return changed;
     }
 
@@ -696,21 +701,78 @@ export class GanttModel extends Model {
         }
     }
 
+    /**
+     * The window of instants the chart is actually drawn on, or null when it is
+     * an ordinary scheduled chart.
+     *
+     * Planning rows carry FABRICATED dates: PLANNING_T0 (2000-01-01) plus their
+     * planned hours. Scheduled rows carry real ones. Both kinds can end up in
+     * the same project — a milestone whose deadline was never cleared, a task
+     * created from a form that did not pass default_project_id, an import — and
+     * because the time range was the min/max over ALL rows, ONE such row
+     * stretched the axis from the virtual origin to the real calendar: a quarter
+     * of a century of empty columns, which is the "thousands of days" blow-up.
+     *
+     * So: decide the timeline from the rows that carry the flag (tasks), then
+     * treat anything far outside it as an outlier to be left out of the range.
+     */
+    _virtualTimelineWindow() {
+        const tasks = this.data.records.filter(r => !r._isMilestoneRecord);
+        const virtual = tasks.filter(r => r._isVirtualDates);
+        if (!virtual.length) return null;
+        const dated = tasks.filter(
+            r => (r._dateStart && r._dateStart.isValid) || (r._dateEnd && r._dateEnd.isValid));
+        // Mixed but mostly real → it is a scheduled chart with leftovers; leave
+        // the range alone rather than pinning it to a couple of stray plans.
+        if (virtual.length * 2 < dated.length) return null;
+        return {
+            from: PLANNING_T0.minus({ years: 1 }),
+            to: PLANNING_T0.plus({ years: 20 }),
+        };
+    }
+
+    /** Whether `dt` belongs on the timeline the chart is drawn on. */
+    _isOnChartTimeline(dt, window) {
+        if (!dt || !dt.isValid) return false;
+        if (!window) return true;
+        return dt >= window.from && dt <= window.to;
+    }
+
     _calculateTimeRange() {
         let minDate = null;
         let maxDate = null;
+        const window = this._virtualTimelineWindow();
+        let strays = 0;
 
         for (const record of this.data.records) {
-            if (record._dateStart && record._dateStart.isValid) {
+            const startOk = this._isOnChartTimeline(record._dateStart, window);
+            const endOk = this._isOnChartTimeline(record._dateEnd, window);
+            if (window && ((record._dateStart && !startOk) || (record._dateEnd && !endOk))) {
+                strays++;
+                continue;
+            }
+            if (startOk) {
                 if (!minDate || record._dateStart < minDate) {
                     minDate = record._dateStart;
                 }
             }
-            if (record._dateEnd && record._dateEnd.isValid) {
+            if (endOk) {
                 if (!maxDate || record._dateEnd > maxDate) {
                     maxDate = record._dateEnd;
                 }
             }
+        }
+        this._strayTimelineRows = strays;
+        if (strays) {
+            console.warn(
+                `[Gantt] ${strays} row(s) carry real dates in a planning-mode ` +
+                `project and were excluded from the timeline range. Run 排程 / ` +
+                `清除排程日期 to put them back on one timeline.`);
+            this.notification?.add(
+                _t("有 %(count)s 筆資料仍停在真實日期（本專案為計劃模式），已排除在時間軸範圍外。" +
+                   "請執行「清除排程日期 → 清除任務日期（回到計劃模式）」讓全部資料回到同一條時間軸。",
+                   { count: strays }),
+                { type: "warning" });
         }
 
         // Default to current month if no dates
@@ -724,6 +786,31 @@ export class GanttModel extends Model {
         // Add padding
         this.data.timeStart = minDate.minus({ days: 2 }).startOf("day");
         this.data.timeEnd = maxDate.plus({ days: 5 }).endOf("day");
+        this._clampTimeRange();
+    }
+
+    /**
+     * Last-resort guard on the axis length.
+     *
+     * One row with an absurd date (a typo, an import, a timeline that got mixed
+     * despite everything above) must not make the renderer generate tens of
+     * thousands of columns and lock the browser up. Whatever the data says, the
+     * axis stops at MAX_RANGE_DAYS; rows beyond it are simply drawn off the end.
+     */
+    _clampTimeRange() {
+        const MAX_RANGE_DAYS = 3650;   // 10 years — far beyond any real plan
+        const { timeStart, timeEnd } = this.data;
+        if (!timeStart?.isValid || !timeEnd?.isValid) return;
+        const span = timeEnd.diff(timeStart, "days").days;
+        if (span <= MAX_RANGE_DAYS) return;
+        this.data.timeEnd = timeStart.plus({ days: MAX_RANGE_DAYS }).endOf("day");
+        console.warn(
+            `[Gantt] time range of ${Math.round(span)} days truncated to ` +
+            `${MAX_RANGE_DAYS}; some rows are dated far outside the plan.`);
+        this.notification?.add(
+            _t("時間範圍過長（%(days)s 天），已截斷顯示；請檢查是否有日期異常的任務",
+               { days: Math.round(span) }),
+            { type: "warning" });
     }
 
     _groupRecords() {
@@ -1557,6 +1644,22 @@ export class GanttModel extends Model {
     _computeMilestonePositions() {
         const milestoneIdField = this.archInfo.milestoneId;
         if (!milestoneIdField) return;
+
+        // A milestone's deadline is a REAL date. On a planning chart it belongs
+        // to a different timeline entirely, so honouring it would both misplace
+        // the diamond and drag the whole axis onto the real calendar. Drop it
+        // and let the position be derived from the linked tasks (or T+0), which
+        // is what planning mode means; the stored deadline is untouched and
+        // comes back the moment the project is scheduled.
+        const window = this._virtualTimelineWindow();
+        if (window) {
+            for (const ms of this.data.milestones) {
+                if (ms._dateStart && !this._isOnChartTimeline(ms._dateStart, window)) {
+                    ms._dateStart = null;
+                    ms._dateEnd = null;
+                }
+            }
+        }
 
         for (const ms of this.data.milestones) {
             if (ms._dateStart) continue; // Already has a position from deadline
