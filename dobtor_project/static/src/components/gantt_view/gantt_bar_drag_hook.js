@@ -35,6 +35,16 @@ function _scaleToMs(scale) {
  * @param {Function} [params.getFlattenedRows] - () => array of row objects
  * @param {Function} [params.getListEl] - () => list rows DOM element
  */
+/**
+ * Format an instant on the PROJECT's clock when the host supplies a
+ * formatter (it knows the work calendar's zone); otherwise on the
+ * viewer's, which is what this did before there was a zone to respect.
+ */
+function _hintFormatter(params) {
+    return (dt, fmt) => (params.formatDate
+        ? params.formatDate(dt, fmt) : dt.toFormat(fmt));
+}
+
 export function useGanttBarDrag(params) {
     let isDragging = false;
     let dragBar = null;
@@ -301,6 +311,7 @@ export function useGanttBarDrag(params) {
     }
 
     function _updateHint(deltaX) {
+        const _fmt = _hintFormatter(params);
         if (!hintEl || !dragBar) return;
 
         const cellWidth = params.getCellWidth();
@@ -341,9 +352,9 @@ export function useGanttBarDrag(params) {
             }
 
             const lines = [];
-            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">${escapeHtml(_t("開始"))}:</span> ${escapeHtml(newStart.toFormat("M/d HH:mm"))}</div>`);
+            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">${escapeHtml(_t("開始"))}:</span> ${escapeHtml(_fmt(newStart, "M/d HH:mm"))}</div>`);
             if (newEnd) {
-                lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">${escapeHtml(_t("結束"))}:</span> ${escapeHtml(newEnd.toFormat("M/d HH:mm"))}</div>`);
+                lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">${escapeHtml(_t("結束"))}:</span> ${escapeHtml(_fmt(newEnd, "M/d HH:mm"))}</div>`);
             }
             if (durationStr) {
                 lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">${escapeHtml(_t("工期"))}:</span> ${escapeHtml(durationStr)}</div>`);

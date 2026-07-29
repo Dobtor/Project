@@ -18,6 +18,16 @@ const { DateTime } = luxon;
  * @param {Function} params.getRecord - (recordId) => record object
  * @param {Function} params.onDragEnd - (recordId, cellsDelta) => Promise
  */
+/**
+ * Format an instant on the PROJECT's clock when the host supplies a
+ * formatter (it knows the work calendar's zone); otherwise on the
+ * viewer's, which is what this did before there was a zone to respect.
+ */
+function _hintFormatter(params) {
+    return (dt, fmt) => (params.formatDate
+        ? params.formatDate(dt, fmt) : dt.toFormat(fmt));
+}
+
 export function useGanttDeadlineDrag(params) {
     let isDragging = false;
     let marker = null;
@@ -120,6 +130,7 @@ export function useGanttDeadlineDrag(params) {
     }
 
     function _updateHint(deltaX) {
+        const _fmt = _hintFormatter(params);
         if (!hintEl || !marker) return;
 
         const cellWidth = params.getCellWidth();
@@ -130,7 +141,7 @@ export function useGanttDeadlineDrag(params) {
             const scale = params.getScale ? params.getScale() : "day";
             const dur = cellsDeltaToDuration(cellsDelta, scale);
             const newDeadline = record._dateDeadline.plus(dur);
-            hintEl.textContent = _t("截止日: %(date)s", { date: newDeadline.toFormat("M/d") });
+            hintEl.textContent = _t("截止日: %(date)s", { date: _fmt(newDeadline, "M/d") });
         }
 
         const rect = marker.getBoundingClientRect();

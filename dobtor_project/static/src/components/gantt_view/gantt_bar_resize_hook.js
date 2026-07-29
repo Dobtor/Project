@@ -27,6 +27,16 @@ function _scaleToMs(scale) {
  * @param {Function} [params.getMinEnd] - (recordId) => DateTime|null (FF/SF min end constraint)
  * @param {Function} [params.onConstraintSet] - (recordId, constrainType, constrainDate) => Promise
  */
+/**
+ * Format an instant on the PROJECT's clock when the host supplies a
+ * formatter (it knows the work calendar's zone); otherwise on the
+ * viewer's, which is what this did before there was a zone to respect.
+ */
+function _hintFormatter(params) {
+    return (dt, fmt) => (params.formatDate
+        ? params.formatDate(dt, fmt) : dt.toFormat(fmt));
+}
+
 export function useGanttBarResize(params) {
     let isResizing = false;
     let isConstraintMode = false;
@@ -215,6 +225,7 @@ export function useGanttBarResize(params) {
     }
 
     function _updateHint(deltaX) {
+        const _fmt = _hintFormatter(params);
         if (!hintEl || !resizeBar) return;
 
         const cellWidth = params.getCellWidth();
@@ -233,7 +244,7 @@ export function useGanttBarResize(params) {
             hintEl.innerHTML =
                 `<div class="o_gantt_hint_row o_gantt_hint_constraint">` +
                 `<span class="o_gantt_hint_label">${escapeHtml(constraintType)}</span> ` +
-                `${escapeHtml(targetDate.toFormat("M/d HH:mm"))}` +
+                `${escapeHtml(_fmt(targetDate, "M/d HH:mm"))}` +
                 `</div>`;
         } else if (record && record._dateStart && record._dateEnd) {
             const hpd = params.getCalHpd ? params.getCalHpd() : 24;
@@ -255,8 +266,8 @@ export function useGanttBarResize(params) {
             const deltaLabel = formatDeltaLabel(cellsDelta, _scale, hpd, dpw);
 
             const lines = [];
-            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">${escapeHtml(_t("開始"))}:</span> ${escapeHtml(newStart.toFormat("M/d HH:mm"))}</div>`);
-            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">${escapeHtml(_t("結束"))}:</span> ${escapeHtml(newEnd.toFormat("M/d HH:mm"))}</div>`);
+            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">${escapeHtml(_t("開始"))}:</span> ${escapeHtml(_fmt(newStart, "M/d HH:mm"))}</div>`);
+            lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">${escapeHtml(_t("結束"))}:</span> ${escapeHtml(_fmt(newEnd, "M/d HH:mm"))}</div>`);
             lines.push(`<div class="o_gantt_hint_row"><span class="o_gantt_hint_label">${escapeHtml(_t("工期"))}:</span> ${escapeHtml(durationStr)}</div>`);
             lines.push(`<div class="o_gantt_hint_delta">${escapeHtml(sideLabel)} ${escapeHtml(deltaLabel)}</div>`);
             // Lag preview for FS predecessors

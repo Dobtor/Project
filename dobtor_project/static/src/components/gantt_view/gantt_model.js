@@ -620,16 +620,19 @@ export class GanttModel extends Model {
         // timeline (a milestone still carrying a real deadline in a planning
         // project, a lazily-loaded subtask with dates) may not stretch the axis.
         const window = this._virtualTimelineWindow();
+        const zone = this._calendarZone();
         for (const record of newRecords) {
             if (this._isOnChartTimeline(record._dateStart, window)) {
-                const padded = record._dateStart.minus({ days: 2 }).startOf("day");
+                const padded = record._dateStart.setZone(zone)
+                    .minus({ days: 2 }).startOf("day");
                 if (!this.data.timeStart || padded < this.data.timeStart) {
                     this.data.timeStart = padded;
                     changed = true;
                 }
             }
             if (this._isOnChartTimeline(record._dateEnd, window)) {
-                const padded = record._dateEnd.plus({ days: 5 }).endOf("day");
+                const padded = record._dateEnd.setZone(zone)
+                    .plus({ days: 5 }).endOf("day");
                 if (!this.data.timeEnd || padded > this.data.timeEnd) {
                     this.data.timeEnd = padded;
                     changed = true;
@@ -739,6 +742,11 @@ export class GanttModel extends Model {
         return dt >= window.from && dt <= window.to;
     }
 
+    /** The zone the work calendar speaks, or "local" when there is none. */
+    _calendarZone() {
+        return this.data.calendarInfo?.tz || "local";
+    }
+
     _calculateTimeRange() {
         let minDate = null;
         let maxDate = null;
@@ -784,9 +792,14 @@ export class GanttModel extends Model {
             maxDate = DateTime.now().endOf("month");
         }
 
-        // Add padding
-        this.data.timeStart = minDate.minus({ days: 2 }).startOf("day");
-        this.data.timeEnd = maxDate.plus({ days: 5 }).endOf("day");
+        // Padded to whole days OF THE PROJECT: the axis counts the project's
+        // days, so an origin taken from the viewer's midnight would start the
+        // grid on a different day for a viewer in another zone — the columns and
+        // the bars would still agree with each other, but not with the calendar
+        // they claim to show.
+        const zone = this._calendarZone();
+        this.data.timeStart = minDate.setZone(zone).minus({ days: 2 }).startOf("day");
+        this.data.timeEnd = maxDate.setZone(zone).plus({ days: 5 }).endOf("day");
         this._clampTimeRange();
     }
 
@@ -1508,11 +1521,15 @@ export class GanttModel extends Model {
                 this.data.calendarInfo._workingWeekdays = new Set(
                     Object.keys(weekdayMap).map(d => parseInt(d) + 1)
                 );
-                // Pre-parse leave dates to Luxon DateTime
+                // Leave days as ISO dates in the CALENDAR's zone: they are
+                // looked up with the same key the axis and the columns build
+                // (project wall clock), so a leave that starts at 17:00 UTC is
+                // the project's day, not the viewer's.
+                const calZone = info.tz || "local";
                 this.data.calendarInfo._leaveDays = new Set();
                 for (const leave of info.leaves) {
-                    const from = DateTime.fromSQL(leave.date_from, { zone: "utc" }).toLocal();
-                    const to = DateTime.fromSQL(leave.date_to, { zone: "utc" }).toLocal();
+                    const from = DateTime.fromSQL(leave.date_from, { zone: "utc" }).setZone(calZone);
+                    const to = DateTime.fromSQL(leave.date_to, { zone: "utc" }).setZone(calZone);
                     if (from.isValid && to.isValid) {
                         let cursor = from.startOf("day");
                         const end = to.startOf("day");

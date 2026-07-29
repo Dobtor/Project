@@ -39,6 +39,30 @@ import { cellsDeltaToDuration, PLANNING_T0 } from "./gantt_utils";
  */
 export const GanttAxisMixin = {
     /**
+     * The zone the work calendar is expressed in.
+     *
+     * A calendar's attendances are hours of the PROJECT's day — 9:00 means 9:00
+     * where the work happens — and the server snaps every date with
+     * `pytz.timezone(project.tz or 'UTC')`. The browser's Luxon dates are in the
+     * viewer's own zone, so reading `dt.hour` to ask "is this working time?"
+     * silently compares one clock against another. Same-zone viewers never
+     * notice; anyone else gets a chart whose bars, columns and weekends are all
+     * shifted, and which disagrees with what the server just wrote.
+     *
+     * null means "no calendar to consult" — the axis stays on the viewer's clock,
+     * exactly as before.
+     */
+    get _calendarZone() {
+        return this.props.model.data?.calendarInfo?.tz || null;
+    },
+
+    /** `dt` read in the calendar's zone (same instant, project wall clock). */
+    _zoned(dt) {
+        const zone = this._calendarZone;
+        return (zone && dt) ? dt.setZone(zone) : dt;
+    },
+
+    /**
      * Convert a DateTime to pixel position relative to timeline start.
      * - Sub-day: uniform px/ms (or working-hour index when hiding non-working).
      * - Day: px/day (or working-day index when hiding non-working).
@@ -124,15 +148,17 @@ export const GanttAxisMixin = {
             return this._cellAt(index, step);
         }
 
-        // Day
+        // Day — in the calendar's zone, so the day a bar belongs to is the day
+        // the WORK is on, and the index matches the columns, which are generated
+        // in that same zone.
+        const day = this._zoned(dt).startOf("day");
         if (this._workingDayIndex && this.props.hideNonWorkingDays) {
-            const day = dt.startOf("day");
             const index = this._workingDayIndex.get(day.toISODate());
             if (index === undefined) return null;       // hidden day → caller falls back
             return { index, start: day, end: day.plus({ days: 1 }) };
         }
-        const day = dt.startOf("day");
-        const index = Math.round(day.diff(timeStart.startOf("day"), "days").days);
+        const index = Math.round(
+            day.diff(this._zoned(timeStart).startOf("day"), "days").days);
         return { index, start: day, end: day.plus({ days: 1 }) };
     },
 
@@ -168,10 +194,10 @@ export const GanttAxisMixin = {
             const cols = this.timelineColumns;
             if (!cols.length) return null;
             const i = Math.max(0, Math.min(cols.length - 1, index));
-            const start = cols[i].date.startOf("day");
+            const start = this._zoned(cols[i].date).startOf("day");
             return { index: i, start, end: start.plus({ days: 1 }) };
         }
-        const start = timeStart.startOf("day").plus({ days: index });
+        const start = this._zoned(timeStart).startOf("day").plus({ days: index });
         return { index, start, end: start.plus({ days: 1 }) };
     },
 
@@ -238,7 +264,7 @@ export const GanttAxisMixin = {
         if (profile === undefined) {
             const days = [];
             const upto = [0];
-            let cursor = cell.start.startOf("day");
+            let cursor = this._zoned(cell.start).startOf("day");
             let acc = 0;
             while (cursor < cell.end) {
                 days.push(cursor);
@@ -320,7 +346,7 @@ export const GanttAxisMixin = {
     _rebuildWorkingDayIndex(cols) {
         this._workingDayIndex = new Map();
         for (let i = 0; i < cols.length; i++) {
-            this._workingDayIndex.set(cols[i].date.toISODate(), i);
+            this._workingDayIndex.set(this._zoned(cols[i].date).toISODate(), i);
         }
     },
 
@@ -365,7 +391,7 @@ export const GanttAxisMixin = {
     _dateToPxFallback(dt, cw) {
         const cols = this.timelineColumns;
         if (!cols.length) return 0;
-        let cursor = dt.startOf("day").minus({ days: 1 });
+        let cursor = this._zoned(dt).startOf("day").minus({ days: 1 });
         const earliest = cols[0]?.date;
         while (cursor >= earliest) {
             const key = cursor.toISODate();
@@ -412,8 +438,9 @@ export const GanttAxisMixin = {
     _dayWorkIntervals(day) {
         const ci = this.props.model.data?.calendarInfo;
         if (!ci?._weekdayMap) return null;
-        if (ci._leaveDays?.has(day.toISODate())) return [];
-        return ci._weekdayMap[String(day.weekday - 1)] || [];
+        const local = this._zoned(day);
+        if (ci._leaveDays?.has(local.toISODate())) return [];
+        return ci._weekdayMap[String(local.weekday - 1)] || [];
     },
 
     /** Total working hours of a day (0 on a weekend / leave day). */
@@ -427,32 +454,38 @@ export const GanttAxisMixin = {
      * 18:00 → 1. Falls back to the clock fraction with no calendar.
      */
     _workingFractionOfDay(dt) {
-        const ivs = this._dayWorkIntervals(dt.startOf("day"));
-        if (!ivs) return (dt.hour + dt.minute / 60) / 24;
+        const local = this._zoned(dt);
+        const ivs = this._dayWorkIntervals(local.startOf("day"));
+        if (!ivs) return (local.hour + local.minute / 60) / 24;
         return workingFractionOfDay(
-            ivs, dt.hour + dt.minute / 60 + dt.second / 3600);
+            ivs, local.hour + local.minute / 60 + local.second / 3600);
     },
 
     /** Inverse of :meth:`_workingFractionOfDay`. */
     _dateFromWorkingFraction(day, frac) {
-        const ivs = this._dayWorkIntervals(day);
-        if (!ivs) return day.plus({ hours: Math.max(0, frac) * 24 });
+        // Built in the calendar's zone so "09:00" is the project's nine o'clock;
+        // the instant it returns is what callers serialize, zone and all.
+        const local = this._zoned(day).startOf("day");
+        const ivs = this._dayWorkIntervals(local);
+        if (!ivs) return local.plus({ hours: Math.max(0, frac) * 24 });
         const hour = workingHourOfDayFromFraction(ivs, frac);
-        return hour === null ? day : day.plus({ hours: hour });
+        return hour === null ? local : local.plus({ hours: hour });
     },
 
     /** Working hours between two datetimes (used for week / month columns). */
     _workingHoursBetween(from, to) {
         if (to <= from) return 0;
+        const fromZ = this._zoned(from);
+        const toZ = this._zoned(to);
         let total = 0;
-        let cursor = from.startOf("day");
-        const lastDay = to.startOf("day");
-        const fromH = from.hour + from.minute / 60;
-        const toH = to.hour + to.minute / 60;
+        let cursor = fromZ.startOf("day");
+        const lastDay = toZ.startOf("day");
+        const fromH = fromZ.hour + fromZ.minute / 60;
+        const toH = toZ.hour + toZ.minute / 60;
         while (cursor <= lastDay) {
             const ivs = this._dayWorkIntervals(cursor);
             if (ivs && ivs.length) {
-                const isFirst = +cursor === +from.startOf("day");
+                const isFirst = +cursor === +fromZ.startOf("day");
                 const isLast = +cursor === +lastDay;
                 total += workHoursInRange(
                     ivs, isFirst ? fromH : 0, isLast ? toH : 24);

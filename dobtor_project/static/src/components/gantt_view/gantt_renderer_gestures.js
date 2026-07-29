@@ -61,6 +61,9 @@ export const GanttGesturesMixin = {
             getWorkHours: (from, to) => this._useWorkTimeAxis
                 ? this._workingHoursBetween(from, to)
                 : to.diff(from, "hours").hours,
+            // Hints read the PROJECT's clock: a bar dropped at 09:00 of the
+            // project's day must say 09:00, whatever zone the viewer is in.
+            formatDate: (dt, fmt) => this._zoned(dt).toFormat(fmt),
             getMinStart: (id) => {
                 const rec = this.props.model.getRecord(id);
                 if (rec && rec._hasChildren) {
@@ -268,6 +271,9 @@ export const GanttGesturesMixin = {
             getWorkHours: (from, to) => this._useWorkTimeAxis
                 ? this._workingHoursBetween(from, to)
                 : to.diff(from, "hours").hours,
+            // Hints read the PROJECT's clock: a bar dropped at 09:00 of the
+            // project's day must say 09:00, whatever zone the viewer is in.
+            formatDate: (dt, fmt) => this._zoned(dt).toFormat(fmt),
             // Live update during resize — moves only the dragged edge so the
             // arrows attached to that edge track it in real time.
             onResizeMove: (recordId, side, delta) => {

@@ -606,9 +606,15 @@ export class GanttRenderer extends Component {
         if (this.isPlanningMode) {
             return this._generatePlanningColumns(start, end);
         }
+        // Columns are laid out in the CALENDAR's zone (see _calendarZone): a
+        // column is a day of the project's week, and _cellOf resolves instants
+        // against the same clock, so bars and grid cannot disagree. Without a
+        // calendar this is the viewer's own zone, exactly as before.
+        start = this._zoned(start);
+        end = this._zoned(end);
         const columns = [];
         const scale = this.props.scale;
-        const now = DateTime.now();
+        const now = this._zoned(DateTime.now());
         // Helper: format planning mode label with correct sign (T+1, T0, T-1)
         const _pl = (prefix, n) => `${prefix}${n > 0 ? "+" : ""}${n}`;
 
