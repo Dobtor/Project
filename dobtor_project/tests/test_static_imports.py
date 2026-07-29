@@ -58,6 +58,12 @@ EXPORT_DECL = re.compile(
 EXPORT_LIST = re.compile(r'^export\s*\{([^}]*)\}', re.M)
 
 
+def _strip_js_comments(text):
+    """Prose is full of "NO IMPORTS." and "24 HOURS"; only code counts."""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return re.sub(r"(?<![:\\])//[^\n]*", "", text)
+
+
 def _exports_of(path):
     src = path.read_text(encoding="utf-8")
     names = set(EXPORT_DECL.findall(src))
@@ -139,14 +145,11 @@ class TestStaticImports(unittest.TestCase):
             "Notification", "AbortController", "TextEncoder", "TextDecoder",
         }
 
-        def _strip_comments(text):
-            """Prose is full of "NO IMPORTS." and "24 HOURS"; only code counts."""
-            text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-            return re.sub(r"(?<![:\\])//[^\n]*", "", text)
+
         missing = []
         for js in sorted((MODULE_ROOT / "static" / "src").rglob("*.js")):
             raw = js.read_text(encoding="utf-8")
-            src = _strip_comments(raw)
+            src = _strip_js_comments(raw)
             imported = set()
             for group, _spec in NAMED_IMPORT.findall(src):
                 imported |= {n.strip().split(" as ")[-1]
@@ -164,6 +167,86 @@ class TestStaticImports(unittest.TestCase):
                 if name in imported or name in declared or name in BUILTINS:
                     continue
                 missing.append(f"{js.relative_to(MODULE_ROOT)}: {name}")
+        self.assertEqual(sorted(missing), [], "\n" + "\n".join(sorted(missing)))
+
+
+    def test_own_exports_are_imported_where_used(self):
+        """The check above only sees names that LOOK module-level (_t, useX,
+        CamelCase). A lowercase helper — humanizeHours, cellsDeltaToDuration —
+        looks exactly like a local variable, so it needs a different rule: if a
+        name this module EXPORTS somewhere is used in another file without being
+        imported or declared there, that use is undefined.
+        """
+        js_files = sorted((MODULE_ROOT / "static" / "src").rglob("*.js"))
+        exported = {}
+        for js in js_files:
+            src = js.read_text(encoding="utf-8")
+            for name in re.findall(
+                    r"^export\s+(?:async\s+)?(?:function|class|const|let|var)\s+(\w+)",
+                    src, re.M):
+                exported[name] = js
+            for group in re.findall(r"^export\s*\{([^}]*)\}", src, re.M):
+                for raw in group.split(","):
+                    name = raw.strip().split(" as ")[-1]
+                    if name:
+                        exported.setdefault(name, js)
+        self.assertTrue(exported, "no exports found — the scan is broken")
+
+        missing = []
+        for js in js_files:
+            src = _strip_js_comments(js.read_text(encoding="utf-8"))
+            imported = set()
+            for group, _spec in NAMED_IMPORT.findall(src):
+                imported |= {n.strip().split(" as ")[-1]
+                             for n in group.split(",") if n.strip()}
+            imported |= set(re.findall(r"^import\s+(\w+)\s+from", src, re.M))
+            declared = set(re.findall(
+                r"(?:^|[\s;{(,])(?:export\s+)?(?:const|let|var|function|class)\s+(\w+)",
+                src, re.M))
+            for name, home in exported.items():
+                if home == js or name in imported or name in declared:
+                    continue
+                if re.search(r"(?<![\w.$])" + re.escape(name) + r"\s*[(.]", src):
+                    missing.append(f"{js.relative_to(MODULE_ROOT)}: {name} "
+                                   f"(exported by {home.name})")
+        self.assertEqual(sorted(missing), [], "\n" + "\n".join(sorted(missing)))
+
+
+class TestRendererMixins(unittest.TestCase):
+    """The renderer and its mixins share one prototype, so a method call must
+    find a definition SOMEWHERE in the trio.
+
+    Splitting a component moves methods between files; a call left pointing at a
+    method that did not come along fails only when that path runs. Both
+    production failures in this branch were the file-scope version of this.
+    """
+
+    TRIO = ("gantt_renderer.js", "gantt_renderer_axis.js",
+            "gantt_renderer_gestures.js")
+    COMPONENT_DIR = MODULE_ROOT / "static" / "src" / "components" / "gantt_view"
+    OWL_MEMBERS = {"render", "mounted", "willUnmount", "willStart",
+                   "willUpdateProps", "patched", "setup"}
+
+    def test_every_this_call_resolves(self):
+        sources = {}
+        for name in self.TRIO:
+            path = self.COMPONENT_DIR / name
+            self.assertTrue(path.is_file(), "%s is missing" % name)
+            sources[name] = path.read_text(encoding="utf-8")
+
+        defined = set(self.OWL_MEMBERS)
+        for src in sources.values():
+            defined |= set(re.findall(
+                r"^\s{4}(?:static\s+)?(?:async\s+)?(?:get\s+)?([A-Za-z_]\w*)\s*\(",
+                src, re.M))
+            # properties assigned in setup(), e.g. this.displayDialog = useOwnedDialogs()
+            defined |= set(re.findall(r"this\.(\w+)\s*=", src))
+
+        missing = []
+        for name, src in sources.items():
+            for called in set(re.findall(r"this\.(\w+)\s*\(", _strip_js_comments(src))):
+                if called not in defined:
+                    missing.append(f"{name}: this.{called}()")
         self.assertEqual(sorted(missing), [], "\n" + "\n".join(sorted(missing)))
 
 

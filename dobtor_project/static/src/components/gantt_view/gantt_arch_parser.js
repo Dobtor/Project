@@ -21,7 +21,6 @@ export class GanttArchParser {
         archInfo.dateStart = archInfo.dateStart || "date_start";
         archInfo.dateStop = archInfo.dateStop || "date_end";
         archInfo.name = archInfo.name || "name";
-        archInfo.defaultGroupBy = archInfo.defaultGroupBy || "project_id";
         archInfo.mainGroupIdName = archInfo.mainGroupIdName || "project_id";
 
         // Parse limitView with explicit handling - minimum 1, default 250
@@ -82,17 +81,12 @@ export class GanttArchParser {
 
         // Action/plan
         archInfo.planAction = archInfo.planAction || "";
-        archInfo.actionMenu = archInfo.actionMenu || "";
 
         // User/project identity
         archInfo.userId = archInfo.userId || "";
-        archInfo.projectId = archInfo.projectId || "";
-        archInfo.subtaskProjectId = archInfo.subtaskProjectId || "";
         archInfo.mainGroupModel = archInfo.mainGroupModel || "";
 
         // Sequence
-        archInfo.defaultSeq = archInfo.defaultSeq || "";
-        archInfo.defaultOrder = archInfo.defaultOrder || "";
 
         // Document count
         archInfo.docCount = archInfo.docCount || "";
@@ -103,7 +97,6 @@ export class GanttArchParser {
         // Load bar (resource detail plan)
         archInfo.loadBarModel = archInfo.loadBarModel || "";
         archInfo.loadId = archInfo.loadId || "";
-        archInfo.loadIdFrom = archInfo.loadIdFrom || "";
         archInfo.loadIdsFrom = archInfo.loadIdsFrom || "";
 
         // Info model (critical path info overlay)

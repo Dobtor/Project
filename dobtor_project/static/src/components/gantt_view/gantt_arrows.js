@@ -34,6 +34,9 @@ export class GanttArrows extends Component {
         barHeight: { type: Number, optional: true },
         selectedRowId: { optional: true },
         criticalField: { type: String, optional: true },
+        // Per-project switch (a related field on the task): a link is only
+        // drawn critical when BOTH its ends belong to a project that asks for it.
+        cpShowsField: { type: String, optional: true },
         hpd: { type: Number, optional: true },
         dpw: { type: Number, optional: true },
         // Drag-time live update: { recordId, deltaX } — shifts dragged bar's arrow endpoints
@@ -50,6 +53,7 @@ export class GanttArrows extends Component {
         barHeight: 28,
         selectedRowId: null,
         criticalField: "",
+        cpShowsField: "",
     };
 
     get arrowPaths() {
@@ -162,7 +166,10 @@ export class GanttArrows extends Component {
             let markerClass = "";
             const criticalField = this.props.criticalField;
 
-            if (criticalField && parentRecord[criticalField] && childRecord[criticalField]) {
+            const cpShowsField = this.props.cpShowsField;
+            const shows = (rec) => !cpShowsField || !!rec[cpShowsField];
+            if (criticalField && parentRecord[criticalField] && childRecord[criticalField]
+                    && shows(parentRecord) && shows(childRecord)) {
                 pathClass += " o_gantt_arrow_critical";
                 markerClass = "critical";
             } else if (

@@ -961,6 +961,7 @@ export class GanttRenderer extends Component {
             rowHeight: 44,
             selectedRowId: this.state.selectedRowId,
             criticalField: this.props.archInfo.criticalPath || "",
+            cpShowsField: this.props.archInfo.cpShows || "",
             hpd: this._calHpd,
             dpw: this._calDpw,
             dragState: this._dragState,
@@ -2333,9 +2334,11 @@ export class GanttRenderer extends Component {
             classes.push("o_gantt_bar_manual");
         }
 
-        // Critical path
-        const criticalField = this.props.archInfo.criticalPath;
-        if (criticalField && record[criticalField]) {
+        // Critical path — only where the PROJECT asks for it. cp_shows is a
+        // per-project setting with its own switch on the project form, mirrored
+        // onto the task as a related field; the arch has always named it and
+        // nothing ever read it, so turning it off changed nothing on screen.
+        if (this._showsCriticalPath(record)) {
             classes.push("o_gantt_critical_path");
         }
 
@@ -2545,9 +2548,21 @@ export class GanttRenderer extends Component {
         return `left: ${left}px;`;
     }
 
+    /** Whether this record's project wants the critical path drawn. */
+    _showsCriticalPath(record) {
+        const criticalField = this.props.archInfo.criticalPath;
+        if (!criticalField || !record[criticalField]) return false;
+        const showsField = this.props.archInfo.cpShows;
+        return !showsField || !!record[showsField];
+    }
+
     getTaskInfos(record) {
         const infoMap = this.props.model.data?.taskInfos;
         if (!infoMap || !(infoMap instanceof Map)) return [];
+        // cp_detail is the project's switch for the ES/LS/EF/LF badges — the
+        // second half of the same setting pair, read here for the first time.
+        const detailField = this.props.archInfo.cpDetail;
+        if (detailField && !record[detailField]) return [];
         return infoMap.get(record.id) || [];
     }
 

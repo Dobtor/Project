@@ -274,6 +274,8 @@ export class GanttModel extends Model {
             "totalWorkHours",
             // Progress mode
             "progressMode",
+            // Per-project critical-path switches (related fields on the task)
+            "cpShows", "cpDetail",
         ];
 
         // Always fetch state for task state display in tree panel
