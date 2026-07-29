@@ -332,11 +332,17 @@ class ProjectTaskNativeCascade(models.Model):
         project = self.env['project.project'].browse(project_id).exists()
         if not project:
             raise UserError(_('找不到專案。'))
-        project.check_access('write')
 
         tasks = self.search([('project_id', '=', project_id)])
         if not tasks:
             return {'tasks': {}, 'predecessors': {}}
+        # Checked on the TASKS, not on the project: this repairs task dates, the
+        # same thing a drag does, and project.project is read-only for
+        # group_project_user in stock Odoo — requiring write there would put
+        # "align dependencies" behind the manager group while dragging the very
+        # same task stayed open to everyone. The search above already applied
+        # record rules, so only tasks the user may see are in scope.
+        tasks.check_access('write')
 
         snapshot = self._gesture_snapshot(tasks)
         # Seed from the leaves: a summary task's dates are a readout of its

@@ -274,14 +274,31 @@ class GanttReport(models.AbstractModel):
             return f"T+{round(working_days)}d"
         return f"T+{working_days:.1f}d"
 
+    @staticmethod
+    def _scheduled_hours(task, is_parent):
+        """The hours a row is scheduled for, in the gantt view's authority order.
+
+        Summary row \u2192 ``total_work_hours``, the roll-up of its leaf descendants.
+        Leaf row    \u2192 ``plan_duration``, the hours the user typed; only a leaf
+                      that has none falls back to a reading of its current
+                      window (``working_duration``, then elapsed ``duration``).
+
+        The bar's LENGTH is deliberately not part of this: a summary bar spans
+        first-child-start \u2192 last-child-end, which has no fixed relation to the
+        work inside it (siblings are not necessarily chained). Measuring the
+        span was what made this report disagree with the screen.
+        """
+        if is_parent:
+            return task.total_work_hours or 0
+        return (task.plan_duration
+                or task.working_duration
+                or task.duration
+                or 0)
+
     def _planning_duration_label(self, task, is_parent, ds, de, project,
                                   scale_factor=1.0):
         """Duration label for planning mode tasks."""
-        if is_parent:
-            # Virtual dates are scaled; un-scale to get working hours
-            hours = (de - ds).total_seconds() / 3600.0 / scale_factor
-        else:
-            hours = task.plan_duration or 0
+        hours = self._scheduled_hours(task, is_parent)
         if hours <= 0:
             return "\u2014"
         if project.use_calendar and project.resource_calendar_id:
@@ -526,19 +543,18 @@ class GanttReport(models.AbstractModel):
                         start_str = local_start.strftime("%m/%d")
                         end_str = local_end.strftime("%m/%d")
 
-                        if is_parent:
-                            span = (local_end - local_start).days
-                            duration_label = f"{span}d" if span > 0 else "<1d"
-                        elif project.use_calendar and project.resource_calendar_id:
-                            hours_per_day = project.resource_calendar_id.hours_per_day or 8.0
-                            working_hours = task.working_duration or task.duration
-                            if working_hours and working_hours > 0:
-                                days = working_hours / hours_per_day
-                                duration_label = (
-                                    f"{int(days)}d" if days == int(days) else f"{days:.1f}d"
-                                )
-                        elif task.duration and task.duration > 0:
-                            days = task.duration / 24.0
+                        # Same authority as the gantt's duration column (see
+                        # _scheduled_hours): the summary row shows its leaves'
+                        # rolled-up hours, a leaf shows the hours it was
+                        # scheduled for — never the calendar span, which counted
+                        # nights and weekends as work.
+                        hours = self._scheduled_hours(task, is_parent)
+                        if hours > 0:
+                            if project.use_calendar and project.resource_calendar_id:
+                                hours_per_day = project.resource_calendar_id.hours_per_day or 8.0
+                            else:
+                                hours_per_day = 24.0
+                            days = hours / hours_per_day
                             duration_label = (
                                 f"{int(days)}d" if days == int(days) else f"{days:.1f}d"
                             )

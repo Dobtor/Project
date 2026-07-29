@@ -876,6 +876,10 @@ class ProjectTaskNative(models.Model):
 
         Only applies when the task already has dates and the constraint
         would be violated by the current dates.
+
+        SINGLE RECORD ONLY — the computed window goes into the shared ``vals``,
+        so it would be written to every record of a multi-record write.
+        :meth:`write` splits such a write per record before calling this.
         """
         constrain_type = vals.get('constrain_type')
         constrain_date = vals.get('constrain_date')
@@ -925,7 +929,7 @@ class ProjectTaskNative(models.Model):
                 new_start, new_end = _from_end(cd)
                 vals.setdefault('date_start', new_start)
                 vals.setdefault('date_end', new_end)
-            break  # Single record per call from inspector
+            break  # single record — see the docstring
 
     def write(self, vals):
         """Propagate date changes to ancestors.
@@ -937,12 +941,26 @@ class ProjectTaskNative(models.Model):
         if 'depend_on_ids' in vals and not self.env.context.get('skip_predecessor_sync'):
             self._sync_predecessors_from_depend_on(vals.pop('depend_on_ids'))
 
+        constraint_changed = 'constrain_type' in vals or 'constrain_date' in vals
+        if (constraint_changed and len(self) > 1
+                and not self.env.context.get('skip_date_snap')):
+            # A constraint is resolved against EACH task's own calendar and own
+            # window, so a multi-record write cannot share one vals dict —
+            # _snap_constrain_date and _apply_constraint_to_dates both read the
+            # first record and write their answer back into the dict everyone
+            # gets. Resource levelling and "reschedule incomplete" stamp the same
+            # SNET onto a whole batch, so that first task's recomputed window
+            # landed on every task in it. Split the write.
+            result = True
+            for task in self:
+                result = task.write(dict(vals)) and result
+            return result
+
         # Snap constrain_date to work intervals (same treatment as date_start/date_end)
         if 'constrain_date' in vals:
             self._snap_constrain_date(vals)
 
         # When constraint changes, push task dates to respect it
-        constraint_changed = 'constrain_type' in vals or 'constrain_date' in vals
         if constraint_changed and not self.env.context.get('skip_date_snap'):
             self._apply_constraint_to_dates(vals)
 

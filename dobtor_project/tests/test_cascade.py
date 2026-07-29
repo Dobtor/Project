@@ -450,3 +450,46 @@ class TestWorkHoursAreTheSchedule(TransactionCase):
         for t in (a, b, c):
             self.assertAlmostEqual(t.plan_duration, 4.0, places=2)
             self.assertAlmostEqual(t.working_duration, 4.0, places=2)
+
+    def test_batch_constraint_write_is_per_record(self):
+        """A constraint written to SEVERAL tasks at once resolves per task.
+
+        Resource levelling and "reschedule incomplete" both stamp one SNET onto
+        a whole batch. ``_apply_constraint_to_dates`` reads the first record and
+        writes its answer into the shared ``vals`` dict, so before ``write()``
+        split such a batch, every task in it was given the FIRST task's window —
+        same start, same end, whatever hours it was actually scheduled for.
+        """
+        # Monday 08:00 +4h and Tuesday 08:00 +8h: different starts, different hours.
+        a = self._leaf("A", self.MON, 4.0)
+        b = self._leaf("B", datetime(2026, 3, 3, 8, 0), 8.0)
+        a_hours, b_hours = a.plan_duration, b.plan_duration
+
+        # Constraint: start no earlier than Wednesday 08:00, for both.
+        wed = datetime(2026, 3, 4, 8, 0)
+        (a | b).write({"constrain_type": "snet", "constrain_date": wed})
+
+        # Each task moved to the boundary and kept ITS OWN hours…
+        self.assertEqual(a.date_start, wed)
+        self.assertEqual(b.date_start, wed)
+        self.assertAlmostEqual(a.plan_duration, a_hours, places=2)
+        self.assertAlmostEqual(b.plan_duration, b_hours, places=2)
+        # …so the windows differ: 4h ends at 12:00, 8h ends at 17:00.
+        self.assertEqual(a.date_end, datetime(2026, 3, 4, 12, 0))
+        self.assertEqual(b.date_end, datetime(2026, 3, 4, 17, 0))
+        self.assertNotEqual(a.date_end, b.date_end)
+
+    def test_constraint_window_stays_inside_working_time(self):
+        """Applying an end-type constraint derives the start backwards through
+        the calendar instead of subtracting elapsed time (which put the start in
+        the previous evening)."""
+        t = self._leaf("T", self.MON, 8.0)
+        # Finish no earlier than Wednesday 17:00 → 8 working hours before that
+        # is Wednesday 08:00, not Tuesday 21:00.
+        t.write({
+            "constrain_type": "fnet",
+            "constrain_date": datetime(2026, 3, 4, 17, 0),
+        })
+        self.assertEqual(t.date_end, datetime(2026, 3, 4, 17, 0))
+        self.assertEqual(t.date_start, datetime(2026, 3, 4, 8, 0))
+        self.assertAlmostEqual(t.working_duration, 8.0, places=2)

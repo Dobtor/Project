@@ -307,10 +307,8 @@ export class GanttRenderer extends Component {
                         : summaryStart.plus(shiftDur);
                     // Clamp to FS predecessor constraints (own + all descendants)
                     const minStart = this.props.model.getMinStartForParentDrag(recordId);
-                    let wasClamped = false;
                     if (minStart && newStart < minStart) {
                         newStart = minStart;
-                        wasClamped = true;
                     }
                     let shiftHours = newStart.diff(summaryStart, "hours").hours;
                     // Virtual timeline hours must be converted to working hours for the backend
@@ -319,8 +317,7 @@ export class GanttRenderer extends Component {
                         shiftHours = shiftHours / scaleFactor;
                     }
                     if (Math.abs(shiftHours) < 0.01) return;
-                    const moveOpts = wasClamped ? { context: { skip_date_snap: true } } : {};
-                    await this.props.model.moveAndCascade(recordId, null, shiftHours, moveOpts);
+                    await this.props.model.moveAndCascade(recordId, null, shiftHours);
                     return;
                 }
 
@@ -346,7 +343,6 @@ export class GanttRenderer extends Component {
                 // --- Leaf task: existing logic ---
                 // Clamp: start never before predecessor's end or parent's start
                 const minStart = this.props.model.getMinStartForRecord(recordId);
-                let wasClamped = false;
 
                 if (record._isVirtualDates) {
                     // Planning mode: drag delta is in virtual timeline units,
@@ -399,7 +395,6 @@ export class GanttRenderer extends Component {
                     // Clamp to FS predecessor end
                     if (minStart && newStart && newStart < minStart) {
                         newStart = minStart;
-                        wasClamped = true;
                     }
                     const values = {};
                     if (newStart) {
@@ -409,8 +404,7 @@ export class GanttRenderer extends Component {
                         const duration = record._dateEnd.diff(record._dateStart);
                         values[dateStopField] = (newStart || record._dateStart).plus(duration).setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                     }
-                    const writeOpts = wasClamped ? { context: { skip_date_snap: true } } : {};
-                    await this.props.model.moveAndCascade(recordId, values, null, writeOpts);
+                    await this.props.model.moveAndCascade(recordId, values, null);
                 }
               } finally {
                 this._clearGesture();
@@ -569,7 +563,6 @@ export class GanttRenderer extends Component {
                     const useWorkingMove = this._isHidingNonWorking();
                     const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
                     const values = {};
-                    let wasClamped = false;
                     if (side === "left" && record._dateStart) {
                         let newStart = useWorkingMove
                             ? this._addWorkingUnits(record._dateStart, cellsDelta)
@@ -577,7 +570,6 @@ export class GanttRenderer extends Component {
                         // Clamp to FS predecessor end
                         if (minStart && newStart < minStart) {
                             newStart = minStart;
-                            wasClamped = true;
                         }
                         values[dateStartField] = newStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                     } else if (side === "right" && record._dateEnd) {
@@ -587,14 +579,10 @@ export class GanttRenderer extends Component {
                         // Clamp to FF/SF predecessor min end
                         if (minEnd && newEnd < minEnd) {
                             newEnd = minEnd;
-                            wasClamped = true;
                         }
                         values[dateStopField] = newEnd.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                     }
-                    // Only skip snap when clamped to FS boundary; otherwise let
-                    // Python directional snap handle non-work-hour positions.
-                    const resizeOpts = wasClamped ? { context: { skip_date_snap: true } } : {};
-                    await this.props.model.moveAndCascade(recordId, values, null, resizeOpts);
+                    await this.props.model.moveAndCascade(recordId, values, null);
                 }
               } finally {
                 this._clearGesture();

@@ -2258,17 +2258,21 @@ export class GanttModel extends Model {
             const movedRecord = this._recordMap.get(recordId);
             if (movedRecord) {
                 const minStart = this.getMinStartForRecord(recordId);
-                if (minStart && movedRecord._dateStart && movedRecord._dateStart < minStart) {
+                // A summary row is judged (and moved) by its children's span,
+                // not by its own date_start.
+                const currentStart = (movedRecord._hasChildren
+                    && movedRecord._summaryDateStart) || movedRecord._dateStart;
+                if (minStart && currentStart && currentStart < minStart) {
                     // Auto-align: hand the move to the server engine, which
                     // snaps it into working time, keeps the task's scheduled
                     // hours, cascades once and returns the diff.
-                    await this.moveAndCascade(
-                        recordId, this._alignVals(movedRecord, minStart), null);
-                    // Notify user
-                    this.notification.add(
-                        _t("任務已自動對齊至 FS 約束邊界"),
-                        { type: "info" }
-                    );
+                    const moved = await this.alignRecordTo(movedRecord, minStart);
+                    if (moved) {
+                        this.notification.add(
+                            _t("任務已自動對齊至 FS 約束邊界"),
+                            { type: "info" }
+                        );
+                    }
                 }
             }
         }
@@ -3066,6 +3070,34 @@ export class GanttModel extends Model {
     }
 
     /**
+     * Move ``record`` so that it starts at ``newStart`` — whatever kind of row
+     * it is.
+     *
+     * A summary task must move as a block: its own dates are a readout of its
+     * children, so writing dates straight onto it moves nothing (and is undone
+     * by the next roll-up). It goes through the shift path, which moves the
+     * whole subtree; a leaf moves by value.
+     *
+     * @returns {boolean} whether anything was sent to the server
+     */
+    async alignRecordTo(record, newStart) {
+        const currentStart =
+            (record._hasChildren && record._summaryDateStart) || record._dateStart;
+        if (!currentStart || !newStart) return false;
+        if (record._hasChildren) {
+            let shiftHours = newStart.diff(currentStart, "hours").hours;
+            // Virtual timeline hours → working hours for the backend
+            if (record._isVirtualDates || this._hasVirtualChild(record.id)) {
+                const hpd = this.data.calendarInfo?.hours_per_day || 8;
+                shiftHours = shiftHours / ((hpd < 24) ? (24 / hpd) : 1);
+            }
+            if (Math.abs(shiftHours) < 0.01) return false;
+            return this.moveAndCascade(record.id, null, shiftHours);
+        }
+        return this.moveAndCascade(record.id, this._alignVals(record, newStart), null);
+    }
+
+    /**
      * Relax the dependency graph starting from a task that did not itself move —
      * a new link was drawn into or out of it, so its successors may now overlap.
      *
@@ -3284,24 +3316,7 @@ export class GanttModel extends Model {
                         const effectiveEnd = this._getEffectiveSourceEnd(source, pred);
                         const targetStart = (target._hasChildren && target._summaryDateStart) || target._dateStart;
                         if (effectiveEnd && targetStart && Math.abs(effectiveEnd.toMillis() - targetStart.toMillis()) > 60000) {
-                            if (target._hasChildren) {
-                                let shiftHours = effectiveEnd.diff(targetStart, "hours").hours;
-                                // Virtual timeline hours → working hours for backend
-                                const anyVirtualChild = this._hasVirtualChild(target.id);
-                                if (anyVirtualChild) {
-                                    const hpd = this.data.calendarInfo?.hours_per_day || 8;
-                                    const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
-                                    shiftHours = shiftHours / scaleFactor;
-                                }
-                                if (Math.abs(shiftHours) > 0.01) {
-                                    await this.moveAndCascade(target.id, null, shiftHours);
-                                }
-                            } else {
-                                await this.moveAndCascade(
-                                    target.id,
-                                    this._alignVals(target, effectiveEnd),
-                                    null);
-                            }
+                            await this.alignRecordTo(target, effectiveEnd);
                         }
                     }
                 }
