@@ -202,17 +202,26 @@ export class GanttArrows extends Component {
             // at the target's offset X (D inward from target connection point).
             //   SS overlap: childLeft <= parentLeft
             //   FF overlap: childRight <= parentRight
+            //
+            // …but only while that vertical actually stands ON the source bar.
+            // The two bars overlapping is what makes a bare vertical read as a
+            // connection at all; when the target sits far enough left that the
+            // line would rise out of empty space, it is not a connector, it is a
+            // floating tick. Those fall through to _buildPath, which exits toward
+            // the target and stays attached to both ends.
+            const overlapD = Math.min(chamferD, Math.abs(toY - fromY) * 0.3);
+            const overlapVertX = toX + overlapD * ((type === "SS") ? 1 : -1);
             const isOverlap =
-                (type === "SS" && childLeft <= parentLeft) ||
-                (type === "FF" && childRight <= parentRight);
+                ((type === "SS" && childLeft <= parentLeft) ||
+                 (type === "FF" && childRight <= parentRight)) &&
+                overlapVertX >= parentLeft - 0.5 && overlapVertX <= parentRight + 0.5;
 
             let result;
             if (isOverlap && Math.abs(fromY - toY) >= 2) {
-                const D = Math.min(chamferD, Math.abs(toY - fromY) * 0.3);
+                const D = overlapD;
                 const vertDir = toY > fromY ? 1 : -1;
                 // Offset X: D pixels inward from target connection edge
-                const entrySign = (type === "SS") ? 1 : -1;
-                const vertX = toX + D * entrySign;
+                const vertX = overlapVertX;
                 // Source: bar top/bottom edge; Target: bar top/bottom edge
                 const startY = fromY + barEdge * vertDir;
                 const endY = toY - barEdge * vertDir;
@@ -478,9 +487,9 @@ export class GanttArrows extends Component {
         // with how far apart the two rows happen to be.
         const D = Math.min(chamferD, vertDist * 0.3);
 
-        // Exit direction: FS/FF exit right, SS/SF exit left
-        const exitRight = (type === "FS" || type === "FF");
-        const exitSign = exitRight ? 1 : -1;
+        // Preferred exit side for the link type: FS/FF leave the source's right
+        // edge, SS/SF its left.
+        const preferredExit = (type === "FS" || type === "FF") ? 1 : -1;
 
         // Determine horizontal target X based on link type
         let hTargetX;
@@ -507,6 +516,30 @@ export class GanttArrows extends Component {
         // Ensures the arrowhead lands *inward* from the target bar edge,
         // symmetric for both start-side and end-side connections.
         const entrySign = (type === "FS" || type === "SS") ? 1 : -1;
+
+        // --------------------------------------------------------------
+        // Exit toward the target.
+        //
+        // The preferred side is only a preference. When the target's connection
+        // edge lies on the OTHER side of the source's — which is the NORMAL case
+        // for SS and SF, whose exit side is the left one while the successor sits
+        // to the right — exiting on the preferred side would force the path to
+        // double back, and INVARIANT 2 forbids that. The whole connector then
+        // collapsed into the "no forward room" fallback below: a bare vertical
+        // line standing wherever the target is, touching neither bar. (Measured
+        // over a 720-case sweep: EVERY SS link and 86% of SF links came out that
+        // way, 85% of them not even starting on the source's bar.)
+        //
+        // Exiting toward the target keeps both invariants — X still only ever
+        // advances, the corner is still D — and the connector still leaves from
+        // the edge its link type says it should. The leg may cross back over the
+        // source's own bar; the arrow layer sits UNDER the bars, so it is hidden
+        // there and simply emerges on the far side.
+        // --------------------------------------------------------------
+        const wantVertX = hTargetX + D * entrySign;
+        const exitSign = Math.abs(wantVertX - fromX) <= EPS
+            ? preferredExit
+            : (wantVertX > fromX ? 1 : -1);
 
         // --------------------------------------------------------------
         // Keeping the corner constant when the source is in the way.

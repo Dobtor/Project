@@ -3509,7 +3509,25 @@ export class GanttModel extends Model {
             await this.orm.write(predModel, [numericId], values);
             await this._loadPredecessors();
 
-            // If lag changed, move the successor to the new effective position
+            // If lag changed, move the successor to the new effective position.
+            //
+            // The move is handed to the server engine (action_move_and_cascade)
+            // like every other gesture: it snaps the new start into working time,
+            // re-derives the end from the task's scheduled hours, relaxes the
+            // whole dependency graph once and returns the authoritative diff.
+            //
+            // Writing it here instead — with skip_date_snap, a wall-clock
+            // duration carried over, and _pushFSSuccessors/_pushAncestor/_recalc
+            // run from the client afterwards — dropped the successor exactly
+            // where the arithmetic landed, evenings and weekends included. That
+            // silently changed its work hours, which is the one thing
+            // plan_duration exists to pin down, and it pushed the successors a
+            // second time from local dates the server had already moved.
+            //
+            // Consequence to expect: because the start may snap forward, the
+            // recomputed lag can come back larger than the number just typed —
+            // lag_hours is a readout of the real gap, and every other gesture in
+            // this view recomputes it the same way.
             if (lagChanged) {
                 const pred = this._predById.get(numericId);
                 if (pred && (pred.type || "FS").toUpperCase() === "FS") {
@@ -3519,7 +3537,6 @@ export class GanttModel extends Model {
                         const effectiveEnd = this._getEffectiveSourceEnd(source, pred);
                         const targetStart = (target._hasChildren && target._summaryDateStart) || target._dateStart;
                         if (effectiveEnd && targetStart && Math.abs(effectiveEnd.toMillis() - targetStart.toMillis()) > 60000) {
-                            const _skipSnap = { context: { skip_date_snap: true } };
                             if (target._hasChildren) {
                                 let shiftHours = effectiveEnd.diff(targetStart, "hours").hours;
                                 // Virtual timeline hours → working hours for backend
@@ -3530,7 +3547,7 @@ export class GanttModel extends Model {
                                     shiftHours = shiftHours / scaleFactor;
                                 }
                                 if (Math.abs(shiftHours) > 0.01) {
-                                    await this.moveRecordWithChildren(target.id, shiftHours, _skipSnap);
+                                    await this.moveAndCascade(target.id, null, shiftHours);
                                 }
                             } else if (target._isVirtualDates) {
                                 // Planning mode leaf: write plan_offset instead of real dates
@@ -3539,8 +3556,11 @@ export class GanttModel extends Model {
                                 const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
                                 const newOffset = effectiveEnd.diff(T0, "hours").hours / scaleFactor;
                                 const planOffsetField = this.archInfo.planOffset || "plan_offset";
-                                await this.updateRecord(target.id, { [planOffsetField]: newOffset }, _skipSnap);
+                                await this.moveAndCascade(target.id, { [planOffsetField]: newOffset }, null);
                             } else {
+                                // Both edges are sent so the server reads this as a
+                                // MOVE (keep the scheduled hours, re-derive the end)
+                                // rather than a resize (window redefines the hours).
                                 const dateStartField = this.archInfo.dateStart || "date_start";
                                 const dateStopField = this.archInfo.dateStop || "date_end";
                                 const newStart = effectiveEnd;
@@ -3551,12 +3571,8 @@ export class GanttModel extends Model {
                                     const duration = target._dateEnd.diff(target._dateStart);
                                     vals[dateStopField] = newStart.plus(duration).setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
                                 }
-                                await this.updateRecord(target.id, vals, _skipSnap);
+                                await this.moveAndCascade(target.id, vals, null);
                             }
-                            // Cascade to this successor's own successors
-                            await this._pushFSSuccessors(pred.task_id);
-                            await this._pushAncestorFSSuccessors(pred.task_id);
-                            await this._recalcAndUpdateLags(pred.task_id);
                         }
                     }
                 }

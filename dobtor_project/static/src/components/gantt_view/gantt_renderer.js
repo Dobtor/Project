@@ -2911,10 +2911,15 @@ export class GanttRenderer extends Component {
      * or a bar resized down to a sub-cell duration) — which is the root cause of
      * the "resize → arrow detaches" bug.
      *
+     * A summary bar is the union of its children's geometry — a child can never
+     * be drawn outside its parent, not by the min-width clamp and not mid-drag.
+     * Every bar otherwise sits exactly on its own dates.
+     *
      * @param {Object} record
+     * @param {Set} [_seen] cycle guard for the summary recursion
      * @returns {{left:number, right:number}|null} null when the bar is not drawable
      */
-    _baseBarGeometry(record, _seen) {
+    _computeBarGeometry(record, _seen) {
         if (!record) return null;
         const data = this.props.model.data;
         if (!data?.timeStart || !data.timeStart.isValid) return null;
@@ -2933,7 +2938,7 @@ export class GanttRenderer extends Component {
                 let right = null;
                 for (const child of record._children) {
                     if (child._isMilestoneRecord) continue;
-                    const cg = this._baseBarGeometry(child, seen);
+                    const cg = this._computeBarGeometry(child, seen);
                     if (!cg) continue;
                     if (left === null || cg.left < left) left = cg.left;
                     if (right === null || cg.right > right) right = cg.right;
@@ -3006,22 +3011,6 @@ export class GanttRenderer extends Component {
             if (drag.ids[child.id]) return 0;
         }
         return drag.deltaLeft;
-    }
-
-    /**
-     * Single source of truth for a task bar's *visual* horizontal geometry,
-     * consumed by BOTH getBarStyle() and GanttArrows, so a dependency line
-     * always attaches to the bar's real on-screen edge.
-     *
-     * A summary bar is the union of its children's geometry — a child can never
-     * be drawn outside its parent, not by the min-width clamp and not mid-drag.
-     * Every bar otherwise sits exactly on its own dates.
-     *
-     * @param {Object} record
-     * @returns {{left:number, right:number}|null} null when the bar is not drawable
-     */
-    _computeBarGeometry(record) {
-        return this._baseBarGeometry(record);
     }
 
     getBarStyle(record) {
@@ -3460,9 +3449,8 @@ export class GanttRenderer extends Component {
      * again when that same task's inspector is already open (the controller's
      * onInspectorToggle owns that toggle).
      */
-    onBarDblClick(record, ev) {
+    onBarDblClick(record) {
         if (record._isGroup || !this.props.onInspectorOpen) return;
-        ev.stopPropagation();
         // A double click also fires the two clicks that selected the row; make
         // sure the inspector shows the bar that was actually double-clicked.
         this.state.selectedRowId = record.id;

@@ -886,25 +886,37 @@ class ProjectTaskNative(models.Model):
             if not ds or not de:
                 continue
             dur = de - ds
+
+            # Moving a task onto its constraint keeps the hours it was scheduled
+            # for: the free edge is re-derived through the work calendar instead
+            # of translating the old wall-clock window, which would land the task
+            # in an evening or a weekend and silently change its work hours.
+            # Summary tasks keep the plain translation — their span belongs to
+            # their children, not to a plan_duration of their own.
+            def _from_start(new_start):
+                if not task.child_ids:
+                    snapped, derived = task._plan_dates_from(new_start)
+                    if snapped:
+                        return snapped, derived
+                return new_start, new_start + dur
+
+            def _from_end(new_end):
+                if not task.child_ids and (task.plan_duration or 0) > 0:
+                    return task._start_from_work_hours(
+                        new_end, task.plan_duration), new_end
+                return new_end - dur, new_end
+
             # Check if constraint is violated, push dates if needed
-            if ct == 'snet' and ds < cd:
-                vals.setdefault('date_start', cd)
-                vals.setdefault('date_end', cd + dur)
-            elif ct == 'snlt' and ds > cd:
-                vals.setdefault('date_start', cd)
-                vals.setdefault('date_end', cd + dur)
-            elif ct == 'fnet' and de < cd:
-                vals.setdefault('date_end', cd)
-                vals.setdefault('date_start', cd - dur)
-            elif ct == 'fnlt' and de > cd:
-                vals.setdefault('date_end', cd)
-                vals.setdefault('date_start', cd - dur)
-            elif ct == 'mso' and ds != cd:
-                vals.setdefault('date_start', cd)
-                vals.setdefault('date_end', cd + dur)
-            elif ct == 'mfo' and de != cd:
-                vals.setdefault('date_end', cd)
-                vals.setdefault('date_start', cd - dur)
+            if (ct == 'snet' and ds < cd) or (ct == 'snlt' and ds > cd) \
+                    or (ct == 'mso' and ds != cd):
+                new_start, new_end = _from_start(cd)
+                vals.setdefault('date_start', new_start)
+                vals.setdefault('date_end', new_end)
+            elif (ct == 'fnet' and de < cd) or (ct == 'fnlt' and de > cd) \
+                    or (ct == 'mfo' and de != cd):
+                new_start, new_end = _from_end(cd)
+                vals.setdefault('date_start', new_start)
+                vals.setdefault('date_end', new_end)
             break  # Single record per call from inspector
 
     def write(self, vals):
@@ -985,10 +997,10 @@ class ProjectTaskNative(models.Model):
                         super(ProjectTaskNative, task).write(merged)
                     else:
                         super(ProjectTaskNative, task).write(vals)
-                if date_changed:
-                    self._update_ancestor_dates()
-                    if not self.env.context.get('skip_cascade_push'):
-                        self._cascade_dependency_push()
+                # date_changed is necessarily True inside this branch.
+                self._update_ancestor_dates()
+                if not self.env.context.get('skip_cascade_push'):
+                    self._cascade_dependency_push()
                 if 'state' in vals and not self.env.context.get('skip_auto_complete'):
                     self._check_parent_auto_complete()
                 return True
@@ -1208,10 +1220,19 @@ class ProjectTaskNative(models.Model):
                     # Still use fs_min as the boundary (parent constraint wins)
                     effective_min = fs_min
 
-                dur = (child.date_end - child.date_start) if child.date_end and child.date_start else timedelta(0)
+                # Land on the calendar like every other move: the clamp relocates
+                # the task, it does not re-plan it, so the task keeps the hours it
+                # was scheduled for and its end is re-derived through the work
+                # calendar. ``effective_min`` is a predecessor's END — typically
+                # 17:00 — so translating the old wall-clock window from it puts
+                # the child in the evening and silently changes its work hours.
+                new_start, new_end = child._plan_dates_from(effective_min)
+                if not new_start:
+                    dur = (child.date_end - child.date_start) if child.date_end and child.date_start else timedelta(0)
+                    new_start, new_end = effective_min, effective_min + dur
                 child.with_context(skip_date_snap=True).write({
-                    'date_start': effective_min,
-                    'date_end': effective_min + dur,
+                    'date_start': new_start,
+                    'date_end': new_end,
                 })
 
     def _collect_descendants(self):
@@ -1277,6 +1298,61 @@ class ProjectTaskNative(models.Model):
     # Server-Side Cascade & Batch Resequence
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _gesture_snapshot(tasks):
+        """Record the pre-gesture value of every diffable field."""
+        return {
+            t.id: {
+                'date_start': t.date_start,
+                'date_end': t.date_end,
+                'plan_offset': t.plan_offset or 0,
+                'plan_duration': t.plan_duration or 0,
+                'constrain_type': t.constrain_type,
+                'constrain_date': t.constrain_date,
+            }
+            for t in tasks
+        }
+
+    def _gesture_diff(self, tasks, snapshot):
+        """Diff ``tasks`` against a :meth:`_gesture_snapshot`, in the wire format
+        the gantt view applies locally: ``{task_id: {field: value}}``.
+
+        Rows are emitted only for tasks that actually moved; each such row also
+        carries the derived hour readouts so the duration column stays in step
+        without a second read.
+        """
+        tasks.invalidate_recordset()
+        task_diff = {}
+        for t in tasks:
+            old = snapshot.get(t.id, {})
+            changed = {}
+            if t.date_start != old.get('date_start'):
+                changed['date_start'] = fields.Datetime.to_string(t.date_start) if t.date_start else False
+            if t.date_end != old.get('date_end'):
+                changed['date_end'] = fields.Datetime.to_string(t.date_end) if t.date_end else False
+            if abs((t.plan_offset or 0) - old.get('plan_offset', 0)) > 0.01:
+                changed['plan_offset'] = t.plan_offset or 0
+            if abs((t.plan_duration or 0) - old.get('plan_duration', 0)) > 0.01:
+                changed['plan_duration'] = t.plan_duration or 0
+            if t.constrain_type != old.get('constrain_type'):
+                changed['constrain_type'] = t.constrain_type or 'asap'
+            if t.constrain_date != old.get('constrain_date'):
+                changed['constrain_date'] = fields.Datetime.to_string(t.constrain_date) if t.constrain_date else False
+            if changed:
+                changed['working_duration'] = t.working_duration or 0
+                changed['total_work_hours'] = t.total_work_hours or 0
+                task_diff[t.id] = changed
+        return task_diff
+
+    def _gesture_result(self, tasks, snapshot):
+        """Full gantt gesture payload: moved tasks, their ancestors' rolled-up
+        hours, and every lag the move invalidated."""
+        task_diff = self._gesture_diff(tasks, snapshot)
+        affected_ids = list(task_diff.keys())
+        pred_diff = self._cascade_recalc_lags(affected_ids) if affected_ids else {}
+        self._add_ancestor_hours_to_diff(task_diff)
+        return {'tasks': task_diff, 'predecessors': pred_diff}
+
     def action_move_and_cascade(self, vals=None, shift_hours=None):
         """Single-RPC: write → FS cascade → recalc lags → return diff.
 
@@ -1299,16 +1375,7 @@ class ProjectTaskNative(models.Model):
             ('project_id', '=', self.project_id.id)])
 
         # Snapshot before mutation
-        snapshot = {}
-        for t in project_tasks:
-            snapshot[t.id] = {
-                'date_start': t.date_start,
-                'date_end': t.date_end,
-                'plan_offset': t.plan_offset or 0,
-                'plan_duration': t.plan_duration or 0,
-                'constrain_type': t.constrain_type,
-                'constrain_date': t.constrain_date,
-            }
+        snapshot = self._gesture_snapshot(project_tasks)
 
         # Step 1: Apply initial change. Suppress write()'s own cascade — Step 2
         # runs the single canonical cascade explicitly, so letting write()
@@ -1343,33 +1410,7 @@ class ProjectTaskNative(models.Model):
             current = parent
 
         # Step 4: Compute diff + recalc lags
-        project_tasks.invalidate_recordset()
-        task_diff = {}
-        for t in project_tasks:
-            old = snapshot.get(t.id, {})
-            changed = {}
-            if t.date_start != old.get('date_start'):
-                changed['date_start'] = fields.Datetime.to_string(t.date_start) if t.date_start else False
-            if t.date_end != old.get('date_end'):
-                changed['date_end'] = fields.Datetime.to_string(t.date_end) if t.date_end else False
-            if abs((t.plan_offset or 0) - old.get('plan_offset', 0)) > 0.01:
-                changed['plan_offset'] = t.plan_offset or 0
-            if abs((t.plan_duration or 0) - old.get('plan_duration', 0)) > 0.01:
-                changed['plan_duration'] = t.plan_duration or 0
-            if t.constrain_type != old.get('constrain_type'):
-                changed['constrain_type'] = t.constrain_type or 'asap'
-            if t.constrain_date != old.get('constrain_date'):
-                changed['constrain_date'] = fields.Datetime.to_string(t.constrain_date) if t.constrain_date else False
-            if changed:
-                changed['working_duration'] = t.working_duration or 0
-                changed['total_work_hours'] = t.total_work_hours or 0
-                task_diff[t.id] = changed
-
-        affected_ids = list(task_diff.keys())
-        pred_diff = self._cascade_recalc_lags(affected_ids) if affected_ids else {}
-        self._add_ancestor_hours_to_diff(task_diff)
-
-        return {'tasks': task_diff, 'predecessors': pred_diff}
+        return self._gesture_result(project_tasks, snapshot)
 
     def _add_ancestor_hours_to_diff(self, task_diff):
         """Add every ancestor's rolled-up hours to a gantt diff.
@@ -1461,16 +1502,7 @@ class ProjectTaskNative(models.Model):
         project_ids = self.mapped('project_id').ids
         project_tasks = self.env['project.task'].search([
             ('project_id', 'in', project_ids)])
-        snapshot = {}
-        for t in project_tasks:
-            snapshot[t.id] = {
-                'date_start': t.date_start,
-                'date_end': t.date_end,
-                'plan_offset': t.plan_offset or 0,
-                'plan_duration': t.plan_duration or 0,
-                'constrain_type': t.constrain_type,
-                'constrain_date': t.constrain_date,
-            }
+        snapshot = self._gesture_snapshot(project_tasks)
 
         # Step 1: Move each task (with descendants if parent)
         for task in self:
@@ -1511,33 +1543,7 @@ class ProjectTaskNative(models.Model):
                 current = parent
 
         # Step 4: Compute diff + recalc lags
-        project_tasks.invalidate_recordset()
-        task_diff = {}
-        for t in project_tasks:
-            old = snapshot.get(t.id, {})
-            changed = {}
-            if t.date_start != old.get('date_start'):
-                changed['date_start'] = fields.Datetime.to_string(t.date_start) if t.date_start else False
-            if t.date_end != old.get('date_end'):
-                changed['date_end'] = fields.Datetime.to_string(t.date_end) if t.date_end else False
-            if abs((t.plan_offset or 0) - old.get('plan_offset', 0)) > 0.01:
-                changed['plan_offset'] = t.plan_offset or 0
-            if abs((t.plan_duration or 0) - old.get('plan_duration', 0)) > 0.01:
-                changed['plan_duration'] = t.plan_duration or 0
-            if t.constrain_type != old.get('constrain_type'):
-                changed['constrain_type'] = t.constrain_type or 'asap'
-            if t.constrain_date != old.get('constrain_date'):
-                changed['constrain_date'] = fields.Datetime.to_string(t.constrain_date) if t.constrain_date else False
-            if changed:
-                changed['working_duration'] = t.working_duration or 0
-                changed['total_work_hours'] = t.total_work_hours or 0
-                task_diff[t.id] = changed
-
-        affected_ids = list(task_diff.keys())
-        pred_diff = self._cascade_recalc_lags(affected_ids) if affected_ids else {}
-        self._add_ancestor_hours_to_diff(task_diff)
-
-        return {'tasks': task_diff, 'predecessors': pred_diff}
+        return self._gesture_result(project_tasks, snapshot)
 
     def _cascade_fs_push(self, visited=None, pred_map=None):
         """Push successors forward on overlap for all dependency types
