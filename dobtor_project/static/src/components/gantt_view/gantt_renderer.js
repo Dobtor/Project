@@ -986,18 +986,15 @@ export class GanttRenderer extends Component {
      */
     get isPlanningMode() {
         const groups = this.props.model.data?.groups || [];
-        if (groups.length > 0 && groups.every(g => g._isPlanningMode)) return true;
-        // `_isPlanningMode` comes from the project metadata, which is fetched
-        // after the first paint; the rows say it immediately. Every row that has
-        // a position at all being positioned by plan_offset means the chart is
-        // on the planning axis — without this the first frame would try to lay
-        // T+0 dates out on the work calendar (2000-01-01 is a Saturday, so every
-        // bar would collapse) before snapping into place a moment later.
-        const rows = (this.props.model.data?.records || [])
-            .filter(r => !r._isMilestoneRecord);
-        const positioned = rows.filter(r => r._dateStart);
-        if (!positioned.length) return false;
-        return positioned.every(r => r._isVirtualDates);
+        // The project metadata is authoritative — but it is fetched after the
+        // first paint, so until it lands the rows are asked instead. Without
+        // that fallback the first frame lays T+0 dates out on the work calendar
+        // (2000-01-01 is a Saturday: every bar collapses) before snapping into
+        // place a moment later.
+        if (groups.length > 0 && groups.some(g => g._isPlanningMode !== undefined)) {
+            return groups.every(g => g._isPlanningMode);
+        }
+        return this.props.model.isPlanningChart?.() ?? false;
     }
 
     get _allColumns() {
@@ -1058,12 +1055,11 @@ export class GanttRenderer extends Component {
      * from it, so the header and the bars share one origin.
      */
     _generatePlanningColumns(start, end) {
-        const hpc = planHoursPerCell(this.props.scale, this._calHpd, this._calDpw);
+        const hpc = this._planCellHours;
         const fromHours = start.diff(PLANNING_T0, "hours").hours;
         const toHours = end.diff(PLANNING_T0, "hours").hours;
         const { first, last } = planCellRange(fromHours, toHours, hpc);
         this._planFirstCell = first;
-        this._planHoursPerCell = hpc;
         const scale = this.props.scale;
         const header = (scale === "week") ? "T-week"
             : (scale === "month") ? "T-month"
@@ -1072,7 +1068,7 @@ export class GanttRenderer extends Component {
         for (let i = first; i <= last; i++) {
             columns.push({
                 date: PLANNING_T0.plus({ hours: i * hpc }),
-                label: planCellLabel(i, scale),
+                label: planCellLabel(i, scale, hpc),
                 weekday: scale === "day" ? "" : planDayLabel(i * hpc, this._calHpd),
                 month: header,
                 isWeekend: false,
@@ -1308,11 +1304,8 @@ export class GanttRenderer extends Component {
         // carried by planning rows are a projection of those hours (T0 + hours,
         // unscaled), so reading the hours back out is exact.
         if (this.isPlanningMode) {
-            return planHoursToPx(
-                dt.diff(PLANNING_T0, "hours").hours,
-                this._planHoursPerCell
-                    || planHoursPerCell(scale, this._calHpd, this._calDpw),
-                this._planFirstCell || 0, cw);
+            return planHoursToPx(dt.diff(PLANNING_T0, "hours").hours,
+                this._planCellHours, this._planFirstCell || 0, cw);
         }
 
         if (scale === "1h" || scale === "2h" || scale === "4h" || scale === "8h") {
@@ -1429,10 +1422,7 @@ export class GanttRenderer extends Component {
         const scale = this.props.scale;
         const cw = this.cellWidth;
         if (this.isPlanningMode) {
-            const hours = pxToPlanHours(
-                px,
-                this._planHoursPerCell
-                    || planHoursPerCell(scale, this._calHpd, this._calDpw),
+            const hours = pxToPlanHours(px, this._planCellHours,
                 this._planFirstCell || 0, cw);
             return PLANNING_T0.plus({ hours: Math.max(0, hours) });
         }
@@ -1464,7 +1454,14 @@ export class GanttRenderer extends Component {
             const colStart = cols[i].date;
             const colEnd = (i + 1 < cols.length)
                 ? cols[i + 1].date : colStart.plus(step);
-            const total = this._workingHoursBetween(colStart, colEnd);
+            // Same memo the forward direction uses: a month column is ~31 day
+            // lookups and a drag asks for this on every pointer move.
+            if (!this._spanWorkCache) this._spanWorkCache = new Map();
+            let total = this._spanWorkCache.get(i);
+            if (total === undefined) {
+                total = this._workingHoursBetween(colStart, colEnd);
+                this._spanWorkCache.set(i, total);
+            }
             if (total <= 0) {
                 return colStart.plus({
                     milliseconds: frac * (colEnd.toMillis() - colStart.toMillis()),
@@ -3919,7 +3916,7 @@ export class GanttRenderer extends Component {
         // start IS the switch to planning mode, and leaving the tasks on real
         // dates would put the chart on two timelines at once. The server always
         // converts them to plan_offset (relative positions preserved).
-        const clearTasks = await new Promise((resolve) => {
+        const confirmed = await new Promise((resolve) => {
             this.displayDialog(ConfirmationDialog, {
                 title: _t("回到計劃模式"),
                 body: _t("將清除專案排程日期，並把所有任務日期轉換為計劃偏移（T+N 小時），" +
@@ -3931,9 +3928,9 @@ export class GanttRenderer extends Component {
                 dismiss: () => resolve(false),
             });
         });
-        if (!clearTasks) return;
+        if (!confirmed) return;
         // Clear schedule dates (schedule_start/schedule_end)
-        await this.props.model.clearProjectScheduleDates(group.id, clearTasks);
+        await this.props.model.clearProjectScheduleDates(group.id);
         // Also clear planned dates (date_start/date)
         const groupModel = this.props.archInfo.mainGroupModel;
         if (groupModel) {

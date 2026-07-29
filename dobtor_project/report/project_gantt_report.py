@@ -224,44 +224,51 @@ class GanttReport(models.AbstractModel):
             _compute(task)
         return result
 
-    def _compute_planning_markers(self, start_date, end_date, total_days, t0_date):
-        """Time-axis markers for planning mode using T+Xd labels."""
+    def _compute_planning_markers(self, start_date, end_date, total_days, t0_date,
+                                  hpd=8.0):
+        """Time-axis markers for planning mode using T+Xd labels.
+
+        A planning position is measured in WORKING HOURS from T+0 (see
+        gantt_plan_axis.js), so one T+Xd step is ``hpd`` hours of the virtual
+        span — not 24. Stepping in calendar days put the marks three times too
+        far apart on an 8-hour calendar, and the bars then did not line up with
+        the labels above them.
+        """
         markers = []
         if total_days <= 0:
             return markers
-        # Choose interval based on total span
-        if total_days <= 14:
+        hours_per_day = hpd or 8.0
+        # Span expressed in WORKING days, which is what the labels count.
+        span_days = (end_date - start_date).total_seconds() / 3600.0 / hours_per_day
+        if span_days <= 14:
             interval = 1
-        elif total_days <= 60:
+        elif span_days <= 60:
             interval = 7
-        elif total_days <= 180:
+        elif span_days <= 180:
             interval = 14
         else:
             interval = 30
 
-        # Start from the nearest interval boundary after t0_date
-        t0_offset = (start_date - t0_date).days
-        first_mark = t0_offset - (t0_offset % interval) if t0_offset >= 0 else 0
-        if first_mark < t0_offset:
-            first_mark += interval
+        total_secs = (end_date - start_date).total_seconds()
+        if total_secs <= 0:
+            return markers
 
-        day_offset = first_mark
+        # First mark at or after start_date, on an interval boundary from T+0.
+        start_days = (start_date - t0_date).total_seconds() / 3600.0 / hours_per_day
+        day_offset = max(0, int(start_days // interval) * interval)
+        if day_offset < start_days:
+            day_offset += interval
+
         while True:
-            mark_date = t0_date + timedelta(days=day_offset)
-            if mark_date > end_date:
+            mark_dt = t0_date + timedelta(hours=day_offset * hours_per_day)
+            if mark_dt > end_date:
                 break
-            if mark_date >= start_date:
-                left_pct = (mark_date - start_date).days / total_days * 100
+            if mark_dt >= start_date:
+                left_pct = (mark_dt - start_date).total_seconds() / total_secs * 100
                 label = "T" if day_offset <= 0 else f"T+{day_offset}d"
                 markers.append({'label': label, 'left_pct': round(left_pct, 2)})
             day_offset += interval
         return markers
-
-    @staticmethod
-    def _format_planning_day(dt_date, t0_date):
-        """Format a date as 'T+Xd' relative to T0 (day granularity, for markers)."""
-        off = (dt_date - t0_date).days
-        return "T" if off <= 0 else f"T+{off}d"
 
     @staticmethod
     def _format_planning_label(dt, t0, scale_factor, hpd):
@@ -409,12 +416,15 @@ class GanttReport(models.AbstractModel):
                 raw_start_dt = PLANNING_T0
                 raw_end_dt = PLANNING_T0
 
-            # Pad so bars at edges aren't clipped
-            p_start_dt = raw_start_dt - timedelta(hours=24)
-            p_end_dt = raw_end_dt + timedelta(hours=24)
+            # Pad by one WORKING day so edge bars are not clipped: the axis is
+            # measured in planned hours, so 24 of them would be three days on an
+            # 8-hour calendar.
+            pad = timedelta(hours=planning_hpd)
+            p_start_dt = raw_start_dt - pad
+            p_end_dt = raw_end_dt + pad
             total_secs = (p_end_dt - p_start_dt).total_seconds() or 1
-
-            # Date-based range still needed for T+Xd axis markers
+            # Kept only so the shared template maths has a non-zero divisor;
+            # the planning markers work off p_start_dt / p_end_dt directly.
             p_start_date = p_start_dt.date()
             p_end_date = p_end_dt.date()
             total_days = (p_end_date - p_start_date).days or 1
@@ -785,7 +795,7 @@ class GanttReport(models.AbstractModel):
 
         if is_planning:
             month_markers = self._compute_planning_markers(
-                p_start_date, p_end_date, total_days, t0_date
+                p_start_dt, p_end_dt, total_days, PLANNING_T0, planning_hpd
             )
             project_start_str = self._format_planning_label(
                 raw_start_dt, PLANNING_T0, scale_factor, planning_hpd)

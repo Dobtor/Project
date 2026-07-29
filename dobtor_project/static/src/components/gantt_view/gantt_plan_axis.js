@@ -71,12 +71,20 @@ export function planCellRange(fromHours, toHours, hoursPerCell) {
     return { first, last };
 }
 
-/** Header label for a planning cell: T+3 / W+2 / M+1 / H+5. */
-export function planCellLabel(index, scale) {
-    const prefix = (scale === "week") ? "W"
-        : (scale === "month") ? "M"
-        : (scale === "day") ? "T" : "H";
-    return `${prefix}${index > 0 ? "+" : ""}${index}`;
+/**
+ * Header label for a planning cell.
+ *
+ * Day/week/month cells are counted (T+3, W+2, M+1). The sub-day zooms label the
+ * HOUR the cell starts at, not the cell's ordinal: at the 4h zoom the fourth
+ * cell is H+12, because "H+3" there would read as hour three when it is hour
+ * twelve.
+ */
+export function planCellLabel(index, scale, hoursPerCell = 1) {
+    if (scale === "week") return `W${index > 0 ? "+" : ""}${index}`;
+    if (scale === "month") return `M${index > 0 ? "+" : ""}${index}`;
+    if (scale === "day") return `T${index > 0 ? "+" : ""}${index}`;
+    const hour = index * hoursPerCell;
+    return `H${hour > 0 ? "+" : ""}${hour}`;
 }
 
 /**

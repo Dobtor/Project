@@ -127,7 +127,7 @@ export function computeConnectorPath(o) {
  * @param {number} chamferD chamfer diagonal distance
  * @param {number} barEdge half bar height (center to edge)
  */
-export function buildPath(fromX, fromY, toX, toY, type, targetLeft, targetRight, chamferD, barEdge) {
+function buildPath(fromX, fromY, toX, toY, type, targetLeft, targetRight, chamferD, barEdge) {
     // Same row: straight horizontal line
     if (Math.abs(fromY - toY) < 2) {
         return {

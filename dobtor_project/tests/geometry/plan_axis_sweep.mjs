@@ -109,10 +109,13 @@ for (const { hpd, dpw } of CALENDARS) {
 
 // labels
 const labelCases = [
-    [0, "day", "T0"], [3, "day", "T+3"], [1, "week", "W+1"], [2, "month", "M+2"], [5, "4h", "H+5"],
+    // index, scale, hoursPerCell, expected — sub-day cells are labelled by the
+    // hour they start at, not by their ordinal.
+    [0, "day", 8, "T0"], [3, "day", 8, "T+3"], [1, "week", 40, "W+1"],
+    [2, "month", 160, "M+2"], [5, "4h", 4, "H+20"], [0, "1h", 1, "H0"],
 ];
-for (const [i, scale, expected] of labelCases) {
-    const got = planCellLabel(i, scale);
+for (const [i, scale, hpc, expected] of labelCases) {
+    const got = planCellLabel(i, scale, hpc);
     if (got !== expected) fail("cell label", `${scale} #${i} → ${got}, expected ${expected}`);
 }
 const dayLabelCases = [[0, 8, "T"], [8, 8, "T+1d"], [24, 8, "T+3d"], [12, 8, "T+1.5d"]];

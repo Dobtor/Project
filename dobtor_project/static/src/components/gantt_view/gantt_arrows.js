@@ -2,7 +2,7 @@
 
 import { Component } from "@odoo/owl";
 import { humanizeHours } from "./gantt_utils";
-import { computeConnectorPath, MAX_INSET } from "./gantt_arrow_path";
+import { computeConnectorPath } from "./gantt_arrow_path";
 
 /**
  * OWL component that renders predecessor arrows as SVG paths.
@@ -16,9 +16,6 @@ import { computeConnectorPath, MAX_INSET } from "./gantt_arrow_path";
  */
 export class GanttArrows extends Component {
     static template = "dobtor_project.GanttArrows";
-
-    /** Re-exported for callers that reason about the entry inset. */
-    static MAX_INSET = MAX_INSET;
 
     static props = {
         predecessors: { type: Array, optional: true },

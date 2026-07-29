@@ -128,8 +128,21 @@ export class GanttAltView extends Component {
         return 24;
     }
 
+    /**
+     * Hours that make up one "day" on this overlay's axis.
+     *
+     * A planning row's position is PLANNED HOURS from T+0, not clock time, so a
+     * day there is hours_per_day — measuring it in 24s would draw an 8-hour task
+     * a third of the length it has on the gantt behind this overlay.
+     */
+    get _hoursPerDay() {
+        if (!this.props.model.isPlanningChart?.()) return 24;
+        return this.props.model.data?.calendarInfo?.hours_per_day || 8;
+    }
+
     get totalDays() {
-        return Math.max(1, Math.ceil(this.timeEnd.diff(this.timeStart, "days").days));
+        const hours = this.timeEnd.diff(this.timeStart, "hours").hours;
+        return Math.max(1, Math.ceil(hours / this._hoursPerDay));
     }
 
     get timelineWidth() {
@@ -138,7 +151,8 @@ export class GanttAltView extends Component {
 
     _xOf(dt) {
         if (!dt || !dt.isValid) return 0;
-        return Math.max(0, dt.diff(this.timeStart, "days").days * this.dayWidth);
+        const days = dt.diff(this.timeStart, "hours").hours / this._hoursPerDay;
+        return Math.max(0, days * this.dayWidth);
     }
 
     _barStyle(rec) {

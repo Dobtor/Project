@@ -150,15 +150,6 @@ export class GanttModel extends Model {
         }
     }
 
-    /**
-     * Check if any child of the given parent uses virtual dates (planning mode).
-     * Uses _childrenByParent index for O(1) lookup + small scan.
-     */
-    _hasVirtualChild(parentId) {
-        const children = this._childrenByParent.get(parentId);
-        return children ? children.some(r => r._isVirtualDates) : false;
-    }
-
     async load(props) {
         this._lastLoadProps = props;
         const domain = props.domain || [];
@@ -714,15 +705,28 @@ export class GanttModel extends Model {
      * So: decide the timeline from the rows that carry the flag (tasks), then
      * treat anything far outside it as an outlier to be left out of the range.
      */
-    _virtualTimelineWindow() {
+    /**
+     * Whether the chart is drawn on the planning axis (positions in planned
+     * hours from T+0) rather than on the calendar.
+     *
+     * ONE definition, deliberately tolerant: a project whose data got mixed —
+     * the very case that used to blow the range up — is still a planning chart,
+     * and must keep being drawn as one. A strict "every row is virtual" test
+     * would flip a polluted planning project onto the calendar axis, where its
+     * T+0 dates land in the year 2000 and every bar collapses.
+     */
+    isPlanningChart() {
         const tasks = this.data.records.filter(r => !r._isMilestoneRecord);
         const virtual = tasks.filter(r => r._isVirtualDates);
-        if (!virtual.length) return null;
+        if (!virtual.length) return false;
         const dated = tasks.filter(
             r => (r._dateStart && r._dateStart.isValid) || (r._dateEnd && r._dateEnd.isValid));
-        // Mixed but mostly real → it is a scheduled chart with leftovers; leave
-        // the range alone rather than pinning it to a couple of stray plans.
-        if (virtual.length * 2 < dated.length) return null;
+        // Mixed but mostly real → a scheduled chart with leftovers.
+        return virtual.length * 2 >= dated.length;
+    }
+
+    _virtualTimelineWindow() {
+        if (!this.isPlanningChart()) return null;
         return {
             from: PLANNING_T0.minus({ years: 1 }),
             to: PLANNING_T0.plus({ years: 20 }),
@@ -1674,10 +1678,8 @@ export class GanttModel extends Model {
      * tasks. Planning mode → T+0; scheduled mode → last task end or range end.
      */
     _getMilestoneFallbackDate(ms) {
-        // Planning mode: unlinked milestones go to T+0
-        const isPlanningMode = this.data.records.some(
-            r => !r._isMilestoneRecord && r._isVirtualDates);
-        if (isPlanningMode) {
+        // Planning chart: an unlinked milestone sits at T+0.
+        if (this.isPlanningChart()) {
             return PLANNING_T0;
         }
 
@@ -3852,11 +3854,14 @@ export class GanttModel extends Model {
         this.notify();
     }
 
-    async clearProjectScheduleDates(groupId, clearTasks) {
+    async clearProjectScheduleDates(groupId) {
         const groupModel = this.archInfo.mainGroupModel;
         if (!groupModel) return false;
         try {
-            await this.orm.call(groupModel, "action_clear_schedule_dates", [groupId, clearTasks]);
+            // The server always converts the tasks to plan_offset — leaving them
+            // on real dates would put the project on two timelines at once — so
+            // there is no longer a flag to pass.
+            await this.orm.call(groupModel, "action_clear_schedule_dates", [groupId]);
             return true;
         } catch (error) {
             this.notification.add(error.data?.message || _t("清除排程日期失敗"), { type: "danger" });
