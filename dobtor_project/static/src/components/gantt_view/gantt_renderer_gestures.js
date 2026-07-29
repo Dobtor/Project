@@ -1,5 +1,6 @@
 /** @odoo-module **/
 
+import { _t } from "@web/core/l10n/translation";
 import { useGanttBarDrag } from "./gantt_bar_drag_hook";
 import { useGanttBarResize } from "./gantt_bar_resize_hook";
 import { useGanttDeadlineDrag } from "./gantt_deadline_drag_hook";

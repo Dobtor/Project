@@ -114,6 +114,59 @@ class TestStaticImports(unittest.TestCase):
         self.assertEqual(unused, [], "\n" + "\n".join(unused))
 
 
+    def test_module_level_names_are_imported(self):
+        """A name that is always module-level must be imported where it is used.
+
+        `_t`, the `useX` hooks and SCREAMING_CONSTANTS are never local variables
+        in this codebase — they arrive by import or they are undefined. Undefined
+        is not a build error: the bundle loads, and the ReferenceError waits
+        inside whichever method touches it. Splitting the renderer left `_t`
+        behind in the gestures module exactly that way, and the first thing that
+        happened in production was the whole view failing to mount.
+        """
+        # Names that are never local in this codebase: the translation function,
+        # the hooks, SCREAMING constants, and CamelCase things that get called or
+        # dotted (components, classes, luxon's DateTime).
+        MODULE_LEVEL = re.compile(
+            r"(?<![\w.$])(?:new\s+)?(_t|use[A-Z]\w*|[A-Z][A-Z0-9_]{2,}|[A-Z][a-zA-Z0-9]+)\s*[(.]")
+        BUILTINS = {
+            "Math", "Object", "Promise", "Set", "Map", "Array", "JSON", "Number",
+            "String", "Boolean", "Date", "Error", "RegExp", "Symbol", "WeakMap",
+            "WeakSet", "Intl", "ResizeObserver", "MutationObserver", "Infinity",
+            "IntersectionObserver", "Element", "Node", "Event", "CustomEvent",
+            "DOMParser", "XMLHttpRequest", "FormData", "URL", "URLSearchParams",
+            "Blob", "File", "FileReader", "Image", "Audio", "Worker", "NaN",
+            "Notification", "AbortController", "TextEncoder", "TextDecoder",
+        }
+
+        def _strip_comments(text):
+            """Prose is full of "NO IMPORTS." and "24 HOURS"; only code counts."""
+            text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+            return re.sub(r"(?<![:\\])//[^\n]*", "", text)
+        missing = []
+        for js in sorted((MODULE_ROOT / "static" / "src").rglob("*.js")):
+            raw = js.read_text(encoding="utf-8")
+            src = _strip_comments(raw)
+            imported = set()
+            for group, _spec in NAMED_IMPORT.findall(src):
+                imported |= {n.strip().split(" as ")[-1]
+                             for n in group.split(",") if n.strip()}
+            imported |= set(re.findall(r"^import\s+(\w+)\s+from", src, re.M))
+            # Declarations anywhere, not only at the top level: a SCREAMING
+            # constant is often built inside the method that uses it.
+            declared = set(re.findall(
+                r"(?:^|[\s;{(])(?:export\s+)?(?:const|let|var|function|class)\s+(\w+)",
+                src, re.M))
+            declared |= set(re.findall(r"const\s*\{([^}]*)\}\s*=", src)and
+                            [n.strip() for g in re.findall(r"const\s*\{([^}]*)\}\s*=", src)
+                             for n in g.split(",")] or [])
+            for name in set(MODULE_LEVEL.findall(src)):
+                if name in imported or name in declared or name in BUILTINS:
+                    continue
+                missing.append(f"{js.relative_to(MODULE_ROOT)}: {name}")
+        self.assertEqual(sorted(missing), [], "\n" + "\n".join(sorted(missing)))
+
+
 class TestTemplateReferences(unittest.TestCase):
     """Every member the OWL template calls must exist on a component.
 
