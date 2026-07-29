@@ -1,7 +1,10 @@
 /** @odoo-module **/
 
 import { _t } from "@web/core/l10n/translation";
-import { DateTime } from "@web/core/l10n/dates";
+
+// luxon is a global in the Odoo bundle — @web/core/l10n/dates exports date
+// HELPERS (parseDate, serializeDateTime, …) but not the DateTime class itself.
+const { DateTime } = luxon;
 
 /**
  * Origin of the planning timeline.

@@ -318,14 +318,6 @@
     text-align: right;
 }
 
-// WBS spacer (for rows without WBS number, e.g. milestones)
-.o_gantt_wbs_spacer {
-    display: inline-block;
-    min-width: 28px;
-    flex-shrink: 0;
-    margin-right: 6px;
-}
-
 // User avatar (left list)
 .o_gantt_user_avatar {
     width: 20px;
@@ -1939,14 +1931,6 @@
     min-width: 60px;
 }
 
-// Toolbar mini label
-.o_gantt_btn_mini_label {
-    font-size: 9px;
-    font-weight: 600;
-    text-transform: uppercase;
-    margin-left: 2px;
-}
-
 // -----------------------------------------------------------------------------
 // Ghost/Baseline Bars
 // -----------------------------------------------------------------------------
@@ -2013,57 +1997,9 @@
 // Drag Indicator
 // -----------------------------------------------------------------------------
 
-.o_gantt_drag_indicator {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    padding: var(--gantt-space-sm) var(--gantt-space-md);
-    background: var(--gantt-surface-elevated);
-    border-radius: var(--gantt-radius-md);
-    box-shadow: var(--gantt-shadow-lg);
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--gantt-label-primary);
-    z-index: 1000;
-    pointer-events: none;
-
-    @supports (backdrop-filter: blur(20px)) {
-        background: var(--gantt-vibrancy-bg);
-        backdrop-filter: blur(var(--gantt-vibrancy-blur));
-        -webkit-backdrop-filter: blur(var(--gantt-vibrancy-blur));
-    }
-}
-
 // -----------------------------------------------------------------------------
 // Loading State
 // -----------------------------------------------------------------------------
-
-.o_gantt_loading {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--gantt-vibrancy-bg);
-    z-index: 100;
-    @supports (backdrop-filter: blur(20px)) {
-        backdrop-filter: blur(var(--gantt-vibrancy-blur));
-        -webkit-backdrop-filter: blur(var(--gantt-vibrancy-blur));
-    }
-}
-
-.o_gantt_loading_spinner {
-    width: 32px;
-    height: 32px;
-    border: 3px solid var(--gantt-fill-tertiary);
-    border-top-color: var(--gantt-accent-blue);
-    border-radius: 50%;
-    animation: gantt-spin 0.8s linear infinite;
-}
 
 // -----------------------------------------------------------------------------
 // Tooltip (Apple Popover)
@@ -2756,23 +2692,6 @@
 // Phase 2: Constraint Badge, Violation Panel
 // =============================================================================
 
-// Feature 7: Constraint badge on bar
-.o_gantt_constraint_badge {
-    position: absolute;
-    top: -8px;
-    right: -4px;
-    font-size: 8px;
-    font-weight: 700;
-    padding: 1px 4px;
-    border-radius: var(--gantt-radius-sm);
-    background: var(--gantt-accent-orange);
-    color: #fff;
-    line-height: 12px;
-    z-index: 5;
-    pointer-events: none;
-    white-space: nowrap;
-}
-
 // Constraint date marker (flag shape on timeline)
 .o_gantt_constraint_marker {
     position: absolute;
@@ -3242,15 +3161,6 @@
     text-align: right;
 }
 
-.o_gantt_inspector_list_item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 0;
-    font-size: 12px;
-    color: var(--gantt-label-primary);
-}
-
 .o_gantt_inspector_pred_item {
     display: flex;
     align-items: center;
@@ -3348,16 +3258,6 @@
     }
 }
 
-.o_gantt_inspector_badge {
-    font-size: 9px;
-    font-weight: 600;
-    padding: 2px 5px;
-    border-radius: 4px;
-    background: var(--gantt-fill-tertiary);
-    color: var(--gantt-label-secondary);
-    flex-shrink: 0;
-}
-
 // Color picker (12 fixed colors, horizontal)
 .o_gantt_colorpicker {
     list-style: none;
@@ -3411,20 +3311,6 @@
         }
     }
 
-    // Color swatches 1-11. Authoritative values live in JS GANTT_COLORS
-    // (gantt_inspector.js) and are injected at runtime into --gantt-palette-N
-    // by the renderer; the hex below is only a fallback before injection.
-    .o_gantt_color_1  { background-color: var(--gantt-palette-1, #ee2d2d); }
-    .o_gantt_color_2  { background-color: var(--gantt-palette-2, #dc8534); }
-    .o_gantt_color_3  { background-color: var(--gantt-palette-3, #e8bb1d); }
-    .o_gantt_color_4  { background-color: var(--gantt-palette-4, #5794dd); }
-    .o_gantt_color_5  { background-color: var(--gantt-palette-5, #9f628f); }
-    .o_gantt_color_6  { background-color: var(--gantt-palette-6, #db8865); }
-    .o_gantt_color_7  { background-color: var(--gantt-palette-7, #41a9a2); }
-    .o_gantt_color_8  { background-color: var(--gantt-palette-8, #304be0); }
-    .o_gantt_color_9  { background-color: var(--gantt-palette-9, #ee2f8a); }
-    .o_gantt_color_10 { background-color: var(--gantt-palette-10, #61c36e); }
-    .o_gantt_color_11 { background-color: var(--gantt-palette-11, #9872e6); }
 }
 
 // Inspector button (e.g. Detail Plan)
@@ -3474,60 +3360,8 @@
 // Phase 3C: HIG Design Refinement
 // =============================================================================
 
-// Skeleton Loading
-.o_gantt_skeleton {
-    display: flex;
-    height: 100%;
-    background: var(--gantt-bg-secondary);
-}
-
-.o_gantt_skeleton_sidebar {
-    width: 300px;
-    background: var(--gantt-bg-primary);
-    padding: 88px 16px 16px;
-    border-right: 1px solid var(--gantt-separator);
-}
-
-.o_gantt_skeleton_row {
-    height: var(--gantt-row-height);
-    display: flex;
-    align-items: center;
-}
-
-.o_gantt_skeleton_line {
-    height: 12px;
-    width: 60%;
-    background: var(--gantt-fill-quaternary);
-    border-radius: var(--gantt-radius-sm);
-    animation: gantt_skeleton_pulse 1.5s ease-in-out infinite;
-}
-
 .o_gantt_skeleton_row:nth-child(2n) .o_gantt_skeleton_line { width: 45%; }
 .o_gantt_skeleton_row:nth-child(3n) .o_gantt_skeleton_line { width: 75%; }
-
-.o_gantt_skeleton_timeline {
-    flex: 1;
-    position: relative;
-    padding-top: 88px;
-}
-
-.o_gantt_skeleton_bar {
-    position: absolute;
-    height: 28px;
-    background: var(--gantt-fill-quaternary);
-    border-radius: var(--gantt-radius-sm);
-    left: 10%;
-    animation: gantt_skeleton_pulse 1.5s ease-in-out infinite;
-
-    &:nth-child(1) { top: 100px; width: 25%; left: 15%; }
-    &:nth-child(2) { top: 144px; width: 18%; left: 30%; }
-    &:nth-child(3) { top: 188px; width: 30%; left: 10%; }
-    &:nth-child(4) { top: 232px; width: 15%; left: 40%; }
-    &:nth-child(5) { top: 276px; width: 22%; left: 20%; }
-    &:nth-child(6) { top: 320px; width: 28%; left: 5%; }
-    &:nth-child(7) { top: 364px; width: 20%; left: 35%; }
-    &:nth-child(8) { top: 408px; width: 25%; left: 25%; }
-}
 
 @keyframes gantt_skeleton_pulse {
     0%, 100% { opacity: 0.4; }

@@ -78,7 +78,7 @@
                                      scheduled yet) shows as —, not as 0.00. -->
                                 <label for="project_cpi"/>
                                 <div>
-                                    <field name="project_cpi" nolabel="1"
+                                    <field name="project_cpi"
                                            invisible="total_actual_cost == 0"
                                            decoration-danger="project_cpi &lt; 1"
                                            decoration-success="project_cpi &gt;= 1"/>
@@ -87,7 +87,7 @@
                                 </div>
                                 <label for="project_spi"/>
                                 <div>
-                                    <field name="project_spi" nolabel="1"
+                                    <field name="project_spi"
                                            invisible="total_planned_value == 0"
                                            decoration-danger="project_spi &lt; 1"
                                            decoration-success="project_spi &gt;= 1"/>

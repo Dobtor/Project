@@ -106,13 +106,6 @@ export class GanttRenderer extends Component {
         // endpoints attach to the bar's *visual* edge (post clamp/fallback/drag).
         this._boundBarGeom = (record) => this._computeBarGeometry(record);
 
-        // Publish the canonical task colour palette (JS GANTT_COLORS, the single
-        // source of truth) as CSS variables so the SCSS swatches (.o_gantt_color_N)
-        // no longer hard-code their own copy.
-        const _root = document.documentElement;
-        GANTT_COLORS.forEach((c, i) => {
-            if (i > 0 && c) _root.style.setProperty(`--gantt-palette-${i}`, c);
-        });
         this.timelineRef = useRef("timeline");
         this.timelineDataRef = useRef("timelineData");
         this.listRowsRef = useRef("listRows");

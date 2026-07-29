@@ -1,6 +1,5 @@
 /** @odoo-module **/
 
-import { DateTime } from "@web/core/l10n/dates";
 import {
     dayWorkHours, workHoursInRange, workingFractionOfDay,
     workingHourOfDayFromFraction,

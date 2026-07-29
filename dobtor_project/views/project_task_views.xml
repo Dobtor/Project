@@ -71,7 +71,7 @@
                                      as "performance is nil". -->
                                 <label for="cpi"/>
                                 <div>
-                                    <field name="cpi" readonly="1" nolabel="1"
+                                    <field name="cpi" readonly="1"
                                            invisible="actual_cost == 0"
                                            decoration-danger="cpi &lt; 1"
                                            decoration-success="cpi &gt;= 1"/>
@@ -80,7 +80,7 @@
                                 </div>
                                 <label for="spi"/>
                                 <div>
-                                    <field name="spi" readonly="1" nolabel="1"
+                                    <field name="spi" readonly="1"
                                            invisible="planned_value == 0"
                                            decoration-danger="spi &lt; 1"
                                            decoration-success="spi &gt;= 1"/>
