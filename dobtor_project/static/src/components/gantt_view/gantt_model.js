@@ -2,12 +2,11 @@
 
 import { Model } from "@web/model/model";
 import { _t } from "@web/core/l10n/translation";
-import { durationToLag, cellsDeltaToDuration } from "./gantt_utils";
+import { durationToLag, cellsDeltaToDuration, PLANNING_T0 } from "./gantt_utils";
 
 const { DateTime } = luxon;
 
 /** Fixed reference date for planning mode virtual timeline (T+0). */
-const PLANNING_T0 = DateTime.fromObject({ year: 2000, month: 1, day: 1 });
 
 export class GanttModel extends Model {
     static services = ["orm", "notification"];

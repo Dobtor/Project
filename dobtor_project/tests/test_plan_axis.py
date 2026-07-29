@@ -14,7 +14,13 @@ edge padding measured in clock hours, labels disagreeing with the screen), and
 none of it was covered by anything.
 """
 
+import json
+import pathlib
 import unittest
+
+FIXTURE = json.loads(
+    (pathlib.Path(__file__).resolve().parent / "fixtures"
+     / "plan_axis_cases.json").read_text(encoding="utf-8"))
 
 try:  # inside Odoo
     from odoo.addons.dobtor_project.report import plan_axis
@@ -31,54 +37,39 @@ class TestPlanAxisLabels(unittest.TestCase):
     """day_label must produce the same strings as planDayLabel in
     gantt_plan_axis.js — the report and the chart name the same position."""
 
-    def test_matches_the_javascript_table(self):
-        # The exact cases asserted by tests/geometry/plan_axis_sweep.mjs.
-        cases = [
-            (0, 8, "T"),
-            (8, 8, "T+1d"),
-            (24, 8, "T+3d"),
-            (12, 8, "T+1.5d"),
-        ]
-        for hours, hpd, expected in cases:
-            with self.subTest(hours=hours, hpd=hpd):
-                self.assertEqual(plan_axis.day_label(hours, hpd), expected)
-
-    def test_signs_and_rounding(self):
-        self.assertEqual(plan_axis.day_label(-16, 8), "T-2d")
-        self.assertEqual(plan_axis.day_label(-12, 8), "T-1.5d")
-        # within the rounding tolerance of a whole day
-        self.assertEqual(plan_axis.day_label(8.05, 8), "T+1d")
-        self.assertEqual(plan_axis.day_label(0.0005, 8), "T")
-
-    def test_follows_the_project_calendar(self):
-        # A "day" is the calendar's working day, not 24 hours.
-        self.assertEqual(plan_axis.day_label(24, 8), "T+3d")
-        self.assertEqual(plan_axis.day_label(24, 24), "T+1d")
-        self.assertEqual(plan_axis.day_label(24, 4), "T+6d")
-        # A missing/zero hours_per_day must not divide by zero.
-        self.assertEqual(plan_axis.day_label(8, 0), "T+1d")
+    def test_labels_match_the_shared_fixture(self):
+        """The same table the JS sweep asserts — signs, rounding, and a "day"
+        being the calendar's working day rather than 24 hours."""
+        for case in FIXTURE["day_labels"]:
+            with self.subTest(**case):
+                self.assertEqual(
+                    plan_axis.day_label(case["hours"], case["hpd"]),
+                    case["label"])
 
 
 class TestPlanAxisMarkers(unittest.TestCase):
 
-    def test_marks_land_on_working_days_not_calendar_days(self):
-        # 0h → 80h on an 8h calendar is ten working days: marks every day.
-        marks = plan_axis.markers(0, 80, hpd=8)
-        self.assertEqual([m['label'] for m in marks][:4],
-                         ["T", "T+1d", "T+2d", "T+3d"])
-        # T+3d is 24 planned hours in, i.e. 30% of an 80-hour span. Stepping in
-        # CALENDAR days put it at 90% — three times too far out.
-        t3 = next(m for m in marks if m['label'] == "T+3d")
-        self.assertAlmostEqual(t3['left_pct'], 30.0, places=2)
+    def test_marks_match_the_shared_fixture(self):
+        """Marks land on WORKING days: T+3d is 24 planned hours in, i.e. 30% of
+        an 80-hour span. Stepping in calendar days put it at 90%."""
+        for case in FIXTURE["markers"]:
+            with self.subTest(**{k: v for k, v in case.items() if k != "check"}):
+                marks = plan_axis.markers(
+                    case["from_hours"], case["to_hours"], hpd=case["hpd"])
+                labels = [m['label'] for m in marks]
+                self.assertEqual(labels[:len(case["first_labels"])],
+                                 case["first_labels"])
+                check = case.get("check")
+                if check:
+                    mark = next(m for m in marks if m['label'] == check["label"])
+                    self.assertAlmostEqual(mark['left_pct'], check["left_pct"],
+                                           places=2)
 
     def test_interval_widens_with_the_span(self):
-        self.assertEqual(plan_axis.marker_interval(10), 1)
-        self.assertEqual(plan_axis.marker_interval(30), 7)
-        self.assertEqual(plan_axis.marker_interval(100), 14)
-        self.assertEqual(plan_axis.marker_interval(400), 30)
-        # a 400-working-day plan marks months, not days
-        marks = plan_axis.markers(0, 400 * 8, hpd=8)
-        self.assertEqual([m['label'] for m in marks][:3], ["T", "T+30d", "T+60d"])
+        for case in FIXTURE["marker_intervals"]:
+            with self.subTest(**case):
+                self.assertEqual(plan_axis.marker_interval(case["span_days"]),
+                                 case["interval"])
 
     def test_marks_stay_inside_the_drawn_span(self):
         for hpd in (4, 7.5, 8, 24):

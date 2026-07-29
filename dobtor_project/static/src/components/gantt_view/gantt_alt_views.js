@@ -1,12 +1,9 @@
 /** @odoo-module **/
 
 import { Component, useState, onWillStart, onWillUpdateProps } from "@odoo/owl";
+import { PLANNING_T0 } from "./gantt_utils";
 
 const { DateTime } = luxon;
-
-// Must match the renderer's PLANNING_T0 so the calendar's T+N offsets line up
-// exactly with the gantt's planning-mode labels.
-const PLANNING_T0 = DateTime.fromObject({ year: 2000, month: 1, day: 1 });
 
 /**
  * Alternate visualisations for the native Gantt, rendered as an overlay so the

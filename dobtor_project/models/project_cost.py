@@ -18,8 +18,8 @@ EV definitions used here (status date = project.status_date or "now"):
     planned_value = planned_cost × scheduled_fraction(status) (PV / BCWS)
     cost_variance     = EV − AC
     schedule_variance = EV − PV
-    cpi = EV / AC   (0 when AC = 0)
-    spi = EV / PV   (0 when PV = 0)
+    cpi = EV / AC   (0 when AC = 0 — undefined; the views show "—")
+    spi = EV / PV   (0 when PV = 0 — undefined; the views show "—")
 
 PV (and therefore SV/SPI) is schedule-based and only meaningful once tasks have
 real start/end dates; in pure planning mode (virtual timeline only) PV is 0 by

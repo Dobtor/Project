@@ -74,12 +74,26 @@
                                        decoration-danger="total_schedule_variance &lt; 0"/>
                             </group>
                             <group string="績效指數">
-                                <field name="project_cpi"
-                                       decoration-danger="project_cpi &lt; 1 and project_cpi &gt; 0"
-                                       decoration-success="project_cpi &gt;= 1"/>
-                                <field name="project_spi"
-                                       decoration-danger="project_spi &lt; 1 and project_spi &gt; 0"
-                                       decoration-success="project_spi &gt;= 1"/>
+                                <!-- Undefined (no cost booked / nothing
+                                     scheduled yet) shows as —, not as 0.00. -->
+                                <label for="project_cpi"/>
+                                <div>
+                                    <field name="project_cpi" nolabel="1"
+                                           invisible="total_actual_cost == 0"
+                                           decoration-danger="project_cpi &lt; 1"
+                                           decoration-success="project_cpi &gt;= 1"/>
+                                    <span invisible="total_actual_cost != 0"
+                                          title="尚無實際成本，無法計算">—</span>
+                                </div>
+                                <label for="project_spi"/>
+                                <div>
+                                    <field name="project_spi" nolabel="1"
+                                           invisible="total_planned_value == 0"
+                                           decoration-danger="project_spi &lt; 1"
+                                           decoration-success="project_spi &gt;= 1"/>
+                                    <span invisible="total_planned_value != 0"
+                                          title="尚未進入排定期間，無法計算">—</span>
+                                </div>
                             </group>
                         </group>
                     </page>

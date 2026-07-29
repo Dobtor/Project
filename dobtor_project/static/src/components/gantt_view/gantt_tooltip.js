@@ -2,10 +2,10 @@
 
 import { Component, useState, useRef, onMounted, onWillUnmount } from "@odoo/owl";
 import { _t } from "@web/core/l10n/translation";
+import { PLANNING_T0 } from "./gantt_utils";
 
 const { DateTime } = luxon;
 
-const PLANNING_T0 = DateTime.fromObject({ year: 2000, month: 1, day: 1 });
 
 /**
  * Format a planning-mode relative label.

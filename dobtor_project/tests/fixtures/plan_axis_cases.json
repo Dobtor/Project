@@ -1,0 +1,59 @@
+{
+  "_comment": [
+    "Expected values for the planning axis, shared by BOTH implementations:",
+    "  static/src/components/gantt_view/gantt_plan_axis.js  (tests/geometry/plan_axis_sweep.mjs)",
+    "  report/plan_axis.py                                  (tests/test_plan_axis.py)",
+    "The chart and the PDF draw the same plan, so they must name and place a",
+    "position identically. Each test had its own copy of this table, which is",
+    "exactly how two implementations start to drift.",
+    "hours = working hours from T+0; hpd = hours per working day."
+  ],
+
+  "day_labels": [
+    { "hours": 0,     "hpd": 8,  "label": "T" },
+    { "hours": 0.0005,"hpd": 8,  "label": "T" },
+    { "hours": 8,     "hpd": 8,  "label": "T+1d" },
+    { "hours": 8.05,  "hpd": 8,  "label": "T+1d" },
+    { "hours": 12,    "hpd": 8,  "label": "T+1.5d" },
+    { "hours": 24,    "hpd": 8,  "label": "T+3d" },
+    { "hours": -12,   "hpd": 8,  "label": "T-1.5d" },
+    { "hours": -16,   "hpd": 8,  "label": "T-2d" },
+    { "hours": 24,    "hpd": 24, "label": "T+1d" },
+    { "hours": 24,    "hpd": 4,  "label": "T+6d" },
+    { "hours": 8,     "hpd": 0,  "label": "T+1d" }
+  ],
+
+  "marker_intervals": [
+    { "span_days": 10,  "interval": 1 },
+    { "span_days": 14,  "interval": 1 },
+    { "span_days": 30,  "interval": 7 },
+    { "span_days": 100, "interval": 14 },
+    { "span_days": 400, "interval": 30 }
+  ],
+
+  "markers": [
+    {
+      "from_hours": 0, "to_hours": 80, "hpd": 8,
+      "first_labels": ["T", "T+1d", "T+2d", "T+3d"],
+      "check": { "label": "T+3d", "left_pct": 30.0 }
+    },
+    {
+      "from_hours": 0, "to_hours": 3200, "hpd": 8,
+      "first_labels": ["T", "T+30d", "T+60d"]
+    },
+    {
+      "from_hours": 0, "to_hours": 40, "hpd": 4,
+      "first_labels": ["T", "T+1d", "T+2d"],
+      "check": { "label": "T+5d", "left_pct": 50.0 }
+    }
+  ],
+
+  "cell_labels": [
+    { "index": 0, "scale": "day",   "hours_per_cell": 8,   "label": "T0" },
+    { "index": 3, "scale": "day",   "hours_per_cell": 8,   "label": "T+3" },
+    { "index": 1, "scale": "week",  "hours_per_cell": 40,  "label": "W+1" },
+    { "index": 2, "scale": "month", "hours_per_cell": 160, "label": "M+2" },
+    { "index": 5, "scale": "4h",    "hours_per_cell": 4,   "label": "H+20" },
+    { "index": 0, "scale": "1h",    "hours_per_cell": 1,   "label": "H0" }
+  ]
+}

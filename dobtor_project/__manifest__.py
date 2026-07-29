@@ -73,6 +73,7 @@ Migrated from Odoo 12 modules:
             "dobtor_project/static/src/components/gantt_view/gantt_inspector.js",
             "dobtor_project/static/src/components/gantt_view/gantt_alt_views.js",
             "dobtor_project/static/src/components/gantt_view/gantt_model.js",
+            "dobtor_project/static/src/components/gantt_view/gantt_renderer_axis.js",
             "dobtor_project/static/src/components/gantt_view/gantt_renderer.js",
             "dobtor_project/static/src/components/gantt_view/gantt_controller.js",
             "dobtor_project/static/src/components/gantt_view/gantt_view.js",

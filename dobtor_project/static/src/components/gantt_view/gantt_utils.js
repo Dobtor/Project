@@ -1,6 +1,21 @@
 /** @odoo-module **/
 
 import { _t } from "@web/core/l10n/translation";
+import { DateTime } from "@web/core/l10n/dates";
+
+/**
+ * Origin of the planning timeline.
+ *
+ * A planning row has no dates: its position is plan_offset working hours from
+ * T+0, and this is what those hours are counted from. It is an arbitrary,
+ * never-displayed epoch — deliberately far from any real project date so a
+ * planning position can never be mistaken for a scheduled one.
+ *
+ * Defined ONCE here: it used to be copy-pasted into five modules, and a chart,
+ * its tooltip, its overlays and its report all silently depend on agreeing
+ * about it.
+ */
+export const PLANNING_T0 = DateTime.fromObject({ year: 2000, month: 1, day: 1 });
 
 /**
  * Shared utility functions for the Gantt view.

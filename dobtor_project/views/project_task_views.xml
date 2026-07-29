@@ -65,12 +65,28 @@
                                        decoration-danger="cost_variance &lt; 0"/>
                                 <field name="schedule_variance" widget="monetary" readonly="1"
                                        decoration-danger="schedule_variance &lt; 0"/>
-                                <field name="cpi" readonly="1"
-                                       decoration-danger="cpi &lt; 1 and cpi &gt; 0"
-                                       decoration-success="cpi &gt;= 1"/>
-                                <field name="spi" readonly="1"
-                                       decoration-danger="spi &lt; 1 and spi &gt; 0"
-                                       decoration-success="spi &gt;= 1"/>
+                                <!-- CPI/SPI are ratios: with no cost booked
+                                     (AC=0) or nothing scheduled yet (PV=0) they
+                                     are UNDEFINED, not zero. Showing 0.00 read
+                                     as "performance is nil". -->
+                                <label for="cpi"/>
+                                <div>
+                                    <field name="cpi" readonly="1" nolabel="1"
+                                           invisible="actual_cost == 0"
+                                           decoration-danger="cpi &lt; 1"
+                                           decoration-success="cpi &gt;= 1"/>
+                                    <span invisible="actual_cost != 0"
+                                          title="尚無實際成本，無法計算">—</span>
+                                </div>
+                                <label for="spi"/>
+                                <div>
+                                    <field name="spi" readonly="1" nolabel="1"
+                                           invisible="planned_value == 0"
+                                           decoration-danger="spi &lt; 1"
+                                           decoration-success="spi &gt;= 1"/>
+                                    <span invisible="planned_value != 0"
+                                          title="尚未進入排定期間，無法計算">—</span>
+                                </div>
                             </group>
                         </group>
                         <!-- Hidden fields -->

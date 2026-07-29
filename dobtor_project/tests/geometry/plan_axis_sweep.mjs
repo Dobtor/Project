@@ -31,6 +31,11 @@ const {
     planHoursPerCell, planHoursToPx, pxToPlanHours, planCellRange, planCellLabel, planDayLabel,
 } = await import("data:text/javascript;charset=utf-8," + encodeURIComponent(src));
 
+// Expected values shared with the report's implementation, so the chart and the
+// PDF cannot drift apart: tests/test_plan_axis.py asserts the same table.
+const FIXTURE = JSON.parse(readFileSync(
+    resolve(here, "../fixtures/plan_axis_cases.json"), "utf8"));
+
 const SCALES = ["1h", "2h", "4h", "8h", "day", "week", "month"];
 const CALENDARS = [
     { hpd: 8, dpw: 5 },      // the usual 8h × Mon-Fri
@@ -107,21 +112,20 @@ for (const { hpd, dpw } of CALENDARS) {
     }
 }
 
-// labels
-const labelCases = [
-    // index, scale, hoursPerCell, expected — sub-day cells are labelled by the
-    // hour they start at, not by their ordinal.
-    [0, "day", 8, "T0"], [3, "day", 8, "T+3"], [1, "week", 40, "W+1"],
-    [2, "month", 160, "M+2"], [5, "4h", 4, "H+20"], [0, "1h", 1, "H0"],
-];
-for (const [i, scale, hpc, expected] of labelCases) {
-    const got = planCellLabel(i, scale, hpc);
-    if (got !== expected) fail("cell label", `${scale} #${i} → ${got}, expected ${expected}`);
+// ---- labels, from the shared fixture --------------------------------------
+for (const c of FIXTURE.cell_labels) {
+    const got = planCellLabel(c.index, c.scale, c.hours_per_cell);
+    if (got !== c.label) {
+        fail("cell label", `${c.scale} #${c.index} → ${got}, expected ${c.label}`);
+    }
+    checks++;
 }
-const dayLabelCases = [[0, 8, "T"], [8, 8, "T+1d"], [24, 8, "T+3d"], [12, 8, "T+1.5d"]];
-for (const [h, hpd, expected] of dayLabelCases) {
-    const got = planDayLabel(h, hpd);
-    if (got !== expected) fail("day label", `${h}h @${hpd} → ${got}, expected ${expected}`);
+for (const c of FIXTURE.day_labels) {
+    const got = planDayLabel(c.hours, c.hpd);
+    if (got !== c.label) {
+        fail("day label", `${c.hours}h @${c.hpd} → ${got}, expected ${c.label}`);
+    }
+    checks++;
 }
 
 if (failures.length) {
