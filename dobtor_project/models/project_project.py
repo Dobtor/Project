@@ -86,10 +86,33 @@ class Project(models.Model):
     )
 
     task_default_duration = fields.Float(
-        string='預設工期',
-        default=24.0,
-        help="新建任務時的預設計劃工期（小時）"
+        string='預設工時',
+        compute='_compute_task_default_duration',
+        store=True,
+        readonly=False,
+        help="新建任務的預設工時（小時）。預設為專案行事曆的一個工作日；"
+             "改成別的值後就固定為該值，直到行事曆換掉為止。"
     )
+
+    @api.depends('resource_calendar_id.hours_per_day', 'use_calendar')
+    def _compute_task_default_duration(self):
+        """One WORKING DAY, taken from the project's calendar.
+
+        It used to be a hard-coded 24.0, which under "the hours you type ARE the
+        schedule" means three working days on an 8-hour calendar — every new task
+        started three times too long. Following the calendar is what "one day"
+        was always meant to mean.
+
+        Computed + stored + readonly=False: a project that sets its own number
+        keeps it, and only swapping the calendar recomputes — which is exactly
+        when the old number stops meaning a day.
+        """
+        for project in self:
+            calendar = project.resource_calendar_id
+            if project.use_calendar and calendar and calendar.hours_per_day:
+                project.task_default_duration = calendar.hours_per_day
+            elif not project.task_default_duration:
+                project.task_default_duration = 8.0
 
     task_default_start = fields.Float(
         string='預設開始時間',

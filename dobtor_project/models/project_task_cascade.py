@@ -795,9 +795,13 @@ class ProjectTaskNativeCascade(models.Model):
         project = self.env['project.project'].browse(project_id).exists()
         if not project:
             raise UserError(_('找不到專案。'))
-        project.check_access('write')
 
         task_ids = [u['id'] for u in task_updates]
+        # Gated on the TASKS being reordered, not on the project: this writes
+        # sorting_seq / parent_id on tasks and milestones, both writable by
+        # group_project_user, and it is reached by dragging a row.
+        if task_ids:
+            self.browse(task_ids).exists().check_access('write')
         tasks_by_id = {t.id: t for t in self.browse(task_ids).exists()}
         for u in task_updates:
             task = tasks_by_id.get(u['id'])
@@ -922,11 +926,13 @@ class ProjectTaskNativeCascade(models.Model):
         project = self.env['project.project'].browse(project_id).exists()
         if not project:
             raise UserError(_('找不到專案。'))
-        project.check_access('write')
 
         tasks = self.search([('project_id', '=', project_id)])
         if not tasks:
             return True
+        # Gated on the TASKS: compaction moves tasks and rewrites their links,
+        # the same thing a drag does. See action_align_dependencies.
+        tasks.check_access('write')
 
         Pred = self.env['project.task.predecessor']
         all_preds = Pred.search([

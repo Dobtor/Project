@@ -539,8 +539,14 @@ class ProjectTaskNative(models.Model):
         search_project = self.env['project.project'].browse(project_id).exists()
         if not search_project:
             raise UserError(_('找不到專案。'))
-        # Verify caller has write access to the project
-        search_project.check_access('write')
+        # Gated on the TASKS, not on the project: scheduling moves tasks, which
+        # is the same thing dragging a bar does, and project.project is
+        # read-only for group_project_user in stock Odoo. The search below
+        # applies record rules, so only tasks the user may see are in scope.
+        project_tasks = self.env['project.task'].search([
+            ('project_id', '=', project_id)])
+        if project_tasks:
+            project_tasks.check_access('write')
 
         # Advisory lock to prevent concurrent scheduling on same project.
         # Use the two-int form pg_advisory_xact_lock(classid, objid) with a
@@ -594,17 +600,22 @@ class ProjectTaskNative(models.Model):
 
         project = self.env['project.project'].browse(int(project_id))
 
+        # schedule_start / schedule_end are a READOUT of the tasks that were
+        # just scheduled — min/max of dates the caller was allowed to write, with
+        # no user input of their own. Written with sudo so that scheduling stays
+        # available to anyone who may write the tasks; requiring project write
+        # here would put it behind the manager group while dragging the very same
+        # tasks stayed open to everyone. (The only sudo in this module.)
+        project_sudo = project.sudo()
         if scheduling_type == "forward":
-            # Use mapped for efficient date collection
             date_list_end = [d for d in search_tasks.mapped('date_end') if d]
             if date_list_end:
-                project.write({'schedule_end': max(date_list_end)})
+                project_sudo.write({'schedule_end': max(date_list_end)})
 
         elif scheduling_type == "backward":
-            # Use mapped for efficient date collection
             date_list_start = [d for d in search_tasks.mapped('date_start') if d]
             if date_list_start:
-                project.write({'schedule_start': min(date_list_start)})
+                project_sudo.write({'schedule_start': min(date_list_start)})
 
     def _summary_work(self, project_id):
         """Align every summary task with its children.

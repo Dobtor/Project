@@ -28,7 +28,7 @@ Migrated from Odoo 12 modules:
 - project_native_report
     """,
     "category": "Project",
-    "version": "18.0.1.1.0",
+    "version": "18.0.1.2.0",
     "author": "Dobtor SI",
     "license": "LGPL-3",
     "website": "https://www.dobtor.com",

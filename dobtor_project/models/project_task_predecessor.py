@@ -84,15 +84,31 @@ class ProjectTaskPredecessor(models.Model):
                     '任務不能以自身作為前置任務 (%(task_name)s)。',
                     task_name=rec.task_id.name,
                 ))
-            # BFS: walk successors from task_id; if we reach parent_task_id → cycle
+            # BFS: walk successors from task_id; if we reach parent_task_id → cycle.
+            #
+            # The graph is built from every link that TOUCHES the project, not
+            # only those whose target lives in it: a link may cross projects
+            # (_build_outbound_pred_map cascades across them), and a cycle that
+            # left the project and came back was invisible to a same-project
+            # graph. Keyed by project so the map is still built once per project
+            # in a batch create.
             pid = rec.task_id.project_id.id
             if pid not in project_succ_maps:
                 project_preds = Predecessor.search([
+                    '|',
                     ('task_id.project_id', '=', pid),
+                    ('parent_task_id.project_id', '=', pid),
                 ])
                 sm = {}
                 for p in project_preds:
                     sm.setdefault(p.parent_task_id.id, []).append(p.task_id.id)
+                # One hop out is not enough on its own: pull in the links of
+                # every task the first hop reaches, so a path that leaves and
+                # returns is walkable.
+                outside = {t for succs in sm.values() for t in succs} - set(sm)
+                if outside:
+                    for p in Predecessor.search([('parent_task_id', 'in', list(outside))]):
+                        sm.setdefault(p.parent_task_id.id, []).append(p.task_id.id)
                 project_succ_maps[pid] = sm
             succ_map = project_succ_maps[pid]
 

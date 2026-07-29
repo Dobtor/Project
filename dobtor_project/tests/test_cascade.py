@@ -493,3 +493,99 @@ class TestWorkHoursAreTheSchedule(TransactionCase):
         self.assertEqual(t.date_end, datetime(2026, 3, 4, 17, 0))
         self.assertEqual(t.date_start, datetime(2026, 3, 4, 8, 0))
         self.assertAlmostEqual(t.working_duration, 8.0, places=2)
+
+    # ------------------------------------------------------------------
+    # Everything the gantt rewrite changed, on the server side
+    # ------------------------------------------------------------------
+
+    def test_align_dependencies_repairs_the_whole_project(self):
+        """action_align_dependencies pushes every violated link at once, on the
+        calendar, and reports what moved — it replaced N client-side writes that
+        bypassed the calendar entirely."""
+        a = self._leaf("A", self.MON, 8.0)                       # Mon 08-17
+        b = self._leaf("B", self.MON, 4.0)                       # Mon 08-12 (violates)
+        self.Pred.create({"parent_task_id": a.id, "task_id": b.id,
+                          "type": "FS", "lag_hours": 0.0})
+        # Force the violation: B starts before A ends.
+        b.with_context(skip_date_snap=True, skip_cascade_push=True).write({
+            "date_start": self.MON, "date_end": datetime(2026, 3, 2, 12, 0)})
+
+        diff = self.Task.action_align_dependencies(self.project.id)
+
+        self.assertIn(b.id, diff["tasks"], "the violated task should be reported")
+        self.assertGreaterEqual(b.date_start, a.date_end)
+        # …and it kept its 4 scheduled hours, landing inside working time.
+        self.assertAlmostEqual(b.plan_duration, 4.0, places=2)
+        self.assertAlmostEqual(b.working_duration, 4.0, places=2)
+
+    def test_multi_move_leaves_land_on_the_calendar(self):
+        """A batch move translates by wall-clock hours; without the resync a leaf
+        that no dependency happens to push kept whatever window it landed on."""
+        a = self._leaf("A", self.MON, 8.0)
+        b = self._leaf("B", datetime(2026, 3, 3, 8, 0), 8.0)
+        # +30 clock hours drops both into the middle of a night.
+        (a | b).action_move_multiple_and_cascade(shift_hours=30)
+
+        for task in (a, b):
+            self.assertAlmostEqual(task.plan_duration, 8.0, places=2)
+            self.assertAlmostEqual(task.working_duration, 8.0, places=2,
+                                   msg="%s is not inside working time" % task.name)
+
+    def test_leaving_scheduled_mode_converts_dates_to_plan_offset(self):
+        """Clearing the schedule start ALWAYS converts: leaving tasks on real
+        dates put the project on two timelines at once."""
+        self.project.write({"schedule_start": self.MON})
+        a = self._leaf("A", self.MON, 8.0)
+        b = self._leaf("B", datetime(2026, 3, 3, 8, 0), 8.0)     # one working day later
+
+        self.project.action_clear_schedule_dates()
+
+        self.assertFalse(self.project.schedule_start)
+        for task in (a, b):
+            self.assertFalse(task.date_start)
+            self.assertFalse(task.date_end)
+        # Relative position preserved, in WORKING hours.
+        self.assertAlmostEqual(a.plan_offset, 0.0, places=2)
+        self.assertAlmostEqual(b.plan_offset, 8.0, places=2)
+        # And no milestone is left pointing at the real calendar.
+        for ms in self.env["project.milestone"].search(
+                [("project_id", "=", self.project.id)]):
+            self.assertFalse(ms.deadline_datetime)
+
+    def test_planned_value_counts_working_time_only(self):
+        """EVM's PV measured wall-clock seconds, so a task running over a weekend
+        was credited with progress it could not have made."""
+        # Friday 08:00 + 8h → ends Friday 17:00; status date is the Sunday.
+        friday = datetime(2026, 3, 6, 8, 0)
+        task = self._leaf("Weekend", friday, 8.0)
+        self.project.write({"status_date": datetime(2026, 3, 8, 12, 0)})
+        # The task is entirely in the past by the status date → fully due.
+        self.assertEqual(task._scheduled_fraction(), 1.0)
+
+        # A task that straddles the weekend: Friday 13:00 + 8h → Monday 12:00.
+        straddler = self._leaf("Straddler", datetime(2026, 3, 6, 13, 0), 8.0)
+        self.project.write({"status_date": datetime(2026, 3, 8, 12, 0)})  # Sunday
+        # Half its hours are on the Friday, none on the weekend → exactly 0.5,
+        # where counting elapsed seconds gave ~0.9.
+        self.assertAlmostEqual(straddler._scheduled_fraction(), 0.5, places=2)
+
+    def test_default_duration_follows_the_calendar(self):
+        """A new task's default hours are one WORKING day, not 24."""
+        self.assertAlmostEqual(self.project.task_default_duration, 8.0, places=2)
+        defaults = self.Task.with_context(
+            default_project_id=self.project.id).default_get(["plan_duration"])
+        self.assertAlmostEqual(defaults.get("plan_duration", 0.0), 8.0, places=2)
+
+    def test_planning_mode_tasks_are_created_without_dates(self):
+        """A task created from anywhere in a planning project must stay on the
+        T+0 axis; one real date stretches the chart across two timelines."""
+        self.project.write({"schedule_start": False})
+        parent = self._parent("Parent")
+        # No default_project_id in the context — the path that used to leak
+        # today's dates in.
+        child = self.Task.with_context(
+            default_parent_id=parent.id).create({
+                "name": "Child", "project_id": self.project.id,
+                "parent_id": parent.id})
+        self.assertFalse(child.date_start)
+        self.assertFalse(child.date_end)
