@@ -199,7 +199,6 @@ export class GanttModel extends Model {
             this._calculateTimeRange();
             this._groupRecords();
             await this._loadCalendarInfo();
-            this._rescaleVirtualDates();
             await this._loadMilestones();
             this._computeMilestonePositions();
             this._expandTimeRange(this.data.milestones);
@@ -459,7 +458,6 @@ export class GanttModel extends Model {
             if (newRaw.length === 0) return [];
 
             const processed = this._processRecords(newRaw);
-            this._rescaleVirtualDates(processed);
 
             // Track newly loaded IDs
             for (const r of processed) {
@@ -1530,28 +1528,12 @@ export class GanttModel extends Model {
         }
     }
 
-    /**
-     * Rescale virtual dates so that 1 working day = 1 virtual day on the timeline.
-     * plan_offset / plan_duration are in working hours.
-     * Virtual timeline uses 24h/day. Scale factor = 24 / hpd.
-     * Example: hpd=8 → scaleFactor=3 → 8 working hours = 24 virtual hours = 1 day column.
-     *
-     * @param {Array} [records] - Optional subset of records to rescale.
-     *        If omitted, rescales all records in this.data.records.
-     */
-    _rescaleVirtualDates(records) {
-        const hpd = this.data.calendarInfo?.hours_per_day || 8;
-        if (hpd >= 24) return; // No scaling needed
-
-        const scaleFactor = 24 / hpd;
-        const T0 = PLANNING_T0;
-
-        for (const record of (records || this.data.records)) {
-            if (!record._isVirtualDates) continue;
-            record._dateStart = T0.plus({ hours: record._planOffset * scaleFactor });
-            record._dateEnd = T0.plus({ hours: (record._planOffset + record._planDuration) * scaleFactor });
-        }
-    }
+    // _rescaleVirtualDates() is gone. It multiplied every planning row's hours
+    // by 24/hours_per_day so that a working day filled a day column, which meant
+    // the hours had to be divided back out at every point they were read again —
+    // drag deltas, lag maths, milestone positions, the diff applied after a
+    // server call. The hours now stay hours all the way to the axis, and
+    // gantt_plan_axis.js does the one conversion, in one place.
 
     // -------------------------------------------------------------------------
     // Milestones
@@ -2196,7 +2178,6 @@ export class GanttModel extends Model {
         if (!raw || !raw.length) return false;
 
         const processed = this._processRecords(raw);
-        this._rescaleVirtualDates(processed);
         const newRec = processed[0];
 
         // Insert into correct group
@@ -2575,16 +2556,9 @@ export class GanttModel extends Model {
                 const targetStart = (target._hasChildren && target._summaryDateStart) || target._dateStart;
                 if (sourceEnd && targetStart) {
                     const gapMs = targetStart.toMillis() - sourceEnd.toMillis();
+                    // Planning rows are positioned in working hours, and the
+                    // gap between two of them is already in those same hours.
                     lagHours = durationToLag(gapMs);
-                    // Planning mode: convert virtual hours to working hours
-                    const isVirtual = source._isVirtualDates || target._isVirtualDates
-                        || this._hasVirtualChild(source.id)
-                        || this._hasVirtualChild(target.id);
-                    if (isVirtual) {
-                        const hpd = this.data.calendarInfo?.hours_per_day || 8;
-                        const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
-                        lagHours = lagHours / scaleFactor;
-                    }
                 }
             }
 
@@ -2622,14 +2596,9 @@ export class GanttModel extends Model {
     _getEffectiveSourceEnd(source, pred) {
         const sourceEnd = (source._hasChildren && source._summaryDateEnd) || source._dateEnd;
         if (!sourceEnd) return null;
-        let lagHrs = pred.lag_hours || 0;
+        const lagHrs = pred.lag_hours || 0;
         if (lagHrs === 0) return sourceEnd;
-        // If source uses virtual dates (planning mode), scale working-hour lag to virtual hours
-        if (source._isVirtualDates) {
-            const hpd = this.data.calendarInfo?.hours_per_day || 8;
-            const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
-            lagHrs = lagHrs * scaleFactor;
-        }
+        // lag_hours are working hours, and so is the planning axis — no scaling.
         return sourceEnd.plus({ hours: lagHrs });
     }
 
@@ -3139,12 +3108,9 @@ export class GanttModel extends Model {
      */
     _alignVals(record, newStart) {
         if (record._isVirtualDates) {
-            const hpd = this.data.calendarInfo?.hours_per_day || 8;
-            const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
             const planOffsetField = this.archInfo.planOffset || "plan_offset";
             return {
-                [planOffsetField]:
-                    newStart.diff(PLANNING_T0, "hours").hours / scaleFactor,
+                [planOffsetField]: newStart.diff(PLANNING_T0, "hours").hours,
             };
         }
         const dateStartField = this.archInfo.dateStart || "date_start";
@@ -3176,12 +3142,9 @@ export class GanttModel extends Model {
             (record._hasChildren && record._summaryDateStart) || record._dateStart;
         if (!currentStart || !newStart) return false;
         if (record._hasChildren) {
-            let shiftHours = newStart.diff(currentStart, "hours").hours;
-            // Virtual timeline hours → working hours for the backend
-            if (record._isVirtualDates || this._hasVirtualChild(record.id)) {
-                const hpd = this.data.calendarInfo?.hours_per_day || 8;
-                shiftHours = shiftHours / ((hpd < 24) ? (24 / hpd) : 1);
-            }
+            // Planning rows already measure in working hours, scheduled rows in
+            // clock hours; either way the difference is the shift the server wants.
+            const shiftHours = newStart.diff(currentStart, "hours").hours;
             if (Math.abs(shiftHours) < 0.01) return false;
             return this.moveAndCascade(record.id, null, shiftHours);
         }
@@ -3341,11 +3304,9 @@ export class GanttModel extends Model {
                 }
                 // Regenerate virtual dates if in planning mode
                 if (record._isVirtualDates) {
-                    const T0 = PLANNING_T0;
-                    const hpd = this.data.calendarInfo?.hours_per_day || 8;
-                    const sf = (hpd < 24) ? (24 / hpd) : 1;
-                    record._dateStart = T0.plus({ hours: record._planOffset * sf });
-                    record._dateEnd = T0.plus({ hours: (record._planOffset + record._planDuration) * sf });
+                    record._dateStart = PLANNING_T0.plus({ hours: record._planOffset });
+                    record._dateEnd = PLANNING_T0.plus({
+                        hours: record._planOffset + record._planDuration });
                 }
             }
         }
@@ -3634,11 +3595,9 @@ export class GanttModel extends Model {
                 }
                 // Regenerate virtual dates if still in planning mode (with calendar scaling)
                 if (record._isVirtualDates && (values[planDurationField] != null || values[planOffsetField] != null)) {
-                    const T0 = PLANNING_T0;
-                    const hpd = this.data.calendarInfo?.hours_per_day || 8;
-                    const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
-                    record._dateStart = T0.plus({ hours: record._planOffset * scaleFactor });
-                    record._dateEnd = T0.plus({ hours: (record._planOffset + record._planDuration) * scaleFactor });
+                    record._dateStart = PLANNING_T0.plus({ hours: record._planOffset });
+                    record._dateEnd = PLANNING_T0.plus({
+                        hours: record._planOffset + record._planDuration });
                 }
             }
             // Recompute dependent data if date fields changed

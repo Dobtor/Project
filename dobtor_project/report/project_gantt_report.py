@@ -175,9 +175,14 @@ class GanttReport(models.AbstractModel):
     def _compute_planning_virtual_dates(self, tasks, t0, scale_factor=1.0):
         """Compute virtual (ds, de) for every task in planning mode.
 
-        Leaf tasks: ds = T0 + plan_offset * scale, de = ds + plan_duration * scale.
+        Leaf tasks: ds = T0 + plan_offset hours, de = ds + plan_duration hours.
         Parent tasks: min(children ds), max(children de) — recursive DFS.
-        scale_factor = 24 / hours_per_day — matches frontend _rescaleVirtualDates.
+
+        ``scale_factor`` stays 1.0: a planning position IS its hours, the same
+        convention the view now uses (gantt_plan_axis.js). It used to be 24/hpd
+        so a working day would fill a day column on screen, which meant every
+        reader had to divide it back out — the parameter is kept only so an
+        external caller passing it explicitly still works.
         Returns dict {task_id: (datetime, datetime) or (False, False)}.
         """
         task_map = {t.id: t for t in tasks}
@@ -332,16 +337,16 @@ class GanttReport(models.AbstractModel):
             order="sorting_seq asc",
         )
 
-        # Scale factor: matches frontend _rescaleVirtualDates (24 / hpd)
+        # A planning position is measured in WORKING HOURS from T+0 — no
+        # rescaling, matching gantt_plan_axis.js. The bar geometry below is a
+        # proportion of the whole span, so hours in, hours out.
         scale_factor = 1.0
         planning_hpd = 24.0
         if is_planning:
             if project.use_calendar and project.resource_calendar_id:
                 planning_hpd = project.resource_calendar_id.hours_per_day or 8.0
             else:
-                planning_hpd = 8.0  # Match frontend _calHpd default for planning mode
-            if planning_hpd < 24:
-                scale_factor = 24.0 / planning_hpd
+                planning_hpd = 8.0  # Match the view's planning default
 
         # Pre-compute virtual dates for planning mode
         virtual_dates = {}

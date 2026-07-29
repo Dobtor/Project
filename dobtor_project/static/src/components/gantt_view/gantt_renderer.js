@@ -24,6 +24,10 @@ import {
     dayWorkHours, workHoursInRange, workingFractionOfDay,
     workingHourOfDayFromFraction,
 } from "./gantt_worktime";
+import {
+    planHoursPerCell, planHoursToPx, pxToPlanHours, planCellRange, planCellLabel,
+    planDayLabel,
+} from "./gantt_plan_axis";
 import { GanttAltView } from "./gantt_alt_views";
 import { ActivityListPopover } from "@mail/core/web/activity_list_popover";
 
@@ -301,8 +305,6 @@ export class GanttRenderer extends Component {
                 const record = this.props.model.getRecord(recordId);
                 if (!record) return;
 
-                const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
-
                 // --- Parent task: move with all descendants ---
                 if (record._hasChildren) {
                     const summaryStart = record._summaryDateStart || record._dateStart;
@@ -316,8 +318,8 @@ export class GanttRenderer extends Component {
                     let shiftHours = newStart.diff(summaryStart, "hours").hours;
                     // Virtual timeline hours must be converted to working hours for the backend
                     if (record._isVirtualDates) {
-                        const scaleFactor = this._scaleFactor;
-                        shiftHours = shiftHours / scaleFactor;
+                        // The summary dates of a planning subtree are already in
+                        // working hours; the difference needs no conversion.
                     }
                     if (Math.abs(shiftHours) < 0.01) return;
                     await this.props.model.moveAndCascade(recordId, null, shiftHours);
@@ -347,20 +349,14 @@ export class GanttRenderer extends Component {
                 const minStart = this.props.model.getMinStartForRecord(recordId);
 
                 if (record._isVirtualDates) {
-                    // Planning mode: drag delta is in virtual timeline units,
-                    // divide by scaleFactor to convert back to working hours
-                    const scaleFactor = this._scaleFactor;
-                    // Convert duration to hours directly (avoid epoch-based month inaccuracy)
-                    const shiftHours = (shiftDur.hours || 0) + (shiftDur.days || 0) * 24
-                        + (shiftDur.weeks || 0) * 168 + (shiftDur.months || 0) * 720;
-                    const shiftWorkingHours = shiftHours / scaleFactor;
+                    // Planning mode: a cell IS a unit of planned work, so the
+                    // drag delta converts straight to working hours.
+                    const shiftWorkingHours = cellsDelta * this._planCellHours;
                     let newOffset = Math.max(0, (record._planOffset || 0) + shiftWorkingHours);
                     // Clamp to FS predecessor end
                     if (minStart) {
-                        const T0 = PLANNING_T0;
-                        const minVirtualHours = minStart.diff(T0, "hours").hours;
-                        const minOffsetWorking = minVirtualHours / scaleFactor;
-                        if (newOffset < minOffsetWorking) newOffset = minOffsetWorking;
+                        const minOffset = minStart.diff(PLANNING_T0, "hours").hours;
+                        if (newOffset < minOffset) newOffset = minOffset;
                     }
                     const planOffsetField = this.props.archInfo.planOffset || "plan_offset";
                     await this.props.model.moveAndCascade(recordId, { [planOffsetField]: newOffset });
@@ -428,14 +424,25 @@ export class GanttRenderer extends Component {
                 // Keep the live offset through the awaited move, clear in finally
                 // so the bars settle on their new dates (not a stale _dragState).
                 try {
-                    const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
-                    // Convert duration to hours
-                    let shiftHours = (shiftDur.hours || 0) + (shiftDur.days || 0) * 24
-                        + (shiftDur.weeks || 0) * 168 + (shiftDur.months || 0) * 720;
-                    // If hiding non-working days, use working-hour conversion
-                    if (this._isHidingNonWorking()) {
-                        const scaleFactor = this._scaleFactor;
-                        shiftHours = shiftHours / scaleFactor;
+                    // ONE shift for the whole selection, measured on the axis the
+                    // bars were dragged along: a cell is a working day, not 24
+                    // clock hours. The first selected row is the reference; rows
+                    // that cross a weekend land slightly differently, and the
+                    // server re-derives every moved leaf from its scheduled hours
+                    // afterwards, so they still end inside working time.
+                    const ref = recordIds
+                        .map(id => this.props.model.getRecord(id))
+                        .find(r => r && r._dateStart);
+                    let shiftHours;
+                    if (ref && ref._isVirtualDates) {
+                        shiftHours = cellsDelta * this._planCellHours;
+                    } else if (ref) {
+                        shiftHours = this._shiftByCells(ref._dateStart, cellsDelta)
+                            .diff(ref._dateStart, "hours").hours;
+                    } else {
+                        const d = cellsDeltaToDuration(cellsDelta, this.props.scale);
+                        shiftHours = (d.hours || 0) + (d.days || 0) * 24
+                            + (d.weeks || 0) * 168 + (d.months || 0) * 720;
                     }
                     await this.props.model.moveMultipleRecords(recordIds, shiftHours);
                 } finally {
@@ -490,22 +497,15 @@ export class GanttRenderer extends Component {
                     : null;
 
                 if (record._isVirtualDates) {
-                    // Planning mode: resize delta is in virtual timeline units,
-                    // divide by scaleFactor to convert back to working hours
-                    const scaleFactor = this._scaleFactor;
+                    // Planning mode: a cell IS a unit of planned work, so the
+                    // resize delta converts straight to working hours.
                     const minDuration = this._calHpd; // Minimum 1 working day
-                    const shiftDur = cellsDeltaToDuration(cellsDelta, this.props.scale);
-                    // Convert duration to hours directly (avoid epoch-based month inaccuracy)
-                    const shiftHours = (shiftDur.hours || 0) + (shiftDur.days || 0) * 24
-                        + (shiftDur.weeks || 0) * 168 + (shiftDur.months || 0) * 720;
-                    const shiftWorkingHours = shiftHours / scaleFactor;
+                    const shiftWorkingHours = cellsDelta * this._planCellHours;
                     if (side === "right") {
                         let newDuration = Math.max(minDuration, (record._planDuration || this._calHpd) + shiftWorkingHours);
                         // Clamp to FF/SF predecessor min end
                         if (minEnd) {
-                            const T0 = PLANNING_T0;
-                            const minEndVirtualHours = minEnd.diff(T0, "hours").hours;
-                            const minEndWorking = minEndVirtualHours / scaleFactor;
+                            const minEndWorking = minEnd.diff(PLANNING_T0, "hours").hours;
                             const currentOffset = record._planOffset || 0;
                             const minDur = Math.max(minDuration, minEndWorking - currentOffset);
                             if (newDuration < minDur) {
@@ -520,9 +520,7 @@ export class GanttRenderer extends Component {
                         let newDuration = Math.max(minDuration, (record._planDuration || this._calHpd) - shiftWorkingHours);
                         // Clamp to FS predecessor end
                         if (minStart) {
-                            const T0 = PLANNING_T0;
-                            const minVirtualHours = minStart.diff(T0, "hours").hours;
-                            const minOffsetWorking = minVirtualHours / scaleFactor;
+                            const minOffsetWorking = minStart.diff(PLANNING_T0, "hours").hours;
                             if (newOffset < minOffsetWorking) {
                                 newDuration = Math.max(minDuration, newDuration - (minOffsetWorking - newOffset));
                                 newOffset = minOffsetWorking;
@@ -988,7 +986,18 @@ export class GanttRenderer extends Component {
      */
     get isPlanningMode() {
         const groups = this.props.model.data?.groups || [];
-        return groups.length > 0 && groups.every(g => g._isPlanningMode);
+        if (groups.length > 0 && groups.every(g => g._isPlanningMode)) return true;
+        // `_isPlanningMode` comes from the project metadata, which is fetched
+        // after the first paint; the rows say it immediately. Every row that has
+        // a position at all being positioned by plan_offset means the chart is
+        // on the planning axis — without this the first frame would try to lay
+        // T+0 dates out on the work calendar (2000-01-01 is a Saturday, so every
+        // bar would collapse) before snapping into place a moment later.
+        const rows = (this.props.model.data?.records || [])
+            .filter(r => !r._isMilestoneRecord);
+        const positioned = rows.filter(r => r._dateStart);
+        if (!positioned.length) return false;
+        return positioned.every(r => r._isVirtualDates);
     }
 
     get _allColumns() {
@@ -1041,12 +1050,51 @@ export class GanttRenderer extends Component {
         return cols;
     }
 
+    /**
+     * Columns for a planning chart: cell i covers working hours
+     * [i × hoursPerCell, (i+1) × hoursPerCell) from T+0.
+     *
+     * `_planFirstCell` is the index of the leftmost cell; _dateToPx measures
+     * from it, so the header and the bars share one origin.
+     */
+    _generatePlanningColumns(start, end) {
+        const hpc = planHoursPerCell(this.props.scale, this._calHpd, this._calDpw);
+        const fromHours = start.diff(PLANNING_T0, "hours").hours;
+        const toHours = end.diff(PLANNING_T0, "hours").hours;
+        const { first, last } = planCellRange(fromHours, toHours, hpc);
+        this._planFirstCell = first;
+        this._planHoursPerCell = hpc;
+        const scale = this.props.scale;
+        const header = (scale === "week") ? "T-week"
+            : (scale === "month") ? "T-month"
+            : (scale === "day") ? "T-day" : "T-hour";
+        const columns = [];
+        for (let i = first; i <= last; i++) {
+            columns.push({
+                date: PLANNING_T0.plus({ hours: i * hpc }),
+                label: planCellLabel(i, scale),
+                weekday: scale === "day" ? "" : planDayLabel(i * hpc, this._calHpd),
+                month: header,
+                isWeekend: false,
+                isNonWorking: false,
+                isToday: false,
+            });
+        }
+        return columns;
+    }
+
     _generateColumns(start, end) {
         // Guard: if start or end are invalid, fall back to current month
         if (!start || !start.isValid || !end || !end.isValid) {
             const now = DateTime.now();
             start = now.startOf("month");
             end = now.endOf("month");
+        }
+        // Planning mode has no calendar to lay out: a column is one unit of
+        // PLANNED WORK (a working day, a working week, N hours), counted from
+        // T+0. One generator covers every zoom level.
+        if (this.isPlanningMode) {
+            return this._generatePlanningColumns(start, end);
         }
         const columns = [];
         const scale = this.props.scale;
@@ -1256,6 +1304,17 @@ export class GanttRenderer extends Component {
         const cw = this.cellWidth;
         const start = this._extendedTimeStart || data.timeStart;
 
+        // Planning mode: the position IS the planned hours from T+0. The dates
+        // carried by planning rows are a projection of those hours (T0 + hours,
+        // unscaled), so reading the hours back out is exact.
+        if (this.isPlanningMode) {
+            return planHoursToPx(
+                dt.diff(PLANNING_T0, "hours").hours,
+                this._planHoursPerCell
+                    || planHoursPerCell(scale, this._calHpd, this._calDpw),
+                this._planFirstCell || 0, cw);
+        }
+
         if (scale === "1h" || scale === "2h" || scale === "4h" || scale === "8h") {
             const hours = parseInt(scale);
             const msPerCol = hours * 3600 * 1000;
@@ -1367,10 +1426,18 @@ export class GanttRenderer extends Component {
      * Returns null when the scale/mode has no working-time mapping.
      */
     _pxToDate(px) {
-        if (!this._useWorkTimeAxis) return null;
-        const data = this.props.model.data;
         const scale = this.props.scale;
         const cw = this.cellWidth;
+        if (this.isPlanningMode) {
+            const hours = pxToPlanHours(
+                px,
+                this._planHoursPerCell
+                    || planHoursPerCell(scale, this._calHpd, this._calDpw),
+                this._planFirstCell || 0, cw);
+            return PLANNING_T0.plus({ hours: Math.max(0, hours) });
+        }
+        if (!this._useWorkTimeAxis) return null;
+        const data = this.props.model.data;
         const start = this._extendedTimeStart || data.timeStart;
         if (!start || !start.isValid || !cw) return null;
 
@@ -1510,10 +1577,10 @@ export class GanttRenderer extends Component {
     // toggle is what removes those); they simply contain no working time, so
     // everything inside such a day maps to the column's left edge.
     //
-    // Not applied in planning mode: virtual dates are already scaled by 24/hpd
-    // (_rescaleVirtualDates) so that 8 working hours = one day column, and
-    // applying the calendar again would count it twice. Without a work calendar
-    // the axis stays on the clock, exactly as before.
+    // Not applied in planning mode: a planning chart has no calendar to lay out
+    // — its rows are positioned in planned hours from T+0 and go through
+    // gantt_plan_axis.js instead. Without a work calendar the axis stays on the
+    // clock, exactly as before.
     // ---------------------------------------------------------------------
 
     /** Whether positions should be measured in working time. */
@@ -1837,8 +1904,13 @@ export class GanttRenderer extends Component {
      * columns and working-hour offsets when non-working time is collapsed.
      * Single definition so the rule lives in one place.
      */
-    get _scaleFactor() {
-        return (this._calHpd < 24) ? (24 / this._calHpd) : 1;
+    /**
+     * Working hours represented by one cell on the planning axis. The planning
+     * timeline measures planned work, not clock time, so this is the ONLY
+     * conversion between a cell and the hours a plan is stored in.
+     */
+    get _planCellHours() {
+        return planHoursPerCell(this.props.scale, this._calHpd, this._calDpw);
     }
 
     get arrowProps() {
@@ -1893,9 +1965,17 @@ export class GanttRenderer extends Component {
         const hpd = this._calHpd;
         const dpw = this._calDpw;
         const scale = this.props.scale;
-        const shiftDur = cellsDeltaToDuration(cellsDelta, scale);
-        const shiftHours = (shiftDur.hours || 0) + (shiftDur.days || 0) * 24
-            + (shiftDur.weeks || 0) * 168 + (shiftDur.months || 0) * 720;
+        // Preview only: on the planning axis a cell is a unit of planned work;
+        // elsewhere the clock conversion is close enough for a hint that the
+        // server recomputes on drop.
+        let shiftHours;
+        if (this.isPlanningMode) {
+            shiftHours = cellsDelta * this._planCellHours;
+        } else {
+            const shiftDur = cellsDeltaToDuration(cellsDelta, scale);
+            shiftHours = (shiftDur.hours || 0) + (shiftDur.days || 0) * 24
+                + (shiftDur.weeks || 0) * 168 + (shiftDur.months || 0) * 720;
+        }
 
         const record = model.getRecord(recId);
         if (!record) return [];
@@ -3722,21 +3802,11 @@ export class GanttRenderer extends Component {
     }
 
     /**
-     * Convert a virtual DateTime to T+Xd label (working-day precision).
-     * Reverses the scaleFactor applied by _rescaleVirtualDates to get
-     * working hours, then divides by hpd to get working days.
+     * T+Xd label for a point on the plan. The planning "date" is T0 + planned
+     * hours, so the hours read straight back out — no rescaling to undo.
      */
     _formatPlanningDay(dt) {
-        const hpd = this.props.model.data?.calendarInfo?.hours_per_day || 8;
-        const scaleFactor = hpd < 24 ? (24 / hpd) : 1;
-        const virtualHours = dt.diff(PLANNING_T0, "hours").hours;
-        const workingDays = virtualHours / scaleFactor / hpd;
-        if (workingDays < 0.001) return "T";
-        if (Math.abs(workingDays - Math.round(workingDays)) < 0.01) {
-            return `T+${Math.round(workingDays)}d`;
-        }
-        // Sub-day: show 1 decimal
-        return `T+${workingDays.toFixed(1)}d`;
+        return planDayLabel(dt.diff(PLANNING_T0, "hours").hours, this._calHpd);
     }
 
     // NOTE: the old _humanizeDuration() helper is gone. It existed only to turn
@@ -3845,17 +3915,23 @@ export class GanttRenderer extends Component {
 
     async onClearScheduleClick(group, ev) {
         ev.stopPropagation();
+        // There is no "clear the project only" any more: dropping the schedule
+        // start IS the switch to planning mode, and leaving the tasks on real
+        // dates would put the chart on two timelines at once. The server always
+        // converts them to plan_offset (relative positions preserved).
         const clearTasks = await new Promise((resolve) => {
             this.displayDialog(ConfirmationDialog, {
-                title: _t("清除排程日期"),
-                body: _t("是否同步清除所有任務日期？"),
-                confirmLabel: _t("清除任務日期（回到計劃模式）"),
-                cancelLabel: _t("僅清除專案日期"),
+                title: _t("回到計劃模式"),
+                body: _t("將清除專案排程日期，並把所有任務日期轉換為計劃偏移（T+N 小時），" +
+                         "任務的相對位置會保留。之後可再設定排程起始日轉回實際日期。"),
+                confirmLabel: _t("轉換並回到計劃模式"),
+                cancelLabel: _t("取消"),
                 confirm: () => resolve(true),
                 cancel: () => resolve(false),
                 dismiss: () => resolve(false),
             });
         });
+        if (!clearTasks) return;
         // Clear schedule dates (schedule_start/schedule_end)
         await this.props.model.clearProjectScheduleDates(group.id, clearTasks);
         // Also clear planned dates (date_start/date)

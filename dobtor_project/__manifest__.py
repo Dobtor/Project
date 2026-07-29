@@ -57,6 +57,7 @@ Migrated from Odoo 12 modules:
             "dobtor_project/static/src/components/gantt_view/gantt_arch_parser.js",
             "dobtor_project/static/src/components/gantt_view/gantt_scrollmap.js",
             "dobtor_project/static/src/components/gantt_view/gantt_worktime.js",
+            "dobtor_project/static/src/components/gantt_view/gantt_plan_axis.js",
             "dobtor_project/static/src/components/gantt_view/gantt_arrow_path.js",
             "dobtor_project/static/src/components/gantt_view/gantt_arrows.js",
             "dobtor_project/static/src/components/gantt_view/gantt_arrow_draw_hook.js",

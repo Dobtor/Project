@@ -383,34 +383,48 @@ class Project(models.Model):
             })
 
     def action_clear_schedule_dates(self, clear_tasks=False):
-        """Clear schedule dates, optionally clear all task dates.
+        """Leave scheduled mode: the project's plan goes back to being measured
+        in hours from T+0.
 
-        When clear_tasks=True, computes plan_offset from real dates BEFORE
-        clearing, ensuring reversible transition back to planning mode.
+        Dropping ``schedule_start`` IS the switch into planning mode, where a
+        task's position is its ``plan_offset``. Leaving real dates on the tasks
+        would put the project on two timelines at once — the tasks that still
+        have dates sit on the calendar while every task created afterwards sits
+        at T+0 — and the gantt then has to span from one to the other, which is
+        how a chart ends up thousands of days wide. So the conversion is
+        unconditional: every task's dates become a ``plan_offset`` (relative
+        positions preserved by :meth:`_save_plan_offsets_from_dates`) and are
+        then cleared, and milestone deadlines — real datetimes that have no
+        meaning on the T+0 axis — go with them.
+
+        :param clear_tasks: kept for callers that pass it; it no longer selects
+            whether tasks are converted (they always are), only whether the
+            caller wanted the full reset. Both paths now leave one timeline.
         """
         self.ensure_one()
         schedule_start = self.schedule_start
 
-        if clear_tasks and schedule_start:
+        if schedule_start:
             self._save_plan_offsets_from_dates(schedule_start)
 
         self.write({'schedule_start': False, 'schedule_end': False})
 
-        if clear_tasks:
-            tasks = self.env['project.task'].search([('project_id', '=', self.id)])
+        tasks = self.env['project.task'].search([('project_id', '=', self.id)])
+        if tasks:
             tasks.with_context(skip_date_snap=True).write({
                 'date_start': False,
                 'date_end': False,
             })
-            # Also clear milestone dates
-            milestones = self.env['project.milestone'].search([
-                ('project_id', '=', self.id),
-            ])
-            if milestones:
-                milestones.write({
-                    'deadline_datetime': False,
-                    'deadline': False,
-                })
+        # Milestone deadlines are real datetimes; on the T+0 axis a milestone is
+        # positioned by the tasks that feed it.
+        milestones = self.env['project.milestone'].search([
+            ('project_id', '=', self.id),
+        ])
+        if milestones:
+            milestones.write({
+                'deadline_datetime': False,
+                'deadline': False,
+            })
         return True
 
     def _save_plan_offsets_from_dates(self, schedule_start):

@@ -248,9 +248,12 @@ export class GanttAltView extends Component {
     get planningCalendarRows() {
         const recs = this.records;
         if (!recs.length) return [];
+        // A planning "date" is T0 + PLANNED HOURS (unscaled): a working day is
+        // hours_per_day of it, so the T+N grid counts in those, not in 24s.
+        const hpd = this.props.model.data?.calendarInfo?.hours_per_day || 8;
         const spans = recs.map(r => {
-            const s = Math.floor(r._dateStart.diff(PLANNING_T0, "days").days);
-            let e = Math.ceil(r._dateEnd.diff(PLANNING_T0, "days").days) - 1;
+            const s = Math.floor(r._dateStart.diff(PLANNING_T0, "hours").hours / hpd);
+            let e = Math.ceil(r._dateEnd.diff(PLANNING_T0, "hours").hours / hpd) - 1;
             if (e < s) e = s;
             return { rec: r, s, e };
         });

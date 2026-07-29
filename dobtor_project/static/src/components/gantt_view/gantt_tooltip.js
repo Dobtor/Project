@@ -125,7 +125,10 @@ export class GanttTooltip extends Component {
      */
     _toPlanningDay(dt) {
         if (!dt || !dt.isValid) return "";
-        const dayOffset = Math.round(dt.diff(PLANNING_T0, "days").days);
+        // A planning "date" is T0 + PLANNED HOURS (unscaled), so a working day
+        // is hours_per_day of it — not 24.
+        const hpd = this.props.hoursPerDay || 8;
+        const dayOffset = Math.round(dt.diff(PLANNING_T0, "hours").hours / hpd);
         return planningLabel("T", dayOffset);
     }
 
