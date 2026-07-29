@@ -3,6 +3,7 @@ from . import ir_ui_view
 from . import gantt_native_predecessor
 from . import project_project
 from . import project_task
+from . import project_task_cascade
 from . import project_task_predecessor
 from . import project_task_resource
 from . import project_task_detail_plan
