@@ -129,18 +129,6 @@ export class GanttModel extends Model {
     }
 
     /**
-     * Find the group that contains a record, using the group field.
-     */
-    _getGroupForRecord(recordId) {
-        const record = this._recordMap.get(recordId);
-        if (!record) return null;
-        const groupField = this.archInfo.mainGroupIdName || "project_id";
-        const groupValue = record[groupField];
-        const groupId = Array.isArray(groupValue) ? groupValue[0] : (groupValue || 0);
-        return this._groupMap.get(groupId) || null;
-    }
-
-    /**
      * Rebuild predecessor indexes only. Called when only predecessors change.
      */
     _rebuildPredIndexes() {
@@ -3603,11 +3591,6 @@ export class GanttModel extends Model {
         }
     }
 
-    async updatePlanOffset(recordId, offsetHours) {
-        const planOffsetField = this.archInfo.planOffset || "plan_offset";
-        return this.updateRecord(recordId, { [planOffsetField]: offsetHours });
-    }
-
     async setProjectScheduleStart(groupId, dateStr) {
         const groupModel = this.archInfo.mainGroupModel;
         if (!groupModel) return false;
@@ -3806,9 +3789,6 @@ export class GanttModel extends Model {
         this._recomputeMilestonePositions();
         this.notify();
     }
-
-    canUndo() { return this._undoStack.length > 0; }
-    canRedo() { return this._redoStack.length > 0; }
 
     async clearProjectScheduleDates(groupId, clearTasks) {
         const groupModel = this.archInfo.mainGroupModel;

@@ -136,17 +136,6 @@ export class GanttAltView extends Component {
         return this.totalDays * this.dayWidth;
     }
 
-    /** Days header for resource / network background grid. */
-    get dayColumns() {
-        const cols = [];
-        const start = this.timeStart;
-        for (let i = 0; i < this.totalDays; i++) {
-            const d = start.plus({ days: i });
-            cols.push({ index: i, label: d.day, isWeekend: d.weekday >= 6 });
-        }
-        return cols;
-    }
-
     _xOf(dt) {
         if (!dt || !dt.isValid) return 0;
         return Math.max(0, dt.diff(this.timeStart, "days").days * this.dayWidth);

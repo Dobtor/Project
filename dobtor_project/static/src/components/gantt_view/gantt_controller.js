@@ -503,16 +503,6 @@ export class GanttController extends Component {
         this.onRefresh();
     }
 
-    // Feature 22: Fast refresh — complete reload preserving scroll position
-    async onFastRefresh() {
-        this.state.isLoading = true;
-        try {
-            await this._loadWithScrollRestore(this.props);
-        } finally {
-            this.state.isLoading = false;
-        }
-    }
-
     // Print / PDF Report buttons
     onPrintClick() {
         // Expand all groups before printing

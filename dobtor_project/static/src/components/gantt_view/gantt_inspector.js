@@ -270,18 +270,6 @@ export class GanttInspector extends Component {
         return humanizeHours(hours, hpd, dpw);
     }
 
-    formatDateLocal(dt) {
-        if (!dt) return "";
-        if (typeof dt === "string") return dt.slice(0, 10);
-        if (dt.toFormat) return dt.toFormat("yyyy-MM-dd");
-        return "";
-    }
-
-    onMilestoneDeadlineChange(ev) {
-        if (!this.props.record) return;
-        this.props.onFieldChange(this.props.record.id, "deadline", ev.target.value || false);
-    }
-
     onMilestoneReachedChange(ev) {
         if (!this.props.record) return;
         this.props.onFieldChange(this.props.record.id, "is_reached", ev.target.checked);

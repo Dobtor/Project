@@ -445,6 +445,7 @@ class ProjectTaskNativeCascade(models.Model):
         snapshot = self._gesture_snapshot(project_tasks)
 
         # Step 1: Move each task (with descendants if parent)
+        moved_leaves = self.env['project.task']
         for task in self:
             if task.child_ids:
                 task.action_move_with_descendants(shift_hours)
@@ -461,6 +462,17 @@ class ProjectTaskNativeCascade(models.Model):
                         skip_date_snap=True,
                         skip_cascade_push=True,
                     ).write(vals)
+                    moved_leaves |= task
+
+        # A rigid translation can drop a leaf onto an evening or a weekend, so
+        # re-derive each moved leaf's window from its scheduled hours before
+        # anything reads those dates — the same repair action_move_with_descendants
+        # already does for the subtree it moves. Without it a multi-selected leaf
+        # that no dependency happens to push kept whatever wall-clock window the
+        # drag landed on, and its work hours changed silently.
+        if moved_leaves:
+            moved_leaves._resync_leaf_dates()
+            moved_leaves._update_ancestor_dates()
 
         # Prefetch the link graph once and share it across every cascade below.
         pred_map = self._build_outbound_pred_map()

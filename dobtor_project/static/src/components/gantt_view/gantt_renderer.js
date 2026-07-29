@@ -1908,10 +1908,6 @@ export class GanttRenderer extends Component {
         this._applySelectionClick(record.id, ev);
     }
 
-    onTaskSelect(record, ev) {
-        this._applySelectionClick(record.id, ev);
-    }
-
     async onTaskFoldClick(record) {
         if (this.props.model.toggleTaskFold) {
             await this.props.model.toggleTaskFold(record.id);
@@ -3121,16 +3117,6 @@ export class GanttRenderer extends Component {
         return classes.join(" ");
     }
 
-    formatDateRange(record) {
-        const ds = (record._hasChildren && record._summaryDateStart) || record._dateStart;
-        const de = (record._hasChildren && record._summaryDateEnd) || record._dateEnd;
-        if (!this._isValidDt(ds)) return "";
-        const startStr = ds.toFormat("M/d");
-        if (!this._isValidDt(de)) return startStr;
-        const endStr = de.toFormat("M/d");
-        return `${startStr} - ${endStr}`;
-    }
-
     // -------------------------------------------------------------------------
     // Predecessor count (for tooltip)
     // -------------------------------------------------------------------------
@@ -3972,18 +3958,6 @@ export class GanttRenderer extends Component {
     // Round 3 Feature 17: Duration humanize (for tooltip, extended)
     // -------------------------------------------------------------------------
 
-    getDetailedDuration(record) {
-        const ds = (record._hasChildren && record._summaryDateStart) || record._dateStart;
-        const de = (record._hasChildren && record._summaryDateEnd) || record._dateEnd;
-        if (!ds || !de) return "";
-        const diff = de.diff(ds, ["days", "hours"]);
-        const days = Math.floor(diff.days);
-        const hours = Math.round(diff.hours);
-        if (days === 0 && hours > 0) return `${hours}h`;
-        if (hours === 0) return `${days}d`;
-        return `${days}d ${hours}h`;
-    }
-
     // -------------------------------------------------------------------------
     // Scroll position save / restore (called by controller around reloads)
     // -------------------------------------------------------------------------
@@ -3991,17 +3965,6 @@ export class GanttRenderer extends Component {
     // -------------------------------------------------------------------------
     // Constraint badge helper
     // -------------------------------------------------------------------------
-
-    getConstraintBadge(record) {
-        const typeField = this.props.archInfo.constrainType || "constrain_type";
-        const type = record[typeField];
-        if (!type || type === "asap" || type === "alap") return null;
-        const labels = {
-            snet: "SNET", snlt: "SNLT", fnet: "FNET", fnlt: "FNLT",
-            mso: "MSO", mfo: "MFO",
-        };
-        return labels[type] || type.toUpperCase();
-    }
 
     // -------------------------------------------------------------------------
     // Violation panel helpers

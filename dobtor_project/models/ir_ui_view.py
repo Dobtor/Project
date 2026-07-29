@@ -8,17 +8,12 @@ class IrUiView(models.Model):
     type = fields.Selection(selection_add=[('ganttaps', 'Gantt APS')], ondelete={'ganttaps': 'cascade'})
 
     def _get_view_info(self):
+        # web's get_view_info() builds its result from the `type` selection
+        # intersected with this dict, so registering the icon here is the whole
+        # job: the label comes from the selection_add above and multi_record
+        # defaults to True. (A second override of the public get_view_info() that
+        # re-added the entry "if missing" could therefore never fire.)
         return {'ganttaps': {'icon': 'fa fa-tasks'}} | super()._get_view_info()
-
-    def get_view_info(self):
-        result = super().get_view_info()
-        if 'ganttaps' not in result:
-            result['ganttaps'] = {
-                'display_name': 'Gantt APS',
-                'icon': 'fa fa-tasks',
-                'multi_record': True,
-            }
-        return result
 
 
 class IrActionsActWindowView(models.Model):

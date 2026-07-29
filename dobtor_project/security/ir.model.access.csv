@@ -3,7 +3,7 @@ access_project_task_predecessor_user,project.task.predecessor.user,model_project
 access_project_task_predecessor_manager,project.task.predecessor.manager,model_project_task_predecessor,project.group_project_manager,1,1,1,1
 access_project_task_detail_plan_user,project.task.detail.plan.user,model_project_task_detail_plan,project.group_project_user,1,0,0,0
 access_project_task_detail_plan_manager,project.task.detail.plan.manager,model_project_task_detail_plan,project.group_project_manager,1,1,1,1
-access_project_task_info_user,project.task.info.user,model_project_task_info,project.group_project_user,1,0,0,0
+access_project_task_info_user,project.task.info.user,model_project_task_info,project.group_project_user,1,1,1,0
 access_project_task_info_manager,project.task.info.manager,model_project_task_info,project.group_project_manager,1,1,1,1
 access_project_task_resource_link_user,project.task.resource.link.user,model_project_task_resource_link,project.group_project_user,1,1,1,0
 access_project_task_resource_link_manager,project.task.resource.link.manager,model_project_task_resource_link,project.group_project_manager,1,1,1,1
