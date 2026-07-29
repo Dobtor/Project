@@ -97,6 +97,72 @@ class TestStaticImports(unittest.TestCase):
                             f"{rel}: '{spec}' does not export {name}")
         self.assertEqual(unresolved, [], "\n" + "\n".join(unresolved))
 
+    def test_no_named_import_is_unused(self):
+        """An import nobody uses is either a leftover or a rename that only half
+        happened; both mislead the next reader about what a module depends on."""
+        unused = []
+        for js in sorted((MODULE_ROOT / "static" / "src").rglob("*.js")):
+            src = js.read_text(encoding="utf-8")
+            body = NAMED_IMPORT.sub("", src)          # everything but the imports
+            for names_group, _spec in NAMED_IMPORT.findall(src):
+                for raw in names_group.split(","):
+                    if not raw.strip():
+                        continue
+                    name = raw.strip().split(" as ")[-1]
+                    if not re.search(r"\b" + re.escape(name) + r"\b", body):
+                        unused.append(f"{js.relative_to(MODULE_ROOT)}: {name}")
+        self.assertEqual(unused, [], "\n" + "\n".join(unused))
+
+
+class TestTemplateReferences(unittest.TestCase):
+    """Every member the OWL template calls must exist on a component.
+
+    A template that calls a method nothing defines throws only when that branch
+    renders — which can be a context menu nobody opened during testing. The
+    scanner below caught nothing the day it was written; it is here for the day
+    a member is renamed and one t-att-class is missed.
+    """
+
+    COMPONENT_DIR = MODULE_ROOT / "static" / "src" / "components" / "gantt_view"
+    # Bare identifiers in QWeb that are not component members.
+    QWEB_GLOBALS = {
+        "props", "state", "env", "true", "false", "null", "undefined", "this",
+        "Math", "Object", "JSON", "Array", "Number", "String", "Boolean",
+        "parseInt", "parseFloat", "isNaN", "luxon", "console",
+    }
+    MEMBER_LIKE = re.compile(r"^(on[A-Z]|get[A-Z]|is[A-Z]|has[A-Z]|format[A-Z]|"
+                             r"toggle[A-Z]|set[A-Z]|_)")
+
+    def test_every_template_member_is_defined(self):
+        xml_files = list(self.COMPONENT_DIR.glob("*.xml"))
+        self.assertTrue(xml_files, "no component template found")
+
+        defined = set()
+        for js in self.COMPONENT_DIR.glob("*.js"):
+            defined |= set(re.findall(
+                r"^\s{4}(?:static\s+)?(?:async\s+)?(?:get\s+)?([A-Za-z_]\w*)\s*\(",
+                js.read_text(encoding="utf-8"), re.M))
+
+        missing = []
+        for xml in xml_files:
+            src = xml.read_text(encoding="utf-8")
+            local = set(re.findall(r't-set="(\w+)"', src))
+            local |= set(re.findall(r't-as="(\w+)"', src))
+            exprs = re.findall(r't-[a-z-]+(?:\.[a-z]+)?="([^"]*)"', src)
+            exprs += re.findall(r"\{\{([^}]*)\}\}", src)
+            for expr in exprs:
+                # `this.X(` — a CALL must resolve to a method. A bare
+                # `this.state.foo` is a property and is none of our business.
+                names = set(re.findall(r"\bthis\.([A-Za-z_]\w*)\s*\(", expr))
+                for bare in re.findall(r"(?<![\w.])([A-Za-z_]\w*)\s*\(", expr):
+                    if (bare not in local and bare not in self.QWEB_GLOBALS
+                            and self.MEMBER_LIKE.match(bare)):
+                        names.add(bare)
+                for name in names:
+                    if name not in defined:
+                        missing.append(f"{xml.name}: {name}")
+        self.assertEqual(sorted(set(missing)), [], "\n" + "\n".join(sorted(set(missing))))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3360,8 +3360,6 @@
 // Phase 3C: HIG Design Refinement
 // =============================================================================
 
-.o_gantt_skeleton_row:nth-child(2n) .o_gantt_skeleton_line { width: 45%; }
-.o_gantt_skeleton_row:nth-child(3n) .o_gantt_skeleton_line { width: 75%; }
 
 @keyframes gantt_skeleton_pulse {
     0%, 100% { opacity: 0.4; }

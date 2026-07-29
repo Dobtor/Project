@@ -5,22 +5,12 @@ import { _t } from "@web/core/l10n/translation";
 import { useService } from "@web/core/utils/hooks";
 import { serializeDateTime } from "@web/core/l10n/dates";
 import { parseLagInput, hoursToInputFormat, humanizeHours } from "./gantt_utils";
+import { GANTT_COLORS } from "./gantt_colors";
+
+// Re-exported: several modules already import the palette from here.
+export { GANTT_COLORS };
 
 // Kanban-consistent 12 fixed colors (index 0-11)
-export const GANTT_COLORS = [
-    "",          // 0: No color (white/default)
-    "#ee2d2d",   // 1: Red
-    "#dc8534",   // 2: Orange
-    "#e8bb1d",   // 3: Yellow
-    "#5794dd",   // 4: Cyan
-    "#9f628f",   // 5: Purple
-    "#db8865",   // 6: Almond
-    "#41a9a2",   // 7: Teal
-    "#304be0",   // 8: Blue
-    "#ee2f8a",   // 9: Raspberry
-    "#61c36e",   // 10: Green
-    "#9872e6",   // 11: Violet
-];
 
 export function getGanttColorNames() {
     return [

@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "The task colour palette, asserted by BOTH implementations:",
+    "  static/src/components/gantt_view/gantt_colors.js  (tests/geometry/colors_check.mjs)",
+    "  report/project_gantt_report.py                    (tests/test_report_colors.py)",
+    "A bar must be the same colour on screen and in the PDF; the two copies",
+    "exist because they are production constants in two languages, and this",
+    "file is what stops them drifting apart."
+  ],
+  "gantt_colors": [
+    "",
+    "#ee2d2d",
+    "#dc8534",
+    "#e8bb1d",
+    "#5794dd",
+    "#9f628f",
+    "#db8865",
+    "#41a9a2",
+    "#304be0",
+    "#ee2f8a",
+    "#61c36e",
+    "#9872e6"
+  ],
+  "no_color_style": "background:#fff;border:1.5px solid #999;"
+}

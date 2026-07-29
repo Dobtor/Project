@@ -2,7 +2,7 @@
 
 import { Model } from "@web/model/model";
 import { _t } from "@web/core/l10n/translation";
-import { durationToLag, cellsDeltaToDuration, PLANNING_T0 } from "./gantt_utils";
+import { durationToLag, PLANNING_T0 } from "./gantt_utils";
 
 const { DateTime } = luxon;
 
