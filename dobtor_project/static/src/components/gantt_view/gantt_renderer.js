@@ -1293,195 +1293,216 @@ export class GanttRenderer extends Component {
         return result;
     }
 
-    _dateToPxUncached(dt) {
-        const data = this.props.model.data;
+    // =====================================================================
+    // THE AXIS
+    //
+    // A chart is drawn on exactly one of two timelines, and both are expressed
+    // as the same pair of operations so they cannot drift apart:
+    //
+    //   _axisToPx(dt)   x of an instant
+    //   _axisFromPx(px) the instant at x  — the exact inverse
+    //
+    // PLAN axis  — planning mode. There are no dates: a row's position is its
+    //   plan_offset in working hours from T+0, and gantt_plan_axis.js maps those
+    //   hours to pixels. (The DateTimes planning rows carry are T0 + hours, so
+    //   the hours read straight back out.)
+    //
+    // CALENDAR axis — everything else. Position = the index of the cell the
+    //   instant falls in, plus how far through that cell it sits. What "how far
+    //   through" means is the ONE thing that varies: with a work calendar it is
+    //   the cell's WORKING time consumed (a lunch break and a night take no
+    //   width, so equal scheduled hours draw equal length); without one it is
+    //   plain elapsed time. Cells are uniform (hour/day scales), filtered
+    //   (hide-non-working) or variable (week/month) — _cellOf and _cellAt are
+    //   the only places that know which.
+    //
+    // Every caller — bars, arrows, the grid, drag, resize — goes through this
+    // pair. It used to be two long parallel if-chains, one per direction, that
+    // had to be kept in step by hand.
+    // =====================================================================
 
+    /** The cell containing `dt`: {index, start, end}, or null if unresolvable. */
+    _cellOf(dt) {
         const scale = this.props.scale;
-        const cw = this.cellWidth;
-        const start = this._extendedTimeStart || data.timeStart;
-
-        // Planning mode: the position IS the planned hours from T+0. The dates
-        // carried by planning rows are a projection of those hours (T0 + hours,
-        // unscaled), so reading the hours back out is exact.
-        if (this.isPlanningMode) {
-            return planHoursToPx(dt.diff(PLANNING_T0, "hours").hours,
-                this._planCellHours, this._planFirstCell || 0, cw);
-        }
+        const timeStart = this._extendedTimeStart || this.props.model.data.timeStart;
 
         if (scale === "1h" || scale === "2h" || scale === "4h" || scale === "8h") {
             const hours = parseInt(scale);
-            const msPerCol = hours * 3600 * 1000;
-
-            // When hiding non-working hours, use index-based mapping
             if (this._workingHourIndex && this.props.hideNonWorkingDays) {
-                // Align dt to column boundary
                 const dtHour = dt.hour + dt.minute / 60;
-                const aligned = dt.startOf("hour").set({ hour: Math.floor(dtHour) - (Math.floor(dtHour) % hours) });
-                const key = aligned.toISO();
-                const idx = this._workingHourIndex.get(key);
-                if (idx !== undefined) {
-                    const frac = (dt.toMillis() - aligned.toMillis()) / msPerCol;
-                    return (idx + frac) * cw;
-                }
-                return this._dateToPxHourFallback(dt, cw);
+                const aligned = dt.startOf("hour").set({
+                    hour: Math.floor(dtHour) - (Math.floor(dtHour) % hours) });
+                const index = this._workingHourIndex.get(aligned.toISO());
+                if (index === undefined) return null;   // hidden hour → caller falls back
+                return { index, start: aligned, end: aligned.plus({ hours }) };
             }
-
-            const diffMs = dt.toMillis() - start.toMillis();
-            return (diffMs / msPerCol) * cw;
-        }
-
-        // When hiding non-working days, use index-based mapping
-        if (this._workingDayIndex && this.props.hideNonWorkingDays) {
-            const dayKey = dt.startOf("day").toISODate();
-            const idx = this._workingDayIndex.get(dayKey);
-            if (idx !== undefined) {
-                // Portion of the day's WORKING time elapsed — the cell is the
-                // day's work, not 24 hours (see the working-time axis notes).
-                const dayFrac = this._useWorkTimeAxis
-                    ? this._workingFractionOfDay(dt)
-                    : (dt.hour + dt.minute / 60) / 24;
-                return (idx + dayFrac) * cw;
-            }
-            // dt is on a non-working day: find nearest working day boundary
-            return this._dateToPxFallback(dt, cw);
-        }
-
-        // Week, month: column-index-based mapping
-        // Each column spans a variable duration (weeks=7d, months=28-31d),
-        // so we find which column dt falls into and compute fractional position.
-        if (scale === "week" || scale === "month") {
-            const cols = this._coarseColumns;
-            if (cols && cols.length > 0) {
-                const step = scale === "week" ? { weeks: 1 } : { months: 1 };
-                const dtMs = dt.toMillis();
-                // Binary search for the column containing dtMs
-                let lo = 0, hi = cols.length - 1, i = -1;
-                while (lo <= hi) {
-                    const mid = (lo + hi) >> 1;
-                    const colStartMs = cols[mid].date.toMillis();
-                    if (dtMs < colStartMs) {
-                        hi = mid - 1;
-                    } else {
-                        i = mid;
-                        lo = mid + 1;
-                    }
-                }
-                if (i >= 0 && i < cols.length) {
-                    const colStart = cols[i].date;
-                    const colEnd = (i + 1 < cols.length)
-                        ? cols[i + 1].date
-                        : cols[i].date.plus(step);
-                    // A week/month cell is the working time it contains, so a
-                    // weekend inside it takes no width and an 8-hour task is
-                    // 1/5 of a 5-day week wherever it sits.
-                    if (this._useWorkTimeAxis) {
-                        const frac = this._workingFractionOfSpan(
-                            colStart, colEnd, dt, i);
-                        return (i + frac) * cw;
-                    }
-                    const totalMs = colEnd.toMillis() - colStart.toMillis();
-                    const frac = totalMs > 0
-                        ? (dtMs - colStart.toMillis()) / totalMs : 0;
-                    return (i + frac) * cw;
-                }
-                // Extrapolate: dt is outside column range
-                const firstMs = cols[0].date.toMillis();
-                if (dtMs < firstMs) {
-                    const colEndMs = cols.length > 1
-                        ? cols[1].date.toMillis()
-                        : cols[0].date.plus(step).toMillis();
-                    const totalMs = colEndMs - firstMs;
-                    const frac = totalMs > 0 ? (dtMs - firstMs) / totalMs : 0;
-                    return frac * cw;
-                }
-                const lastIdx = cols.length - 1;
-                const lastMs = cols[lastIdx].date.toMillis();
-                const lastEndMs = cols[lastIdx].date.plus(step).toMillis();
-                const totalMs = lastEndMs - lastMs;
-                const frac = totalMs > 0 ? (dtMs - lastMs) / totalMs : 0;
-                return (lastIdx + frac) * cw;
-            }
-        }
-
-        // Day: whole days from the timeline start, plus the portion of the
-        // target day's WORKING time elapsed (cw = px per day column).
-        if (this._useWorkTimeAxis) {
-            const day = dt.startOf("day");
-            const wholeDays = Math.round(day.diff(start.startOf("day"), "days").days);
-            return (wholeDays + this._workingFractionOfDay(dt)) * cw;
-        }
-        return dt.diff(start, "days").days * cw;
-    }
-
-    /**
-     * Inverse of :meth:`_dateToPx` for the scales that carry the working-time
-     * axis, so a drag commits the date the bar was actually dropped on.
-     * Returns null when the scale/mode has no working-time mapping.
-     */
-    _pxToDate(px) {
-        const scale = this.props.scale;
-        const cw = this.cellWidth;
-        if (this.isPlanningMode) {
-            const hours = pxToPlanHours(px, this._planCellHours,
-                this._planFirstCell || 0, cw);
-            return PLANNING_T0.plus({ hours: Math.max(0, hours) });
-        }
-        if (!this._useWorkTimeAxis) return null;
-        const data = this.props.model.data;
-        const start = this._extendedTimeStart || data.timeStart;
-        if (!start || !start.isValid || !cw) return null;
-
-        const pos = px / cw;
-        const idx = Math.floor(pos);
-        const frac = pos - idx;
-
-        if (scale === "day") {
-            if (this._workingDayIndex && this.props.hideNonWorkingDays) {
-                const cols = this.timelineColumns;
-                if (!cols.length) return null;
-                const col = cols[Math.max(0, Math.min(cols.length - 1, idx))];
-                return this._dateFromWorkingFraction(col.date.startOf("day"), frac);
-            }
-            return this._dateFromWorkingFraction(
-                start.startOf("day").plus({ days: idx }), frac);
+            const index = Math.floor(
+                (dt.toMillis() - timeStart.toMillis()) / (hours * 3600 * 1000));
+            const cellStart = timeStart.plus({ hours: index * hours });
+            return { index, start: cellStart, end: cellStart.plus({ hours }) };
         }
 
         if (scale === "week" || scale === "month") {
             const cols = this._coarseColumns;
             if (!cols || !cols.length) return null;
             const step = scale === "week" ? { weeks: 1 } : { months: 1 };
-            const i = Math.max(0, Math.min(cols.length - 1, idx));
-            const colStart = cols[i].date;
-            const colEnd = (i + 1 < cols.length)
-                ? cols[i + 1].date : colStart.plus(step);
-            // Same memo the forward direction uses: a month column is ~31 day
-            // lookups and a drag asks for this on every pointer move.
-            if (!this._spanWorkCache) this._spanWorkCache = new Map();
-            let total = this._spanWorkCache.get(i);
-            if (total === undefined) {
-                total = this._workingHoursBetween(colStart, colEnd);
-                this._spanWorkCache.set(i, total);
+            const dtMs = dt.toMillis();
+            let lo = 0, hi = cols.length - 1, index = -1;
+            while (lo <= hi) {
+                const mid = (lo + hi) >> 1;
+                if (dtMs < cols[mid].date.toMillis()) hi = mid - 1;
+                else { index = mid; lo = mid + 1; }
             }
-            if (total <= 0) {
-                return colStart.plus({
-                    milliseconds: frac * (colEnd.toMillis() - colStart.toMillis()),
-                });
-            }
-            // Walk the column's days, spending `frac × total` working hours.
-            let want = frac * total;
-            let cursor = colStart.startOf("day");
-            while (cursor < colEnd) {
-                const dayHours = this._dayWorkHours(cursor);
-                if (want <= dayHours) {
-                    return this._dateFromWorkingFraction(
-                        cursor, dayHours > 0 ? want / dayHours : 0);
-                }
-                want -= dayHours;
-                cursor = cursor.plus({ days: 1 });
-            }
-            return colEnd;
+            // Outside the generated columns: extrapolate from the nearest one,
+            // so a bar beyond the range still lands in the right direction.
+            if (index < 0) index = 0;
+            return this._cellAt(index, step);
         }
-        return null;
+
+        // Day
+        if (this._workingDayIndex && this.props.hideNonWorkingDays) {
+            const day = dt.startOf("day");
+            const index = this._workingDayIndex.get(day.toISODate());
+            if (index === undefined) return null;       // hidden day → caller falls back
+            return { index, start: day, end: day.plus({ days: 1 }) };
+        }
+        const day = dt.startOf("day");
+        const index = Math.round(day.diff(timeStart.startOf("day"), "days").days);
+        return { index, start: day, end: day.plus({ days: 1 }) };
+    }
+
+    /** The cell at `index`: {index, start, end}. Clamped/extrapolated at the ends. */
+    _cellAt(index, step) {
+        const scale = this.props.scale;
+        const timeStart = this._extendedTimeStart || this.props.model.data.timeStart;
+
+        if (scale === "week" || scale === "month") {
+            const cols = this._coarseColumns;
+            if (!cols || !cols.length) return null;
+            const stp = step || (scale === "week" ? { weeks: 1 } : { months: 1 });
+            const i = Math.max(0, Math.min(cols.length - 1, index));
+            const start = cols[i].date;
+            const end = (i + 1 < cols.length) ? cols[i + 1].date : start.plus(stp);
+            return { index: i, start, end };
+        }
+
+        if (scale === "1h" || scale === "2h" || scale === "4h" || scale === "8h") {
+            const hours = parseInt(scale);
+            if (this._workingHourIndex && this.props.hideNonWorkingDays) {
+                const cols = this._workingHourCols || [];
+                if (!cols.length) return null;
+                const i = Math.max(0, Math.min(cols.length - 1, index));
+                return { index: i, start: cols[i].date,
+                         end: cols[i].date.plus({ hours }) };
+            }
+            const start = timeStart.plus({ hours: index * hours });
+            return { index, start, end: start.plus({ hours }) };
+        }
+
+        if (this._workingDayIndex && this.props.hideNonWorkingDays) {
+            const cols = this.timelineColumns;
+            if (!cols.length) return null;
+            const i = Math.max(0, Math.min(cols.length - 1, index));
+            const start = cols[i].date.startOf("day");
+            return { index: i, start, end: start.plus({ days: 1 }) };
+        }
+        const start = timeStart.startOf("day").plus({ days: index });
+        return { index, start, end: start.plus({ days: 1 }) };
+    }
+
+    /** How far through `cell` the instant `dt` sits, as 0..1. */
+    _cellFraction(cell, dt) {
+        if (this._useWorkTimeAxis && this._cellIsCalendarDay) {
+            return this._workingFractionOfDay(dt);
+        }
+        if (this._useWorkTimeAxis && this._cellIsCoarse) {
+            return this._workingFractionOfSpan(cell, dt);
+        }
+        const span = cell.end.toMillis() - cell.start.toMillis();
+        return span > 0 ? (dt.toMillis() - cell.start.toMillis()) / span : 0;
+    }
+
+    /** The instant at `frac` through `cell` — inverse of _cellFraction. */
+    _cellInstant(cell, frac) {
+        if (this._useWorkTimeAxis && this._cellIsCalendarDay) {
+            return this._dateFromWorkingFraction(cell.start, frac);
+        }
+        if (this._useWorkTimeAxis && this._cellIsCoarse) {
+            const total = this._spanWorkTotal(cell);
+            if (total > 0) {
+                // Spend frac × total working hours across the cell's days.
+                let want = Math.max(0, Math.min(1, frac)) * total;
+                let cursor = cell.start.startOf("day");
+                while (cursor < cell.end) {
+                    const dayHours = this._dayWorkHours(cursor);
+                    if (want <= dayHours) {
+                        return this._dateFromWorkingFraction(
+                            cursor, dayHours > 0 ? want / dayHours : 0);
+                    }
+                    want -= dayHours;
+                    cursor = cursor.plus({ days: 1 });
+                }
+                return cell.end;
+            }
+        }
+        const span = cell.end.toMillis() - cell.start.toMillis();
+        return cell.start.plus({ milliseconds: frac * span });
+    }
+
+    get _cellIsCalendarDay() {
+        return this.props.scale === "day";
+    }
+
+    get _cellIsCoarse() {
+        return this.props.scale === "week" || this.props.scale === "month";
+    }
+
+    /** Memoised working hours in a coarse cell (a month is ~31 day lookups). */
+    _spanWorkTotal(cell) {
+        if (!this._spanWorkCache) this._spanWorkCache = new Map();
+        let total = this._spanWorkCache.get(cell.index);
+        if (total === undefined) {
+            total = this._workingHoursBetween(cell.start, cell.end);
+            this._spanWorkCache.set(cell.index, total);
+        }
+        return total;
+    }
+
+    _dateToPxUncached(dt) {
+        const cw = this.cellWidth;
+
+        if (this.isPlanningMode) {
+            return planHoursToPx(dt.diff(PLANNING_T0, "hours").hours,
+                this._planCellHours, this._planFirstCell || 0, cw);
+        }
+
+        const cell = this._cellOf(dt);
+        if (!cell) {
+            // The instant falls on a hidden day/hour: park it on the nearest
+            // visible edge rather than nowhere.
+            return this._cellIsCalendarDay
+                ? this._dateToPxFallback(dt, cw)
+                : this._dateToPxHourFallback(dt, cw);
+        }
+        return (cell.index + this._cellFraction(cell, dt)) * cw;
+    }
+
+    /** The instant at pixel `px` — exact inverse of :meth:`_dateToPx`. */
+    _pxToDate(px) {
+        const cw = this.cellWidth;
+        if (!cw) return null;
+
+        if (this.isPlanningMode) {
+            const hours = pxToPlanHours(px, this._planCellHours,
+                this._planFirstCell || 0, cw);
+            return PLANNING_T0.plus({ hours: Math.max(0, hours) });
+        }
+
+        const pos = px / cw;
+        const index = Math.floor(pos);
+        const cell = this._cellAt(index);
+        if (!cell) return null;
+        return this._cellInstant(cell, pos - index);
     }
 
     /**
@@ -1492,7 +1513,7 @@ export class GanttRenderer extends Component {
     _shiftByCells(dt, cellsDelta) {
         const axisDate = this._pxToDate(this._dateToPx(dt) + cellsDelta * this.cellWidth);
         if (axisDate && axisDate.isValid) return axisDate;
-        if (this._isHidingNonWorking()) return this._addWorkingUnits(dt, cellsDelta);
+        // Only reachable before the first render, when no columns exist yet.
         return dt.plus(cellsDeltaToDuration(cellsDelta, this.props.scale));
     }
 
@@ -1508,7 +1529,7 @@ export class GanttRenderer extends Component {
 
     /**
      * Build a Map from ISO datetime string → column index for working hours.
-     * Also stores the column array reference for _addWorkingColumns lookup.
+     * The column array is kept too: _cellAt resolves an index back to its cell.
      */
     _rebuildWorkingHourIndex(cols) {
         this._workingHourIndex = new Map();
@@ -1645,130 +1666,18 @@ export class GanttRenderer extends Component {
     }
 
     /**
-     * Fraction of a coarse column (week / month) consumed by working time up to
-     * `dt`. Memoised per render because a month column costs ~31 day lookups.
+     * Fraction of a coarse cell (week / month) consumed by working time up to
+     * `dt`. A weekend inside the cell costs nothing, so an 8-hour task is 1/5 of
+     * a five-day week wherever it falls.
      */
-    _workingFractionOfSpan(colStart, colEnd, dt, cacheKey) {
-        if (!this._spanWorkCache) this._spanWorkCache = new Map();
-        let total = this._spanWorkCache.get(cacheKey);
-        if (total === undefined) {
-            total = this._workingHoursBetween(colStart, colEnd);
-            this._spanWorkCache.set(cacheKey, total);
-        }
+    _workingFractionOfSpan(cell, dt) {
+        const total = this._spanWorkTotal(cell);
         if (total <= 0) {
-            const span = colEnd.toMillis() - colStart.toMillis();
-            return span > 0 ? (dt.toMillis() - colStart.toMillis()) / span : 0;
+            const span = cell.end.toMillis() - cell.start.toMillis();
+            return span > 0 ? (dt.toMillis() - cell.start.toMillis()) / span : 0;
         }
         return Math.max(0, Math.min(1,
-            this._workingHoursBetween(colStart, dt) / total));
-    }
-
-    /**
-     * Add working days to a DateTime, skipping non-working days.
-     * Used by drag/resize when hideNonWorkingDays is active.
-     */
-    _addWorkingDays(dt, days) {
-        days = Math.round(days); // Ensure integer days
-        const calendarInfo = this.props.model.data?.calendarInfo;
-        if (!calendarInfo) return dt.plus({ days });
-        const workingWeekdays = calendarInfo._workingWeekdays;
-        if (!workingWeekdays || workingWeekdays.size === 0) return dt.plus({ days });
-        const leaveDays = calendarInfo._leaveDays;
-        let cursor = dt;
-        let remaining = Math.abs(days);
-        const direction = days >= 0 ? 1 : -1;
-        while (remaining > 0) {
-            cursor = cursor.plus({ days: direction });
-            if (workingWeekdays.has(cursor.weekday) && !(leaveDays && leaveDays.has(cursor.toISODate()))) {
-                remaining--;
-            }
-        }
-        return cursor;
-    }
-
-    /**
-     * Check if currently hiding non-working periods (days or hours).
-     */
-    _isHidingNonWorking() {
-        if (!this.props.hideNonWorkingDays || !this.props.model.data?.calendarInfo
-            || this.isPlanningMode) {
-            return false;
-        }
-        const scale = this.props.scale;
-        if (scale === "day") return !!this._workingDayIndex;
-        if (scale === "1h" || scale === "2h" || scale === "4h" || scale === "8h") {
-            return !!this._workingHourIndex;
-        }
-        return false;
-    }
-
-    /**
-     * Add working time units (days or hour-columns) to a datetime,
-     * skipping non-working periods. Dispatches to day or hour logic.
-     */
-    _addWorkingUnits(dt, cellsDelta) {
-        const scale = this.props.scale;
-        if (scale === "day") {
-            return this._addWorkingDays(dt, cellsDelta);
-        }
-        return this._addWorkingColumns(dt, cellsDelta);
-    }
-
-    /**
-     * Add working-hour columns to a datetime using column-index lookup.
-     * Finds dt's position in the visible (filtered) column array, offsets
-     * by cellsDelta columns, and returns the target datetime preserving
-     * the fractional position within the column.
-     */
-    _addWorkingColumns(dt, cellsDelta) {
-        const cols = this._workingHourCols;
-        if (!cols || !cols.length) {
-            return dt.plus(cellsDeltaToDuration(cellsDelta, this.props.scale));
-        }
-
-        const hours = parseInt(this.props.scale);
-        const msPerCol = hours * 3600 * 1000;
-
-        // Find the column whose time range contains dt.
-        // Try fast Map lookup first, then fallback to linear scan.
-        let srcIdx = -1;
-        if (this._workingHourIndex) {
-            const dtHour = dt.hour + dt.minute / 60;
-            const aligned = dt.startOf("hour").set({ hour: Math.floor(dtHour) - (Math.floor(dtHour) % hours) });
-            const idx = this._workingHourIndex.get(aligned.toISO());
-            if (idx !== undefined) {
-                srcIdx = idx;
-            }
-        }
-        if (srcIdx < 0) {
-            // Fallback: linear scan for the column whose time range contains dt
-            for (let i = 0; i < cols.length; i++) {
-                const colMs = cols[i].date.toMillis();
-                if (dt.toMillis() >= colMs && dt.toMillis() < colMs + msPerCol) {
-                    srcIdx = i;
-                    break;
-                }
-            }
-        }
-        if (srcIdx < 0) {
-            // dt outside visible range — find nearest column
-            let bestDist = Infinity;
-            for (let i = 0; i < cols.length; i++) {
-                const d = Math.abs(dt.toMillis() - cols[i].date.toMillis());
-                if (d < bestDist) { bestDist = d; srcIdx = i; }
-            }
-        }
-
-        // Fractional offset within source column (ms)
-        const fracMs = dt.toMillis() - cols[srcIdx].date.toMillis();
-
-        // Target column = source + rounded delta
-        const delta = Math.round(cellsDelta);
-        const targetIdx = Math.max(0, Math.min(cols.length - 1, srcIdx + delta));
-
-        // Reconstruct: target column date + same fractional offset (clamped)
-        const clampedFrac = Math.max(0, Math.min(msPerCol - 1, fracMs));
-        return cols[targetIdx].date.plus({ milliseconds: clampedFrac });
+            this._workingHoursBetween(cell.start, dt) / total));
     }
 
     /**

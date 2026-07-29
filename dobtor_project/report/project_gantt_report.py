@@ -5,6 +5,8 @@ from datetime import datetime, time, timedelta
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError
 
+from . import plan_axis
+
 # Must match frontend PLANNING_T0 in gantt_model.js exactly
 PLANNING_T0 = datetime(2000, 1, 1)
 
@@ -224,67 +226,26 @@ class GanttReport(models.AbstractModel):
             _compute(task)
         return result
 
-    def _compute_planning_markers(self, start_date, end_date, total_days, t0_date,
-                                  hpd=8.0):
-        """Time-axis markers for planning mode using T+Xd labels.
+    def _compute_planning_markers(self, start_dt, end_dt, t0_dt, hpd=8.0):
+        """T+Xd axis marks for a planning chart.
 
-        A planning position is measured in WORKING HOURS from T+0 (see
-        gantt_plan_axis.js), so one T+Xd step is ``hpd`` hours of the virtual
-        span — not 24. Stepping in calendar days put the marks three times too
-        far apart on an 8-hour calendar, and the bars then did not line up with
-        the labels above them.
+        Delegates to :mod:`plan_axis`, the shared statement of the rule (and the
+        Python twin of gantt_plan_axis.js) — the marks and the bars have to agree
+        about what a planned hour is worth.
         """
-        markers = []
-        if total_days <= 0:
-            return markers
-        hours_per_day = hpd or 8.0
-        # Span expressed in WORKING days, which is what the labels count.
-        span_days = (end_date - start_date).total_seconds() / 3600.0 / hours_per_day
-        if span_days <= 14:
-            interval = 1
-        elif span_days <= 60:
-            interval = 7
-        elif span_days <= 180:
-            interval = 14
-        else:
-            interval = 30
-
-        total_secs = (end_date - start_date).total_seconds()
-        if total_secs <= 0:
-            return markers
-
-        # First mark at or after start_date, on an interval boundary from T+0.
-        start_days = (start_date - t0_date).total_seconds() / 3600.0 / hours_per_day
-        day_offset = max(0, int(start_days // interval) * interval)
-        if day_offset < start_days:
-            day_offset += interval
-
-        while True:
-            mark_dt = t0_date + timedelta(hours=day_offset * hours_per_day)
-            if mark_dt > end_date:
-                break
-            if mark_dt >= start_date:
-                left_pct = (mark_dt - start_date).total_seconds() / total_secs * 100
-                label = "T" if day_offset <= 0 else f"T+{day_offset}d"
-                markers.append({'label': label, 'left_pct': round(left_pct, 2)})
-            day_offset += interval
-        return markers
+        to_hours = lambda dt: (dt - t0_dt).total_seconds() / 3600.0
+        return plan_axis.markers(to_hours(start_dt), to_hours(end_dt), hpd)
 
     @staticmethod
     def _format_planning_label(dt, t0, scale_factor, hpd):
-        """Format a virtual datetime as T+Xd with sub-day precision.
+        """T / T+3d / T+1.5d for a virtual datetime.
 
-        Reverses scale_factor to get working hours, then divides by hpd
-        to get working days — matches frontend _formatPlanningDay.
+        ``scale_factor`` is 1.0 — a planning position IS its working hours — and
+        is only still accepted so an external caller passing it keeps working.
         """
         virtual_hours = (dt - t0).total_seconds() / 3600.0
         working_hours = virtual_hours / scale_factor if scale_factor else virtual_hours
-        working_days = working_hours / hpd if hpd else 0
-        if working_days < 0.001:
-            return "T"
-        if abs(working_days - round(working_days)) < 0.01:
-            return f"T+{round(working_days)}d"
-        return f"T+{working_days:.1f}d"
+        return plan_axis.day_label(working_hours, hpd)
 
     @staticmethod
     def _scheduled_hours(task, is_parent):
@@ -549,9 +510,8 @@ class GanttReport(models.AbstractModel):
                         left_pct = round(
                             (ds - p_start_dt).total_seconds()
                             / total_secs * 100, 2)
-                        raw_w = ((de - ds).total_seconds()
-                                 / total_secs * 100)
-                        width_pct = round(max(raw_w, 0.3), 2)
+                        width_pct = plan_axis.span_pct(
+                            (de - ds).total_seconds(), total_secs, minimum=0.3)
                     else:
                         local_start = fields.Datetime.context_timestamp(self, ds).date()
                         local_end = fields.Datetime.context_timestamp(self, de).date()
@@ -795,7 +755,7 @@ class GanttReport(models.AbstractModel):
 
         if is_planning:
             month_markers = self._compute_planning_markers(
-                p_start_dt, p_end_dt, total_days, PLANNING_T0, planning_hpd
+                p_start_dt, p_end_dt, PLANNING_T0, planning_hpd
             )
             project_start_str = self._format_planning_label(
                 raw_start_dt, PLANNING_T0, scale_factor, planning_hpd)
