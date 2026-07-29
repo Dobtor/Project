@@ -38,8 +38,9 @@
  */
 
 /** How far the vertical line may be pushed INTO the target bar to keep the
- *  chamfer at its constant size. */
-export const MAX_INSET = 24;
+ *  chamfer at its constant size. Internal: the module's interface is
+ *  computeConnectorPath(). */
+const MAX_INSET = 24;
 
 const EPS = 0.5;
 

@@ -14,7 +14,7 @@ import { useGanttTreeDrag } from "./gantt_tree_drag_hook";
 import { useGanttArrowDraw } from "./gantt_arrow_draw_hook";
 import { useGanttProgressDrag } from "./gantt_progress_drag_hook";
 import { useGanttMarquee } from "./gantt_marquee_hook";
-import { cellsDeltaToDuration, toOdooDatetime, humanizeHours } from "./gantt_utils";
+import { cellsDeltaToDuration, humanizeHours } from "./gantt_utils";
 import { GanttArrows } from "./gantt_arrows";
 import { GanttTooltip } from "./gantt_tooltip";
 import { GanttContextMenu } from "./gantt_context_menu";

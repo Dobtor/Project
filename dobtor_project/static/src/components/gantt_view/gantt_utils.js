@@ -69,17 +69,6 @@ export function humanizeDays(days, dpw = 7, hpd = 24) {
 }
 
 /**
- * Convert lag hours into a Luxon-compatible duration object.
- *
- * @param {number} lagHours - The lag value in hours (can be negative for lead time)
- * @returns {Object} Luxon Duration-compatible object (e.g., { hours: 48 })
- */
-export function lagToDuration(lagHours) {
-    if (!lagHours) return {};
-    return { hours: lagHours };
-}
-
-/**
  * Convert a millisecond duration to lag hours (Float).
  *
  * @param {number} durationMs - Duration in milliseconds
@@ -171,17 +160,6 @@ export function humanizeHours(hours, hpd = 24, dpw = 7) {
         }
     }
     return negative ? `-${result}` : result;
-}
-
-/**
- * Serialize a Luxon DateTime (in any timezone) to Odoo's server datetime format (UTC).
- * Odoo stores datetimes as UTC strings: "yyyy-MM-dd HH:mm:ss".
- *
- * @param {DateTime} dt - Luxon DateTime in any timezone
- * @returns {string} UTC-formatted string for Odoo ORM write
- */
-export function toOdooDatetime(dt) {
-    return dt.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
 }
 
 /**

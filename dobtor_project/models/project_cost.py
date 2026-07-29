@@ -30,6 +30,7 @@ restricted to the dedicated cost group (COST_GROUP).
 """
 
 from odoo import models, fields, api
+import pytz
 
 # Group allowed to see cost & earned-value figures (defined in security XML).
 COST_GROUP = 'dobtor_project.group_project_cost_manager'
@@ -154,7 +155,8 @@ class ProjectTaskCost(models.Model):
 
     @api.depends(
         'planned_cost', 'actual_cost', 'progress',
-        'date_start', 'date_end', 'project_id.status_date',
+        'date_start', 'date_end', 'working_duration',
+        'project_id.status_date',
     )
     def _compute_ev_values(self):
         for task in self:
@@ -172,8 +174,13 @@ class ProjectTaskCost(models.Model):
     def _scheduled_fraction(self):
         """Fraction of the task that *should* be done by the status date (0..1).
 
-        Schedule-based, so it needs real start/end dates. In planning mode
-        (no real dates) it returns 0 — PV/SV/SPI are not defined there.
+        Measured in WORKING time, like everything else about a task's schedule:
+        a task running Friday to Tuesday has done none of its work by Sunday, so
+        crediting it half its planned value — which counting wall-clock seconds
+        did — reported a schedule variance that was purely the weekend.
+
+        Falls back to elapsed time when the project has no work calendar, and
+        needs real dates: in planning mode PV/SV/SPI are not defined.
         """
         self.ensure_one()
         if not self.date_start or not self.date_end:
@@ -183,6 +190,14 @@ class ProjectTaskCost(models.Model):
             return 0.0
         if status >= self.date_end:
             return 1.0
+
+        calendar, tz = self._work_calendar()
+        if calendar and (self.working_duration or 0) > 0:
+            start_tz = pytz.UTC.localize(self.date_start).astimezone(tz)
+            status_tz = pytz.UTC.localize(status).astimezone(tz)
+            done = calendar.get_work_hours_count(start_tz, status_tz)
+            return max(0.0, min(1.0, done / self.working_duration))
+
         total = (self.date_end - self.date_start).total_seconds()
         if total <= 0:
             return 1.0
