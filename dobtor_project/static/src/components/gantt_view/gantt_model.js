@@ -2259,33 +2259,11 @@ export class GanttModel extends Model {
             if (movedRecord) {
                 const minStart = this.getMinStartForRecord(recordId);
                 if (minStart && movedRecord._dateStart && movedRecord._dateStart < minStart) {
-                    // Auto-align: push the moved task forward
-                    const _skipSnap = { context: { skip_date_snap: true } };
-                    const dateStartField = this.archInfo.dateStart || "date_start";
-                    const dateStopField = this.archInfo.dateStop || "date_end";
-                    if (movedRecord._isVirtualDates) {
-                        const hpd = this.data.calendarInfo?.hours_per_day || 8;
-                        const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
-                        const T0 = PLANNING_T0;
-                        const minVirtualHours = minStart.diff(T0, "hours").hours;
-                        const newOffset = minVirtualHours / scaleFactor;
-                        const planOffsetField = this.archInfo.planOffset || "plan_offset";
-                        await this.updateRecord(recordId, { [planOffsetField]: newOffset }, _skipSnap);
-                    } else {
-                        const fsValues = {
-                            [dateStartField]: minStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"),
-                        };
-                        if (movedRecord._dateEnd && movedRecord._dateStart) {
-                            const duration = movedRecord._dateEnd.diff(movedRecord._dateStart);
-                            fsValues[dateStopField] = minStart.plus(duration).setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
-                        }
-                        await this.updateRecord(recordId, fsValues, _skipSnap);
-                    }
-                    // Cascade
-                    const visited = new Set();
-                    await this._pushFSSuccessors(recordId, visited);
-                    await this._pushAncestorFSSuccessors(recordId, visited);
-                    await this._recalcAndUpdateLags(recordId);
+                    // Auto-align: hand the move to the server engine, which
+                    // snaps it into working time, keeps the task's scheduled
+                    // hours, cascades once and returns the diff.
+                    await this.moveAndCascade(
+                        recordId, this._alignVals(movedRecord, minStart), null);
                     // Notify user
                     this.notification.add(
                         _t("任務已自動對齊至 FS 約束邊界"),
@@ -2525,10 +2503,10 @@ export class GanttModel extends Model {
             // Reload predecessors FIRST so the new link is in data
             await this._loadPredecessors();
 
-            // Push successor if dependency constraint is violated, then recalc lag
-            await this._pushDependencySuccessors(parentTaskId);
-            await this._pushAncestorFSSuccessors(parentTaskId);
-            await this._recalcAndUpdateLags(parentTaskId);
+            // The new link may be violated the moment it exists: let the server
+            // relax the graph from its source (pushes only where there is real
+            // overlap) and send back the moved tasks and recomputed lags.
+            await this.cascadeFrom(parentTaskId);
 
             this.notify();
             return ids[0];
@@ -2560,235 +2538,19 @@ export class GanttModel extends Model {
         return sourceEnd.plus({ hours: lagHrs });
     }
 
-    /**
-     * Push all dependency successors of a given task forward when the source
-     * physically overlaps the target according to the dependency type.
-     * Supports all 4 types: FS, SS, FF, SF.
-     *
-     * Lag is NOT used as a constraint — it is dynamically recalculated by
-     * _recalcAndUpdateLags() after this method.
-     *
-     * Push rules (preserving target duration):
-     *   FS: sourceEnd > targetStart  → push targetStart to sourceEnd
-     *   SS: sourceStart > targetStart → push targetStart to sourceStart
-     *   FF: sourceEnd > targetEnd    → push targetEnd to sourceEnd (start = end - duration)
-     *   SF: sourceStart > targetEnd  → push targetEnd to sourceStart (start = end - duration)
-     *
-     * Cascades: if pushing successor B causes B's own successors to overlap,
-     * they are also pushed.
-     * @param {number} recordId - the predecessor whose dates may have changed
-     * @param {Set} [visited] - cycle guard
-     */
-    async _pushDependencySuccessors(recordId, visited) {
-        if (!visited) visited = new Set();
-        if (visited.has(recordId)) return;
-        visited.add(recordId);
-
-        const source = this._recordMap.get(recordId);
-        if (!source) return;
-
-        const sourceEnd = (source._hasChildren && source._summaryDateEnd) || source._dateEnd;
-        const sourceStart = (source._hasChildren && source._summaryDateStart) || source._dateStart;
-
-        const successors = this._predByParent.get(recordId) || [];
-
-        for (const pred of successors) {
-            const target = this._recordMap.get(pred.task_id);
-            if (!target) continue;
-
-            const targetStart = (target._hasChildren && target._summaryDateStart) || target._dateStart;
-            const targetEnd = (target._hasChildren && target._summaryDateEnd) || target._dateEnd;
-            const linkType = (pred.type || "FS").toUpperCase();
-
-            // Determine if push is needed and what the new target position should be
-            let newTargetStart = null;
-            if (linkType === "FS") {
-                if (!sourceEnd || !targetStart) continue;
-                if (targetStart >= sourceEnd) continue;
-                newTargetStart = sourceEnd;
-            } else if (linkType === "SS") {
-                if (!sourceStart || !targetStart) continue;
-                if (targetStart >= sourceStart) continue;
-                newTargetStart = sourceStart;
-            } else if (linkType === "FF") {
-                if (!sourceEnd || !targetEnd) continue;
-                if (targetEnd >= sourceEnd) continue;
-                // Push end to sourceEnd, preserve duration → derive new start
-                if (targetStart && targetEnd) {
-                    const dur = targetEnd.diff(targetStart);
-                    newTargetStart = sourceEnd.minus(dur);
-                } else {
-                    continue;
-                }
-            } else if (linkType === "SF") {
-                if (!sourceStart || !targetEnd) continue;
-                if (targetEnd >= sourceStart) continue;
-                // Push end to sourceStart, preserve duration → derive new start
-                if (targetStart && targetEnd) {
-                    const dur = targetEnd.diff(targetStart);
-                    newTargetStart = sourceStart.minus(dur);
-                } else {
-                    continue;
-                }
-            } else {
-                continue;
-            }
-
-            if (!newTargetStart || !targetStart) continue;
-
-            // Apply the push
-            const _skipSnap = { context: { skip_date_snap: true } };
-            if (target._hasChildren) {
-                const anyVirtualChild = this._hasVirtualChild(target.id);
-                let shiftHours = newTargetStart.diff(targetStart, "hours").hours;
-                if (anyVirtualChild) {
-                    const hpd = this.data.calendarInfo?.hours_per_day || 8;
-                    const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
-                    shiftHours = shiftHours / scaleFactor;
-                }
-                if (Math.abs(shiftHours) > 0.01) {
-                    await this.moveRecordWithChildren(target.id, shiftHours, _skipSnap);
-                }
-            } else if (target._isVirtualDates) {
-                const T0 = PLANNING_T0;
-                const hpd = this.data.calendarInfo?.hours_per_day || 8;
-                const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
-                const newOffset = newTargetStart.diff(T0, "hours").hours / scaleFactor;
-                const planOffsetField = this.archInfo.planOffset || "plan_offset";
-                await this.updateRecord(target.id, { [planOffsetField]: newOffset });
-            } else {
-                const dateStartField = this.archInfo.dateStart || "date_start";
-                const dateStopField = this.archInfo.dateStop || "date_end";
-                const values = {
-                    [dateStartField]: newTargetStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"),
-                };
-                if (target._dateEnd && target._dateStart) {
-                    const duration = target._dateEnd.diff(target._dateStart);
-                    values[dateStopField] = newTargetStart.plus(duration).setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
-                }
-                await this.updateRecord(target.id, values, _skipSnap);
-            }
-
-            // Cascade: this successor's dates moved, check its own successors
-            await this._pushDependencySuccessors(pred.task_id, visited);
-        }
-    }
+    // The client-side cascade engine that used to live here — push successors,
+    // push each ancestor's successors, recompute every lag — is gone. It was a
+    // second implementation of project.task._cascade_fs_push /
+    // _cascade_recalc_lags that wrote with skip_date_snap and translated the old
+    // wall-clock window, so every push it made could land a task in an evening
+    // or a weekend and silently change its work hours. Callers now go through
+    // moveAndCascade() / cascadeFrom() / action_align_dependencies: one engine,
+    // on the work calendar, one traversal, authoritative diff back.
 
     /**
-     * Backward-compatible alias for _pushDependencySuccessors.
-     * @param {number} recordId
-     * @param {Set} [visited]
-     */
-    async _pushFSSuccessors(recordId, visited) {
-        return this._pushDependencySuccessors(recordId, visited);
-    }
-
-    /**
-     * After pushing a record's own dependency successors, walk up its parent
-     * chain and push each ancestor's dependency successors too (all types).
-     *
-     * When a child task moves/resizes, the parent's summary dates may change.
-     * Without this, the parent's outgoing dependency successors would NOT be
-     * pushed, causing overlap and backward horizontal arrows.
-     */
-    async _pushAncestorFSSuccessors(recordId, sharedVisited) {
-        const record = this._recordMap.get(recordId);
-        if (!record) return;
-
-        let current = record;
-        const ancestorVisited = new Set();
-        const pushVisited = sharedVisited || new Set();
-        while (current._parentId) {
-            const parent = this._recordMap.get(current._parentId);
-            if (!parent || !parent._hasChildren) break;
-            if (ancestorVisited.has(parent.id)) break;
-            ancestorVisited.add(parent.id);
-
-            // Refresh summary dates before checking push (child may have moved)
-            const group = this._getGroupForRecord(parent.id);
-            if (group) this._computeGroupSummaryDates(group);
-
-            await this._pushDependencySuccessors(parent.id, pushVisited);
-            current = parent;
-        }
-    }
-
-    /**
-     * Recalculate and update lag values for all predecessor links connected to a task.
-     * Supports all 4 dependency types: FS, SS, FF, SF.
-     * Called after drag/resize to keep lag in sync with actual positions.
-     *
-     * Lag formulas:
-     *   FS: lag = targetStart - sourceEnd
-     *   SS: lag = targetStart - sourceStart
-     *   FF: lag = targetEnd   - sourceEnd
-     *   SF: lag = targetEnd   - sourceStart
-     *
-     * @param {number} recordId - The task that was moved/resized
-     */
-    async _recalcAndUpdateLags(recordId) {
-        const predModel = this.archInfo.predecessorModel;
-        if (!predModel) return;
-
-        // Find all links where this task is source (parent_task_id) or target (task_id)
-        const relatedPreds = [
-            ...(this._predByParent.get(recordId) || []),
-            ...(this._predByChild.get(recordId) || []),
-        ].filter(p => p.id);
-
-        const writes = [];
-        for (const pred of relatedPreds) {
-            const source = this._recordMap.get(pred.parent_task_id);
-            const target = this._recordMap.get(pred.task_id);
-            if (!source || !target) continue;
-
-            const sourceEnd = (source._hasChildren && source._summaryDateEnd) || source._dateEnd;
-            const sourceStart = (source._hasChildren && source._summaryDateStart) || source._dateStart;
-            const targetStart = (target._hasChildren && target._summaryDateStart) || target._dateStart;
-            const targetEnd = (target._hasChildren && target._summaryDateEnd) || target._dateEnd;
-
-            const linkType = (pred.type || "FS").toUpperCase();
-            let gapMs = null;
-
-            if (linkType === "FS") {
-                if (sourceEnd && targetStart) gapMs = targetStart.toMillis() - sourceEnd.toMillis();
-            } else if (linkType === "SS") {
-                if (sourceStart && targetStart) gapMs = targetStart.toMillis() - sourceStart.toMillis();
-            } else if (linkType === "FF") {
-                if (sourceEnd && targetEnd) gapMs = targetEnd.toMillis() - sourceEnd.toMillis();
-            } else if (linkType === "SF") {
-                if (sourceStart && targetEnd) gapMs = targetEnd.toMillis() - sourceStart.toMillis();
-            }
-
-            if (gapMs === null) continue;
-
-            let newLagHours = durationToLag(gapMs);
-            // Planning mode: convert virtual hours to working hours
-            const isVirtual = source._isVirtualDates || target._isVirtualDates
-                || this._hasVirtualChild(source.id)
-                || this._hasVirtualChild(target.id);
-            if (isVirtual) {
-                const hpd = this.data.calendarInfo?.hours_per_day || 8;
-                const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
-                newLagHours = newLagHours / scaleFactor;
-            }
-
-            if (Math.abs(newLagHours - (pred.lag_hours || 0)) > 0.001) {
-                pred.lag_hours = newLagHours;
-                writes.push(this.orm.write(predModel, [pred.id], { lag_hours: newLagHours }));
-            }
-        }
-
-        if (writes.length > 0) {
-            await Promise.all(writes);
-            this.notify();
-        }
-    }
-
-    /**
-     * Enforce dependency constraints (FS/SS/FF/SF) on all leaf tasks.
-     * For each leaf whose start violates getMinStartForRecord(), push it
-     * forward. Then cascade via _pushDependencySuccessors.
+     * Enforce dependency constraints (FS/SS/FF/SF) on all leaf tasks: detect
+     * every leaf whose start violates getMinStartForRecord(), and (unless this
+     * is a dry run) have the server relax the whole graph.
      *
      * Handles both real dates and virtual dates (planning mode).
      *
@@ -2800,84 +2562,53 @@ export class GanttModel extends Model {
     async _enforceConstraintAlignment(options = {}) {
         if (!this.data.predecessors || this.data.predecessors.length === 0) return 0;
 
-        const _skipSnap = { context: { skip_date_snap: true } };
-        const dateStartField = this.archInfo.dateStart || "date_start";
-        const dateStopField = this.archInfo.dateStop || "date_end";
-        const planOffsetField = this.archInfo.planOffset || "plan_offset";
         const dryRun = !!options.dryRun;
 
-        // Leaf tasks sorted by _dateStart ascending (fix earlier tasks first
-        // so their FS successors get cascaded correctly)
-        const leafTasks = this.data.records
-            .filter(r => !r._hasChildren && !r._isMilestoneRecord && r._dateStart)
-            .sort((a, b) => a._dateStart.toMillis() - b._dateStart.toMillis());
+        // Detection stays local — the violations panel asks for it on every
+        // reload and it must not write anything.
+        const violating = this.data.records.filter(r => {
+            if (r._hasChildren || r._isMilestoneRecord || !r._dateStart) return false;
+            const minStart = this.getMinStartForRecord(r.id);
+            return !!minStart && r._dateStart < minStart;
+        });
+        if (dryRun || violating.length === 0) return violating.length;
 
-        const fixedIds = [];
+        // The repair is one server call. Pushing each violating task from here
+        // meant N writes that bypassed the work calendar plus a client-side
+        // re-implementation of the cascade; the server relaxes the whole graph
+        // in a single monotonic pass, on the calendar, and returns the diff.
+        const groupField = this.archInfo.mainGroupIdName || "project_id";
+        const fromRecord = violating.map(r => r[groupField]).find(Boolean);
+        const projectId = this._lastLoadProps?.context?.default_project_id
+            || this._lastLoadProps?.context?.active_id
+            || (Array.isArray(fromRecord) ? fromRecord[0] : fromRecord)
+            || null;
+        if (!projectId) return 0;
 
-        for (const task of leafTasks) {
-            const minStart = this.getMinStartForRecord(task.id);
-            if (!minStart) continue;
-            if (task._dateStart >= minStart) continue;
-
-            if (dryRun) {
-                // Dry run: only collect violation IDs, do not write
-                fixedIds.push(task.id);
-                continue;
-            }
-
-            // Violation: push forward
-            if (task._isVirtualDates) {
-                const hpd = this.data.calendarInfo?.hours_per_day || 8;
-                const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
-                const minVirtualHours = minStart.diff(PLANNING_T0, "hours").hours;
-                const newOffset = minVirtualHours / scaleFactor;
-                await this.updateRecord(task.id, { [planOffsetField]: newOffset }, _skipSnap);
-            } else {
-                const values = {
-                    [dateStartField]: minStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"),
-                };
-                if (task._dateEnd && task._dateStart) {
-                    const duration = task._dateEnd.diff(task._dateStart);
-                    values[dateStopField] = minStart.plus(duration)
-                        .setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
-                }
-                await this.updateRecord(task.id, values, _skipSnap);
-            }
-            fixedIds.push(task.id);
-        }
-
-        if (fixedIds.length === 0) return 0;
-
-        // In dry-run mode, skip cascading writes and notifications
-        if (dryRun) {
-            return fixedIds.length;
-        }
-
-        // Cascade dependency successors + ancestor dependency successors
-        const visited = new Set();
-        for (const id of fixedIds) {
-            await this._pushDependencySuccessors(id, visited);
-        }
-        for (const id of fixedIds) {
-            await this._pushAncestorFSSuccessors(id, visited);
-        }
-        for (const id of fixedIds) {
-            await this._recalcAndUpdateLags(id);
-        }
-
-        // Recompute parent summaries
-        for (const group of this.data.groups) {
-            this._computeGroupSummaryDates(group);
+        let fixedCount = 0;
+        try {
+            const diff = await this.orm.call(
+                this.resModel, "action_align_dependencies", [projectId]);
+            // Count only rows that actually moved: the diff also carries
+            // ancestors whose rolled-up hours changed without a date change.
+            fixedCount = Object.values(diff?.tasks || {}).filter(
+                f => "date_start" in f || "date_end" in f || "plan_offset" in f
+            ).length;
+            this._applyServerDiff(diff);
+        } catch (error) {
+            console.error("Constraint alignment failed:", error);
+            this.notification.add(_t("自動對齊失敗"), { type: "danger" });
+            return 0;
         }
 
         if (!options.silent) {
             this.notification.add(
-                _t("已自動對齊 %(count)s 個任務", { count: fixedIds.length }),
+                _t("已自動對齊 %(count)s 個任務", { count: fixedCount }),
                 { type: "success" }
             );
         }
 
-        return fixedIds.length;
+        return fixedCount;
     }
 
     /**
@@ -3293,55 +3024,65 @@ export class GanttModel extends Model {
         return { message, boundaryDate: dateStr };
     }
 
-    /**
-     * Move a parent task and all its descendants by shiftHours,
-     * preserving relative positions. Single RPC call to Python.
-     */
-    async moveRecordWithChildren(recordId, shiftHours, options = {}) {
-        const kwargs = options.context ? { context: options.context } : {};
-        await this.orm.call(this.resModel, "action_move_with_descendants", [[recordId], shiftHours], kwargs);
-        // Sync local records so subsequent logic sees updated dates
-        const { Duration } = luxon;
-        const shift = Duration.fromObject({ hours: shiftHours });
-        // Pre-build parent->children map for O(n) traversal
-        const childMap = new Map();
-        for (const r of this.data.records) {
-            if (r._parentId != null) {
-                if (!childMap.has(r._parentId)) childMap.set(r._parentId, []);
-                childMap.get(r._parentId).push(r);
-            }
-        }
-        // In planning mode, shiftHours is in working hours but _dateStart/_dateEnd
-        // are on the virtual timeline (scaled by 24/hpd). Compute both shifts.
-        const hpd = this.data.calendarInfo?.hours_per_day || 8;
-        const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
-        const virtualShift = Duration.fromObject({ hours: shiftHours * scaleFactor });
+    // moveRecordWithChildren() went with it. It called
+    // action_move_with_descendants and then mirrored the shift onto the local
+    // records as a rigid translation — which stopped being true once the server
+    // started re-snapping every moved leaf onto the work calendar, so the
+    // browser's copy drifted from the database until the next reload.
+    // moveAndCascade(id, null, shiftHours) does the same move and applies the
+    // server's own diff.
 
-        const stack = [recordId];
-        const visited = new Set();
-        while (stack.length) {
-            const id = stack.pop();
-            if (visited.has(id)) continue;
-            visited.add(id);
-            const rec = this._recordMap.get(id);
-            if (!rec) continue;
-            // Use virtual shift for virtual dates, regular shift for real dates
-            const effectiveShift = rec._isVirtualDates ? virtualShift : shift;
-            if (rec._dateStart) rec._dateStart = rec._dateStart.plus(effectiveShift);
-            if (rec._dateEnd) rec._dateEnd = rec._dateEnd.plus(effectiveShift);
-            if (rec._summaryDateStart) rec._summaryDateStart = rec._summaryDateStart.plus(effectiveShift);
-            if (rec._summaryDateEnd) rec._summaryDateEnd = rec._summaryDateEnd.plus(effectiveShift);
-            if (rec._isVirtualDates) {
-                rec._planOffset = (rec._planOffset || 0) + shiftHours;
-            }
-            // Find children via pre-built map
-            for (const child of (childMap.get(id) || [])) {
-                stack.push(child.id);
-            }
+    /**
+     * The vals that move ``record`` so it starts at ``newStart``, in the shape
+     * the server engine expects.
+     *
+     * A planning-mode row carries a plan_offset; a dated row carries BOTH edges,
+     * because the server reads a single edge as a resize (the window redefines
+     * the hours) and both edges as a move (the hours are kept and the end is
+     * re-derived through the work calendar). The end sent here is only a hint of
+     * intent — the server recomputes it.
+     */
+    _alignVals(record, newStart) {
+        if (record._isVirtualDates) {
+            const hpd = this.data.calendarInfo?.hours_per_day || 8;
+            const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
+            const planOffsetField = this.archInfo.planOffset || "plan_offset";
+            return {
+                [planOffsetField]:
+                    newStart.diff(PLANNING_T0, "hours").hours / scaleFactor,
+            };
         }
-        // Recompute summary dates for all affected groups (ancestors may need update)
-        for (const group of this.data.groups) {
-            this._computeGroupSummaryDates(group);
+        const dateStartField = this.archInfo.dateStart || "date_start";
+        const dateStopField = this.archInfo.dateStop || "date_end";
+        const vals = {
+            [dateStartField]: newStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"),
+        };
+        if (record._dateEnd && record._dateStart) {
+            const duration = record._dateEnd.diff(record._dateStart);
+            vals[dateStopField] = newStart.plus(duration)
+                .setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
+        }
+        return vals;
+    }
+
+    /**
+     * Relax the dependency graph starting from a task that did not itself move —
+     * a new link was drawn into or out of it, so its successors may now overlap.
+     *
+     * Same server engine as every gesture (it simply skips the write step), so
+     * the pushes land on the work calendar and the lags come back recalculated.
+     * No undo entry: nothing the user did is being recorded here.
+     */
+    async cascadeFrom(recordId) {
+        try {
+            const diff = await this.orm.call(
+                this.resModel, "action_move_and_cascade",
+                [[recordId]], { vals: null, shift_hours: null });
+            this._applyServerDiff(diff);
+            return true;
+        } catch (error) {
+            console.error("cascadeFrom failed:", error);
+            return false;
         }
     }
 
@@ -3446,12 +3187,18 @@ export class GanttModel extends Model {
                 const record = this._recordMap.get(parseInt(idStr));
                 if (!record) continue;
                 Object.assign(record, fields);
-                // Re-parse dates
-                if (fields[dateStartField]) {
-                    record._dateStart = GanttModel.parseOdooDate(fields[dateStartField]);
+                // Re-parse dates. `false` is a real value here — a task whose
+                // date was cleared has to lose its parsed DateTime too, or the
+                // bar keeps drawing at the old position until the next reload.
+                if (dateStartField in fields) {
+                    record._dateStart = fields[dateStartField]
+                        ? GanttModel.parseOdooDate(fields[dateStartField])
+                        : null;
                 }
-                if (fields[dateStopField]) {
-                    record._dateEnd = GanttModel.parseOdooDate(fields[dateStopField]);
+                if (dateStopField in fields) {
+                    record._dateEnd = fields[dateStopField]
+                        ? GanttModel.parseOdooDate(fields[dateStopField])
+                        : null;
                 }
                 if (fields[planDurField] != null) {
                     record._planDuration = Number(fields[planDurField]) || 0;
@@ -3549,29 +3296,11 @@ export class GanttModel extends Model {
                                 if (Math.abs(shiftHours) > 0.01) {
                                     await this.moveAndCascade(target.id, null, shiftHours);
                                 }
-                            } else if (target._isVirtualDates) {
-                                // Planning mode leaf: write plan_offset instead of real dates
-                                const T0 = PLANNING_T0;
-                                const hpd = this.data.calendarInfo?.hours_per_day || 8;
-                                const scaleFactor = (hpd < 24) ? (24 / hpd) : 1;
-                                const newOffset = effectiveEnd.diff(T0, "hours").hours / scaleFactor;
-                                const planOffsetField = this.archInfo.planOffset || "plan_offset";
-                                await this.moveAndCascade(target.id, { [planOffsetField]: newOffset }, null);
                             } else {
-                                // Both edges are sent so the server reads this as a
-                                // MOVE (keep the scheduled hours, re-derive the end)
-                                // rather than a resize (window redefines the hours).
-                                const dateStartField = this.archInfo.dateStart || "date_start";
-                                const dateStopField = this.archInfo.dateStop || "date_end";
-                                const newStart = effectiveEnd;
-                                const vals = {
-                                    [dateStartField]: newStart.setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss"),
-                                };
-                                if (target._dateEnd && target._dateStart) {
-                                    const duration = target._dateEnd.diff(target._dateStart);
-                                    vals[dateStopField] = newStart.plus(duration).setZone("utc").toFormat("yyyy-MM-dd HH:mm:ss");
-                                }
-                                await this.moveAndCascade(target.id, vals, null);
+                                await this.moveAndCascade(
+                                    target.id,
+                                    this._alignVals(target, effectiveEnd),
+                                    null);
                             }
                         }
                     }

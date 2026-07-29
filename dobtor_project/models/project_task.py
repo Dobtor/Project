@@ -676,7 +676,14 @@ class ProjectTaskNative(models.Model):
             return None, None
         return calendar, pytz.timezone(self.project_id.tz or 'UTC')
 
-    _WORK_SEARCH_DAYS = 60
+    # Windows tried, in order, when looking forward for the next instant work
+    # can begin. Almost every call lands inside or just before a work interval,
+    # so asking the calendar for one day first keeps the common case cheap — a
+    # cascade makes hundreds of these calls, and computing 60 days of intervals
+    # (attendances ∩ leaves) for each was the bulk of its cost. The last window
+    # is the one that has to cover a long shutdown.
+    _WORK_SEARCH_WINDOWS = (1, 7, 60)
+    _WORK_SEARCH_DAYS = _WORK_SEARCH_WINDOWS[-1]
 
     def _snap_start_to_work(self, dt):
         """Move a naive-UTC datetime FORWARD to the next instant at which work
@@ -696,14 +703,15 @@ class ProjectTaskNative(models.Model):
             return dt
         dt_tz = pytz.UTC.localize(dt).astimezone(tz)
         resource = self.env['resource.resource']
-        horizon = dt_tz + relativedelta(days=self._WORK_SEARCH_DAYS)
-        intervals = calendar._work_intervals_batch(
-            dt_tz, horizon, resource)[resource.id]
-        for start, stop, _meta in intervals:
-            if stop <= dt_tz:
-                continue
-            begin = start if start > dt_tz else dt_tz
-            return begin.astimezone(pytz.UTC).replace(tzinfo=None)
+        for days in self._WORK_SEARCH_WINDOWS:
+            horizon = dt_tz + relativedelta(days=days)
+            intervals = calendar._work_intervals_batch(
+                dt_tz, horizon, resource)[resource.id]
+            for start, stop, _meta in intervals:
+                if stop <= dt_tz:
+                    continue
+                begin = start if start > dt_tz else dt_tz
+                return begin.astimezone(pytz.UTC).replace(tzinfo=None)
         return dt
 
     def _end_from_work_hours(self, start, hours):
@@ -1412,6 +1420,37 @@ class ProjectTaskNative(models.Model):
         # Step 4: Compute diff + recalc lags
         return self._gesture_result(project_tasks, snapshot)
 
+    @api.model
+    def action_align_dependencies(self, project_id):
+        """Repair every dependency the project currently violates, in one call.
+
+        A task that starts before its predecessors allow is pushed forward by
+        the same canonical relaxation every gesture uses, so the repair lands on
+        the work calendar and keeps each task's scheduled hours — which the
+        client-side alignment loop this replaces did not: it wrote each task
+        with ``skip_date_snap`` and a wall-clock duration, then re-pushed the
+        successors from the browser's copy of the dates.
+
+        :returns: the same {'tasks': …, 'predecessors': …} diff shape as
+                  :meth:`action_move_and_cascade`.
+        """
+        project = self.env['project.project'].browse(project_id).exists()
+        if not project:
+            raise UserError(_('找不到專案。'))
+        project.check_access('write')
+
+        tasks = self.search([('project_id', '=', project_id)])
+        if not tasks:
+            return {'tasks': {}, 'predecessors': {}}
+
+        snapshot = self._gesture_snapshot(tasks)
+        # Seed from the leaves: a summary task's dates are a readout of its
+        # children, so pushing a parent directly would fight _update_ancestor_dates.
+        leaves = tasks.filtered(lambda t: not t.child_ids)
+        if leaves:
+            leaves._cascade_fs_push()
+        return self._gesture_result(tasks, snapshot)
+
     def _add_ancestor_hours_to_diff(self, task_diff):
         """Add every ancestor's rolled-up hours to a gantt diff.
 
@@ -1777,7 +1816,12 @@ class ProjectTaskNative(models.Model):
             src = pred.parent_task_id
             tgt = pred.task_id
             dep_type = pred.type
-            is_plan = not src.date_start and src.plan_duration > 0
+            # Same planning-mode test the cascade uses, so a SUMMARY task with
+            # no dates of its own (its children carry the plan) is recognised
+            # here too; the narrower "not date_start and plan_duration > 0" test
+            # sent it down the scheduled branch, which then bailed out on the
+            # missing dates and left the lag stale.
+            is_plan = self._is_planning_mode(src)
 
             if is_plan:
                 src_start_h = src._plan_effective_start() if src.child_ids else (src.plan_offset or 0)

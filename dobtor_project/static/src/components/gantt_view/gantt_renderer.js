@@ -784,12 +784,14 @@ export class GanttRenderer extends Component {
             // could pick up a freshly-rebuilt index while the bars kept positions
             // from a stale one, drifting the dependency lines off the bars.
             this._dateToPxCache = null;
+            this._barGeomCache = null;
             void this.timelineColumns;
         });
 
         onWillPatch(() => {
             // Clear per-render caches before each render pass
             this._dateToPxCache = null;
+            this._barGeomCache = null;
             this._ghostBarsByTask = null;
             this._loadBarsByTask = null;
             this._recordsByResource = null;
@@ -2924,6 +2926,23 @@ export class GanttRenderer extends Component {
         const data = this.props.model.data;
         if (!data?.timeStart || !data.timeStart.isValid) return null;
 
+        // Memoised for the duration of one render (cleared alongside
+        // _dateToPxCache in onWillRender/onWillPatch, so a drag still recomputes
+        // every frame). Without it an outline costs O(rows × depth): each of the
+        // three callers — the bar, the arrow layer, the milestone links — walks a
+        // summary row's whole subtree again, and every ancestor level re-walks it
+        // on top of that.
+        if (!this._barGeomCache) this._barGeomCache = new Map();
+        if (this._barGeomCache.has(record.id)) {
+            return this._barGeomCache.get(record.id);
+        }
+        const geom = this._computeBarGeometryUncached(record, _seen);
+        this._barGeomCache.set(record.id, geom);
+        return geom;
+    }
+
+    /** @see _computeBarGeometry — the real computation, without the memo. */
+    _computeBarGeometryUncached(record, _seen) {
         // A summary bar IS its children: first child's left edge → last child's
         // right edge, measured in PIXELS after every child-side adjustment
         // (min-width clamp, no-end fallback, live drag offset). Deriving it from
