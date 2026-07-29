@@ -36,11 +36,16 @@ CLASS_SELECTOR = re.compile(r"^\s*\.([a-z][\w-]+)", re.M)
 # class names no scan can see.
 CONCAT_LITERAL = re.compile(r"""["'`]([^"'`\n]*?)["'`]\s*\+""")
 TEMPLATE_PREFIX = re.compile(r"""`([^`\n]*?)\$\{""")
+# QWeb builds class names too: t-attf-class="o_gantt_color_#{index}".
+# Missing this form is what let .o_gantt_color_1…11 be deleted as "unused"
+# while the colour picker was using every one of them.
+QWEB_ATTF = re.compile(r't-attf-[\w-]+="([^"]*?)#\{')
 
 
 def _dynamic_prefixes(text):
     out = set()
-    for literal in CONCAT_LITERAL.findall(text) + TEMPLATE_PREFIX.findall(text):
+    for literal in (CONCAT_LITERAL.findall(text) + TEMPLATE_PREFIX.findall(text)
+                    + QWEB_ATTF.findall(text)):
         token = literal.split()[-1] if literal.split() else ""
         if token.endswith(("_", "-")) and re.match(r"^[a-z][\w-]*$", token):
             out.add(token)
@@ -69,6 +74,12 @@ class TestScssClasses(unittest.TestCase):
         """If this stops finding prefixes the whitelist has silently emptied and
         the test below would start reporting live classes as dead."""
         self.assertIn("o_gantt_violation_", self.prefixes)
+
+    def test_qweb_interpolation_is_recognised(self):
+        """The form that got a live rule deleted: t-attf-class="prefix_#{expr}".
+        A scan blind to it reports every .prefix_N as unused."""
+        self.assertIn("o_gantt_demo_",
+                      _dynamic_prefixes('<a t-attf-class="o_gantt_demo_#{index}"/>'))
 
     def test_no_styled_class_is_unused(self):
         classes = set(CLASS_SELECTOR.findall(self.scss))

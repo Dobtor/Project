@@ -141,9 +141,12 @@ class Project(models.Model):
         selection='_get_schedule_mode', string='預設排程模式',
         default='manual', help="新建任務時的預設排程模式"
     )
+    # 8 = 藍色. A colourless bar draws as a white outline, which reads as
+    # "unset" rather than as a plan; blue is what a gantt bar is expected to
+    # look like. 0 stays valid and the picker offers it last.
     task_default_color_gantt = fields.Integer(
-        string='預設長條顏色', default=0,
-        help="新建任務時的預設甘特圖顏色索引 (0=無, 1-11=固定色)"
+        string='預設長條顏色', default=8,
+        help="新建任務時的預設甘特圖顏色索引 (1-11=固定色, 0=無色)"
     )
     task_default_constrain_type = fields.Selection(
         selection='_get_constrain_type', string='預設約束類型',

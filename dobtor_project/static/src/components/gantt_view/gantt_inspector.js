@@ -218,8 +218,37 @@ export class GanttInspector extends Component {
         return this.props.record[colorField] || 0;
     }
 
-    get ganttColors() {
-        return GANTT_COLORS;
+    /**
+     * The swatches, in the order they are OFFERED: the colours first, "no
+     * colour" last, because it is the fallback rather than the first choice.
+     *
+     * `index` stays the stored value of color_gantt — 0 is still "no colour" —
+     * so reordering the picker changes nothing about existing data.
+     *
+     * Each swatch carries its own inline style. It used to get its colour from
+     * a .o_gantt_color_N rule fed by --gantt-palette-N variables the renderer
+     * published on mount; that whole loop was deleted as dead code (nothing
+     * SEEMED to apply those classes — the template composes them with QWeb's
+     * #{} interpolation, which the scan did not recognise) and the swatches went
+     * blank. Drawing from GANTT_COLORS directly is what the bars already do, and
+     * leaves nothing to go stale.
+     */
+    get ganttColorSwatches() {
+        const swatches = [];
+        for (let i = 1; i < GANTT_COLORS.length; i++) {
+            swatches.push({
+                index: i,
+                style: `background:${GANTT_COLORS[i]};`,
+                cls: "",
+                name: this.ganttColorName(i),
+            });
+        }
+        // "No colour" keeps its striped design, which cannot be an inline style
+        // (an inline background would win over the gradient), so it carries a
+        // class instead — keyed on what it IS, not on where it sits.
+        swatches.push({ index: 0, style: "", cls: "o_gantt_color_none",
+                        name: this.ganttColorName(0) });
+        return swatches;
     }
 
     ganttColorName(index) {

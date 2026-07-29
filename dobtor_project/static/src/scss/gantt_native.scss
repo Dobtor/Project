@@ -3288,8 +3288,11 @@
             box-shadow: 0 0 0 2px var(--gantt-label-primary);
         }
 
-        // Index 0: no color — white with red diagonal stripe
-        &:first-child > a {
+        // "No colour" — white with a red diagonal stripe. Keyed on the class
+        // the picker gives it, not on its position: the swatch is offered LAST
+        // now (a fallback, not a first choice) and the design should not depend
+        // on where in the row it sits.
+        > a.o_gantt_color_none {
             background: linear-gradient(
                 45deg,
                 rgba(255, 255, 255, 0) 0%,
@@ -3302,11 +3305,11 @@
             box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
         }
 
-        &:first-child:hover > a {
+        &:hover > a.o_gantt_color_none {
             box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15), 0 0 0 2px var(--gantt-fill-tertiary);
         }
 
-        &:first-child.selected > a {
+        &.selected > a.o_gantt_color_none {
             box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15), 0 0 0 2px var(--gantt-label-primary);
         }
     }

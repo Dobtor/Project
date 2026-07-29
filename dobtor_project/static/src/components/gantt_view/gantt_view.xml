@@ -926,11 +926,11 @@
                             <div class="o_gantt_inspector_field o_gantt_inspector_field_color">
                                 <label>顏色</label>
                                 <ul class="o_gantt_colorpicker">
-                                    <t t-foreach="this.ganttColors" t-as="color" t-key="color_index">
-                                        <li t-on-click.stop="() => this.onColorSelect(color_index)"
-                                            t-att-class="color_index === this.currentColorIndex ? 'selected' : ''"
-                                            t-att-title="this.ganttColorName(color_index)">
-                                            <a t-attf-class="o_gantt_color_#{color_index}"/>
+                                    <t t-foreach="this.ganttColorSwatches" t-as="swatch" t-key="swatch.index">
+                                        <li t-on-click.stop="() => this.onColorSelect(swatch.index)"
+                                            t-att-class="swatch.index === this.currentColorIndex ? 'selected' : ''"
+                                            t-att-title="swatch.name">
+                                            <a t-att-style="swatch.style" t-att-class="swatch.cls"/>
                                         </li>
                                     </t>
                                 </ul>
@@ -1028,11 +1028,11 @@
                         <div class="o_gantt_inspector_field o_gantt_inspector_field_color">
                             <label>長條顏色</label>
                             <ul class="o_gantt_colorpicker">
-                                <t t-foreach="this.ganttColors" t-as="color" t-key="color_index">
-                                    <li t-on-click.stop="() => this.onColorSelect(color_index)"
-                                        t-att-class="color_index === this.currentColorIndex ? 'selected' : ''"
-                                        t-att-title="this.ganttColorName(color_index)">
-                                        <a t-attf-class="o_gantt_color_#{color_index}"/>
+                                <t t-foreach="this.ganttColorSwatches" t-as="swatch" t-key="swatch.index">
+                                    <li t-on-click.stop="() => this.onColorSelect(swatch.index)"
+                                        t-att-class="swatch.index === this.currentColorIndex ? 'selected' : ''"
+                                        t-att-title="swatch.name">
+                                        <a t-att-style="swatch.style" t-att-class="swatch.cls"/>
                                     </li>
                                 </t>
                             </ul>
