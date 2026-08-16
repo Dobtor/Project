@@ -105,9 +105,9 @@
                 <div class="o_gantt_tb_sep"/>
 
                 <!-- Group 4: Data -->
-                <button class="o_gantt_tb_btn" t-on-click="onRefresh" title="重新整理">
-                    <i class="fa fa-refresh"/>
-                </button>
+                <!-- 「重新整理」按鈕已移除：它的 fa-refresh 與 dobtor_xmind 加在
+                     工具列最左端的「同步心智圖」同圖示，兩顆並排容易誤按。
+                     onRefresh() 方法保留 —— 分頁器 onPagerClick() 仍會呼叫它。 -->
                 <button class="o_gantt_tb_btn" t-on-click="() => this.onExportClick()" title="匯出 XML">
                     <i class="fa fa-download"/>
                 </button>
