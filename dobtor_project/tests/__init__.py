@@ -4,3 +4,4 @@ from . import test_plan_axis
 from . import test_static_imports
 from . import test_report_colors
 from . import test_scss_classes
+from . import test_scheduling

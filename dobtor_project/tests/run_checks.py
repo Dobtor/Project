@@ -55,6 +55,8 @@ CHECKS = [
      "the calendar being read on the project's clock, not the viewer's"),
     ("connectors", ["node", str(MODULE_ROOT / "tests" / "geometry" / "arrow_path_sweep.mjs")],
      "no backfold, attached at both ends, 45° exits"),
+    ("preview overlay", ["node", str(MODULE_ROOT / "tests" / "geometry" / "preview_overlay_check.mjs")],
+     "the preview overlay being display-only and never drawing a half-resolved bar"),
     ("palette (js)", ["node", str(MODULE_ROOT / "tests" / "geometry" / "colors_check.mjs")],
      "the chart's colours matching the fixture"),
 ]

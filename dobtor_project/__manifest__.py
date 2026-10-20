@@ -54,6 +54,7 @@ Migrated from Odoo 12 modules:
             "dobtor_project/static/src/scss/gantt_native.scss",
             # Gantt View Components - ordered by dependency
             "dobtor_project/static/src/components/gantt_view/gantt_utils.js",
+            "dobtor_project/static/src/components/gantt_view/gantt_preview.js",
             "dobtor_project/static/src/components/gantt_view/gantt_arch_parser.js",
             "dobtor_project/static/src/components/gantt_view/gantt_scrollmap.js",
             "dobtor_project/static/src/components/gantt_view/gantt_worktime.js",

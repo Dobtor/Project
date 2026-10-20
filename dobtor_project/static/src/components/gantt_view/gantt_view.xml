@@ -710,6 +710,12 @@
                                          t-att-style="getGhostBarStyle(ghostBar)"
                                          t-att-title="'基線: ' + (ghostBar.name || '')"/>
                                 </t>
+                                <!-- Preview overlay: proposed window (display-only) -->
+                                <t t-foreach="getPreviewBars(row)" t-as="previewBar" t-key="'pv_' + row.id">
+                                    <div class="o_gantt_preview_bar"
+                                         t-att-style="getPreviewBarStyle(previewBar)"
+                                         title="預覽（尚未套用）"/>
+                                </t>
                                 <!-- Resource conflict indicator (only while the
                                      intersection/resource overlay is enabled, so
                                      the resource index isn't built every render). -->

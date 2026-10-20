@@ -12,6 +12,10 @@ import { FormViewDialog } from "@web/views/view_dialogs/form_view_dialog";
 
 import { ConfirmationDialog } from "@web/core/confirmation_dialog/confirmation_dialog";
 import { Component, useState, onWillUnmount } from "@odoo/owl";
+import { registry } from "@web/core/registry";
+import { GanttModel } from "./gantt_model";
+import { previewBarsFromDiff, firstPreviewTask } from "./gantt_preview";
+import { PLANNING_T0 } from "./gantt_utils";
 
 export class GanttController extends Component {
     static template = "dobtor_project.GanttController";
@@ -84,6 +88,10 @@ export class GanttController extends Component {
             hideNonWorkingDays: savedHideNonWorking,
         });
 
+        // Preview overlay (display-only; see gantt_preview.js). Never reaches the model.
+        this.preview = useState({ bars: null });
+        this._registerBridge();
+
         // Scale options — 8 zoom levels matching old module
         this.scales = [
             { value: "1h", label: _t("1\u6642") },
@@ -152,7 +160,67 @@ export class GanttController extends Component {
             onReportClick: this.onReportClick.bind(this),
             // Calendar
             hideNonWorkingDays: this.state.hideNonWorkingDays,
+            // Preview overlay
+            previewBars: this.preview.bars,
         };
+    }
+
+    // -------------------------------------------------------------------------
+    // Bridge hook (registry "dobtor_project.bridge")
+    //
+    // A generic, optional integration point: anything that wants to look at or
+    // preview this chart (an assistant panel, a what-if tool) registers itself
+    // against / reads from this category. This module does not know who uses it.
+    //   getContext()          -> {kind, id, selection, range, dirty}
+    //   flush()               -> Promise<boolean>   gantt gestures save immediately: true
+    //   reload()              -> Promise<void>
+    //   enterPreview(diff)    -> draw hollow bars for {taskId: {date_start, date_end,
+    //                            plan_offset, plan_duration}}; no write, no undo entry
+    //   exitPreview()
+    // -------------------------------------------------------------------------
+    _registerBridge() {
+        const entry = {
+            getContext: () => ({
+                kind: "project.project",
+                id: this._getProjectIdFromContext(),
+                selection: this._getSelectedIds(),
+                range: this._rendererApi?.getVisibleRange?.() || null,
+                dirty: false,
+            }),
+            flush: async () => true,
+            reload: async () => {
+                await this._loadWithScrollRestore(this.props);
+            },
+            enterPreview: (diff) => this.enterPreview(diff),
+            exitPreview: () => this.exitPreview(),
+        };
+        const category = registry.category("dobtor_project.bridge");
+        category.add("gantt", entry, { force: true });
+        onWillUnmount(() => {
+            if (category.contains("gantt") && category.get("gantt") === entry) {
+                category.remove("gantt");
+            }
+            this.preview.bars = null;
+        });
+    }
+
+    enterPreview(diff) {
+        const bars = previewBarsFromDiff(diff, {
+            parseDate: (value) => GanttModel.parseOdooDate(value),
+            planWindow: (offset, duration) => {
+                const start = PLANNING_T0.plus({ hours: offset });
+                return { start, end: start.plus({ hours: duration }) };
+            },
+        });
+        this.preview.bars = Object.keys(bars).length ? bars : null;
+        const first = firstPreviewTask(bars);
+        if (first) {
+            this._rendererApi?.scrollToRecord?.(first);
+        }
+    }
+
+    exitPreview() {
+        this.preview.bars = null;
     }
 
     get display() {

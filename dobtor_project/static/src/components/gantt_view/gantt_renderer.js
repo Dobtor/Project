@@ -60,6 +60,8 @@ export class GanttRenderer extends Component {
         onReportClick: { type: Function, optional: true },
         // Calendar
         hideNonWorkingDays: { type: Boolean, optional: true },
+        // Preview overlay: {taskId: {dateStart, dateEnd}} (display-only)
+        previewBars: { type: Object, optional: true },
     };
 
     // Minimum visible bar width in px (clamp for sub-cell durations) and the
@@ -120,6 +122,7 @@ export class GanttRenderer extends Component {
                     getSelectedRowIds: () => this.state.selectedRowIds,
                     clearMultiSelect: () => { this.state.selectedRowIds = {}; },
                     getFlattenedRows: () => this.flattenedRows,
+                    getVisibleRange: () => this.getVisibleRange(),
                     createSiblingTask: (id) => this.createSiblingTask(id),
                 });
             }
@@ -1706,6 +1709,50 @@ export class GanttRenderer extends Component {
             }
         }
         return this._ghostBarsByTask.get(record.id) || [];
+    }
+
+    // -------------------------------------------------------------------------
+    // Preview overlay (display-only, see gantt_preview.js)
+    // -------------------------------------------------------------------------
+
+    getPreviewBars(record) {
+        const bar = this.props.previewBars && this.props.previewBars[record.id];
+        return bar ? [bar] : [];
+    }
+
+    getPreviewBarStyle(bar) {
+        const data = this.props.model.data;
+        if (!data?.timeStart || !data.timeStart.isValid || !bar.dateStart) {
+            return "display: none;";
+        }
+        const left = this._dateToPx(bar.dateStart);
+        let width = GanttRenderer.MIN_BAR_W;
+        if (bar.dateEnd) {
+            width = Math.max(this._dateToPx(bar.dateEnd) - left, GanttRenderer.MIN_MINIBAR_W);
+        }
+        return `left: ${left}px; width: ${width}px;`;
+    }
+
+    /**
+     * What the user is looking at: the visible row window and (dated projects only)
+     * the visible time window as Odoo UTC strings. There is no public time-range
+     * API, so the window is derived from the scroll position through _pxToDate.
+     */
+    getVisibleRange() {
+        const { start, end } = this._visibleRangeState;
+        const range = { row_start: start, row_end: end, start: null, end: null };
+        try {
+            if (!this.isPlanningMode) {
+                const fmt = (dt) => (dt && dt.isValid ? dt.toUTC().toFormat("yyyy-MM-dd HH:mm:ss") : null);
+                const left = this._scrollPos.scrollLeft || 0;
+                const width = this._scrollPos.viewportWidth || 0;
+                range.start = fmt(this._pxToDate(left));
+                range.end = fmt(this._pxToDate(left + width));
+            }
+        } catch {
+            /* a half-rendered chart has no axis yet: rows are still useful */
+        }
+        return range;
     }
 
     getGhostBarStyle(ghostBar) {
