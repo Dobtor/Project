@@ -14,7 +14,8 @@
     'author': "My Company",
     'website': "https://www.yourcompany.com",
     'category': 'Uncategorized',
-    'version': '0.1',
+    'version': '17.0.1.0.0',
+    'license': 'LGPL-3',
     'depends': [
         'industry_fsm',
         'sale_project',
@@ -23,7 +24,8 @@
     ],
 
     'data': [
-        # 'security/ir.model.access.csv',
+        'security/ir.model.access.csv',
+        'wizard/task_installation_wizard_views.xml',
         'views/res_config_setting_views.xml',
         'views/sale_order_views.xml',
         'views/project_task_views.xml',

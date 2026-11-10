@@ -6,6 +6,17 @@
             <field name="model">project.task</field>
             <field name="inherit_id" ref="project.view_task_form2"/>
             <field name="arch" type="xml">
+                <xpath expr="//header" position="inside">
+                    <field name="show_installation_actions" invisible="1"/>
+                    <button name="action_open_self_install_wizard" type="object"
+                            string="Customer Self-Installed"
+                            invisible="not show_installation_actions"
+                            groups="sales_team.group_sale_salesman"/>
+                    <button name="action_open_change_distributor_wizard" type="object"
+                            string="Change Installer"
+                            invisible="not show_installation_actions"
+                            groups="sales_team.group_sale_salesman"/>
+                </xpath>
                 <xpath expr="//span[@id='start_rating_buttons']" position="before">
                     <button class="oe_stat_button"
                             type="object" name="action_view_return_rpo" icon="fa-wrench"

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_task_self_install_wizard_form" model="ir.ui.view">
+        <field name="name">dobtor.task.self.install.wizard.form</field>
+        <field name="model">dobtor.task.self.install.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Customer Self-Installed">
+                <div class="alert alert-info" role="alert">
+                    <div>The task will be cancelled (cancellation SMS is sent as configured) and the installer will not get this commission.</div>
+                </div>
+                <div class="alert alert-warning" role="alert" invisible="installation_fee == 0">
+                    <div>This order has an installation fee. It is not refunded automatically; please create a credit note for the customer.</div>
+                </div>
+                <group>
+                    <field name="task_id" />
+                    <field name="currency_id" invisible="1" />
+                    <field name="installation_fee" invisible="installation_fee == 0" />
+                    <field name="reason" placeholder="e.g. The customer installed it before the installer arrived" />
+                </group>
+                <footer>
+                    <button string="Confirm" name="action_confirm" type="object" class="btn-primary" />
+                    <button string="Cancel" special="cancel" class="btn-secondary" />
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_task_change_distributor_wizard_form" model="ir.ui.view">
+        <field name="name">dobtor.task.change.distributor.wizard.form</field>
+        <field name="model">dobtor.task.change.distributor.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Change Installer">
+                <div class="alert alert-info" role="alert">
+                    <div>The task is assigned to the new installer. If it was already arranged or accepted, it goes back to the arranged stage so the new installer is notified by SMS. The commission moves to the new installer.</div>
+                </div>
+                <group>
+                    <field name="task_id" />
+                    <field name="current_distributor_ids" widget="many2many_tags" />
+                    <field name="new_distributor_id" options="{'no_create': True}" />
+                    <field name="update_customer" />
+                    <field name="reason" placeholder="e.g. The customer asked for another installer" />
+                </group>
+                <footer>
+                    <button string="Confirm" name="action_confirm" type="object" class="btn-primary" />
+                    <button string="Cancel" special="cancel" class="btn-secondary" />
+                </footer>
+            </form>
+        </field>
+    </record>
+</odoo>
